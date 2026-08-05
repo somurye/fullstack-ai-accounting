@@ -79,6 +79,8 @@ tags:
     description: 給与連携
   - name: AiSuggestions
     description: AI提案の隔離領域
+  - name: Dashboard
+    description: ダッシュボード集計(KPIサマリー・月次推移・承認待ち・直近アクティビティ)
 
 security:
   - BearerAuth: []
@@ -2407,6 +2409,26 @@ paths:
               schema: { $ref: "#/components/schemas/CashFlowStatementResponse" }
 
   # ----------------------------------------------------------------------------
+  # Dashboard (経営指標サマリー)
+  # ----------------------------------------------------------------------------
+  /dashboard/summary:
+    get:
+      tags: [Dashboard]
+      summary: ダッシュボード表示用の集計データを取得する
+      description: |
+        当月・前月のKPI(売上高/費用/純利益)、過去12ヶ月の月次損益推移、
+        自分に割り当てられた承認待ち件数、直近5件のアクティビティ(経費精算・仕訳)を
+        1回のリクエストでまとめて取得する。確定済み仕訳(status='posted')のみを集計対象とする。
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      responses:
+        "200":
+          description: ダッシュボードサマリー
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DashboardSummaryResponse" }
+
+  # ----------------------------------------------------------------------------
   # Consumption Tax Returns (消費税申告)
   # ----------------------------------------------------------------------------
   /consumption-tax-returns:
@@ -4236,6 +4258,49 @@ components:
       properties:
         success: { const: true }
         data: { $ref: "#/components/schemas/CashFlowStatement" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    # ---- Dashboard ----
+    DashboardMonthlyTrend:
+      type: object
+      readOnly: true
+      properties:
+        month: { type: string, description: "YYYY-MM形式" }
+        revenue: { type: number }
+        expense: { type: number }
+        net_income: { type: number }
+    DashboardRecentActivity:
+      type: object
+      readOnly: true
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string, enum: [expense_report, journal_entry] }
+        title: { type: string }
+        amount: { type: number }
+        status: { type: string }
+        created_at: { type: string, format: date-time }
+    DashboardSummary:
+      type: object
+      readOnly: true
+      properties:
+        current_month_revenue: { type: number }
+        current_month_expense: { type: number }
+        current_month_net_income: { type: number }
+        previous_month_revenue: { type: number }
+        previous_month_expense: { type: number }
+        previous_month_net_income: { type: number }
+        pending_approvals_count: { type: integer }
+        monthly_trends:
+          type: array
+          items: { $ref: "#/components/schemas/DashboardMonthlyTrend" }
+        recent_activities:
+          type: array
+          items: { $ref: "#/components/schemas/DashboardRecentActivity" }
+    DashboardSummaryResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/DashboardSummary" }
         meta: { $ref: "#/components/schemas/Meta" }
 
     # ---- Consumption Tax Returns ----

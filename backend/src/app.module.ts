@@ -33,6 +33,7 @@ import { PayrollImportMappingsModule } from './modules/payroll-import-mappings/p
 import { PayrollImportsModule } from './modules/payroll-imports/payroll-imports.module';
 import { ApprovalRequestsModule } from './modules/approval-requests/approval-requests.module';
 import { SettingsModule } from './modules/settings/settings.module';
+import { DashboardModule } from './modules/dashboard/dashboard.module';
 
 /**
  * AppModule
@@ -83,6 +84,7 @@ import { SettingsModule } from './modules/settings/settings.module';
     PayrollImportsModule,
     ApprovalRequestsModule,
     SettingsModule,
+    DashboardModule,
   ],
   controllers: [],
   providers: [

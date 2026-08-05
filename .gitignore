@@ -20,3 +20,6 @@ build/
 Thumbs.db
 .vscode/*
 !.vscode/extensions.json
+
+# Claude Code ローカル状態
+.claude/

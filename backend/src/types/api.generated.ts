@@ -4733,6 +4733,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/dashboard/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * ダッシュボード表示用の集計データを取得する
+         * @description 当月・前月のKPI(売上高/費用/純利益)、過去12ヶ月の月次損益推移、
+         *     自分に割り当てられた承認待ち件数、直近5件のアクティビティ(経費精算・仕訳)を
+         *     1回のリクエストでまとめて取得する。確定済み仕訳(status='posted')のみを集計対象とする。
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description 操作対象テナントのUUID。JWTクレームの tenant_id と一致する必要がある。 */
+                    "X-Tenant-ID": components["parameters"]["TenantIdHeader"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description ダッシュボードサマリー */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["DashboardSummaryResponse"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/consumption-tax-returns": {
         parameters: {
             query?: never;
@@ -6790,6 +6834,41 @@ export interface components {
             /** @constant */
             success?: true;
             data?: components["schemas"]["CashFlowStatement"];
+            meta?: components["schemas"]["Meta"];
+        };
+        DashboardMonthlyTrend: {
+            /** @description YYYY-MM形式 */
+            month?: string;
+            revenue?: number;
+            expense?: number;
+            net_income?: number;
+        };
+        DashboardRecentActivity: {
+            /** Format: uuid */
+            id?: string;
+            /** @enum {string} */
+            type?: "expense_report" | "journal_entry";
+            title?: string;
+            amount?: number;
+            status?: string;
+            /** Format: date-time */
+            created_at?: string;
+        };
+        DashboardSummary: {
+            current_month_revenue?: number;
+            current_month_expense?: number;
+            current_month_net_income?: number;
+            previous_month_revenue?: number;
+            previous_month_expense?: number;
+            previous_month_net_income?: number;
+            pending_approvals_count?: number;
+            monthly_trends?: components["schemas"]["DashboardMonthlyTrend"][];
+            recent_activities?: components["schemas"]["DashboardRecentActivity"][];
+        };
+        DashboardSummaryResponse: {
+            /** @constant */
+            success?: true;
+            data?: components["schemas"]["DashboardSummary"];
             meta?: components["schemas"]["Meta"];
         };
         ConsumptionTaxReturnLine: {
