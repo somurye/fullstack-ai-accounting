@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: keiri_kaikei_pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: keiri_kaikei
+    ports:
+      - "5432:5432"
+    volumes:
+      - keiri_kaikei_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d keiri_kaikei"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  keiri_kaikei_pgdata:

@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-surface-950 text-surface-100 antialiased;
+  }
+
+  ::selection {
+    @apply bg-brand-600/40 text-white;
+  }
+
+  /* スクロールバーもダークテーマに合わせる(WebKit系) */
+  ::-webkit-scrollbar {
+    @apply h-2 w-2;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-surface-700;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl2 border border-surface-800 bg-surface-900 shadow-panel;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center gap-2 rounded-lg bg-brand-600 px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-2 focus:ring-offset-surface-950 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center gap-2 rounded-lg border border-surface-700 bg-surface-850 px-3.5 py-2 text-sm font-medium text-surface-100 transition-colors hover:bg-surface-800 focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-2 focus:ring-offset-surface-950 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .badge {
+    @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium;
+  }
+  .badge-draft {
+    @apply badge bg-surface-700 text-surface-100;
+  }
+  .badge-pending {
+    @apply badge bg-warning-subtle text-warning;
+  }
+  .badge-posted {
+    @apply badge bg-positive-subtle text-positive;
+  }
+  .badge-void {
+    @apply badge bg-negative-subtle text-negative;
+  }
+  .badge-rejected {
+    @apply badge bg-negative-subtle text-negative;
+  }
+  .badge-reversed {
+    @apply badge bg-info-subtle text-info;
+  }
+
+  .nav-link {
+    @apply flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-surface-300 transition-colors hover:bg-surface-850 hover:text-surface-50;
+  }
+  .nav-link-active {
+    @apply bg-brand-600/15 text-brand-300;
+  }
+}

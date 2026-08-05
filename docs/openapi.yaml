@@ -1,0 +1,4444 @@
+openapi: 3.1.0
+
+info:
+  title: 経理・会計オールインワンAIアプリケーション API
+  version: "1.0.0"
+  description: |
+    中小企業〜中堅企業向け「経理・会計をこのアプリ1つで完結させる」オールインワンAIプロダクトのAPI仕様。
+
+    対応する統合DB設計は `docs/03_database_design.md` / `sql/001_initial_schema_all_in_one.sql` を参照。
+
+    ## 設計原則
+    - AIは提案(`/ai/suggestions`)のみを行い、確定処理(仕訳確定・税額計算等)は本APIの決定的ロジックが行う。
+    - 状態遷移・業務アクションはサブリソース(例: `POST /journal-entries/{id}/post`)として明示する。
+    - 全エンドポイントはマルチテナントであり、`X-Tenant-ID` ヘッダーとJWTクレームの双方で検証される。
+    - 副作用を伴うPOST操作は `Idempotency-Key` ヘッダーによる冪等性をサポートする。
+  contact:
+    name: 経理会計オールインワンソフト開発チーム
+
+servers:
+  - url: https://api.keiri-kaikei.example.com/v1
+    description: 本番環境
+  - url: https://api.staging.keiri-kaikei.example.com/v1
+    description: ステージング環境
+  - url: http://localhost:3000/v1
+    description: ローカル開発環境
+
+tags:
+  - name: Auth
+    description: 認証・MFA
+  - name: Tenants
+    description: テナント情報
+  - name: Users
+    description: ユーザー情報
+  - name: Settings
+    description: 自社情報・会計処理設定・メンバー権限管理
+  - name: Attachments
+    description: 電子帳簿保存法対応の証憑ファイル管理
+  - name: AuditLogs
+    description: 追記専用監査ログ
+  - name: ExternalAccessGrants
+    description: 税理士・監査人向け時限アクセス管理
+  - name: Accounts
+    description: 勘定科目マスタ
+  - name: TaxCategories
+    description: 税区分マスタ
+  - name: Departments
+    description: 部門マスタ
+  - name: JournalEntries
+    description: 仕訳(会計の中核)
+  - name: BankAccounts
+    description: 銀行口座マスタ
+  - name: BankTransactions
+    description: 銀行明細・自動消込
+  - name: AutoJournalRules
+    description: 自動仕訳ルールエンジン
+  - name: Customers
+    description: 顧客マスタ
+  - name: Vendors
+    description: 仕入先マスタ
+  - name: Invoices
+    description: 売上請求書(Accounts Receivable)
+  - name: VendorBills
+    description: 仕入請求書/買掛金(Accounts Payable)
+  - name: PaymentBatches
+    description: 支払バッチ・全銀協FBデータ出力
+  - name: ExpenseReports
+    description: 経費精算・出張旅費
+  - name: ApprovalRequests
+    description: 多段階承認ワークフロー
+  - name: RecurringJournalTemplates
+    description: 定期仕訳テンプレート
+  - name: FixedAssets
+    description: 固定資産台帳・減価償却
+  - name: Reports
+    description: 試算表・財務三表
+  - name: ConsumptionTaxReturns
+    description: 消費税申告サポート
+  - name: PayrollImports
+    description: 給与連携
+  - name: AiSuggestions
+    description: AI提案の隔離領域
+
+security:
+  - BearerAuth: []
+
+# ==============================================================================
+# PATHS
+# ==============================================================================
+paths:
+
+  # ----------------------------------------------------------------------------
+  # Auth
+  # ----------------------------------------------------------------------------
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: メールアドレス・パスワードでログインする
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        "200":
+          description: ログイン成功。MFAが有効な場合は `mfa_required=true` とともに `mfa_token` を返す。
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { const: true }
+                  data:
+                    type: object
+                    properties:
+                      access_token: { type: string }
+                      refresh_token: { type: string }
+                      mfa_required: { type: boolean }
+                      mfa_token: { type: string, description: "mfa_required=trueの場合のみ" }
+                      tenants:
+                        type: array
+                        description: 所属テナント一覧(複数所属時はテナント選択が必要)
+                        items:
+                          type: object
+                          properties:
+                            tenant_id: { type: string, format: uuid }
+                            tenant_name: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /auth/mfa:
+    post:
+      tags: [Auth]
+      summary: MFA(多要素認証)コードを検証しアクセストークンを発行する
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mfa_token, code]
+              properties:
+                mfa_token: { type: string }
+                code: { type: string, description: "6桁のTOTPコード" }
+      responses:
+        "200":
+          description: MFA検証成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { const: true }
+                  data:
+                    type: object
+                    properties:
+                      access_token: { type: string }
+                      refresh_token: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: ログアウトし現在のリフレッシュトークンを失効させる
+      responses:
+        "204": { description: ログアウト成功 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /auth/signup:
+    post:
+      tags: [Auth]
+      summary: 初回サインアップ(新規テナント作成 + オーナーユーザー登録)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SignupRequest" }
+      responses:
+        "201":
+          description: サインアップ成功。作成されたテナントのオーナーとしてセッションを発行する
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { const: true }
+                  data: { $ref: "#/components/schemas/AuthSession" }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /auth/invitations/validate:
+    get:
+      tags: [Auth]
+      summary: 招待トークンの有効性を検証する
+      security: []
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: 有効な招待。招待先のテナント名・メールアドレス・ロールを返す
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { const: true }
+                  data: { $ref: "#/components/schemas/InvitationValidation" }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /auth/accept-invite:
+    post:
+      tags: [Auth]
+      summary: 招待を受諾しテナントへ参加する(新規ユーザー作成、または既存ユーザーへの紐付け)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AcceptInviteRequest" }
+      responses:
+        "200":
+          description: 招待受諾成功。参加したテナントのセッションを発行する
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { const: true }
+                  data: { $ref: "#/components/schemas/AuthSession" }
+                  meta: { $ref: "#/components/schemas/Meta" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  # ----------------------------------------------------------------------------
+  # Tenants / Users
+  # ----------------------------------------------------------------------------
+  /tenants/me:
+    get:
+      tags: [Tenants]
+      summary: 現在のテナント情報を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      responses:
+        "200":
+          description: テナント情報
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantResponse"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /users/me:
+    get:
+      tags: [Users]
+      summary: 現在ログイン中のユーザー情報と所属テナントでのロールを取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      responses:
+        "200":
+          description: ユーザー情報
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ----------------------------------------------------------------------------
+  # Settings (自社情報 / 会計処理設定 / メンバー管理)
+  # 外部時限アクセスの発行・失効・一覧は既存の `tags: [ExternalAccessGrants]`
+  # (`/external-access-grants`)を設定画面からもそのまま利用する(重複実装を避けるため)。
+  # ----------------------------------------------------------------------------
+  /settings/tenant:
+    get:
+      tags: [Settings]
+      summary: 自社(テナント)情報を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      responses:
+        "200":
+          description: 自社情報
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TenantResponse" }
+    patch:
+      tags: [Settings]
+      summary: 自社(テナント)情報を更新する(owner/accounting_managerのみ)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TenantSettingsUpdate" }
+      responses:
+        "200":
+          description: 更新成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TenantResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /settings/accounting:
+    get:
+      tags: [Settings]
+      summary: 会計処理共通設定を取得する(端数処理ルール・デフォルト税区分)
+      description: 未設定のテナントにはデフォルト値(rounding_rule=floor, default_tax_category_id=null)を補完して返す。
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      responses:
+        "200":
+          description: 会計処理設定
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccountingSettingsResponse" }
+    patch:
+      tags: [Settings]
+      summary: 会計処理共通設定を更新する(owner/accounting_managerのみ)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AccountingSettingsUpdate" }
+      responses:
+        "200":
+          description: 更新成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccountingSettingsResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /settings/integrations:
+    get:
+      tags: [Settings]
+      summary: 外部連携設定(AIプロバイダ・銀行/決済コネクタ状態)を取得する(owner/accounting_managerのみ)
+      description: |
+        APIキーは平文では返却されず、末尾4桁以外をマスクした文字列(例: "••••1234")として返す。
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      responses:
+        "200":
+          description: 取得成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IntegrationSettingsResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /settings/integrations/ai:
+    patch:
+      tags: [Settings]
+      summary: AIプロバイダおよびAPIキー設定を更新する(owner/accounting_managerのみ)
+      description: |
+        `api_key` はAES-256-GCMで暗号化して保存され、平文は保持されない。`api_key` を省略した場合は
+        既存のAPIキーを保持したまま `provider` のみを更新する(APIキー入力欄を変更していない場合に
+        再送信不要にするため)。
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AiSettingsUpdate" }
+      responses:
+        "200":
+          description: 更新成功(APIキーはマスクされた状態で返却)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AiIntegrationSettingsResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /settings/integrations/ai/test:
+    post:
+      tags: [Settings]
+      summary: 設定済みAPIキーの導通テストを行う(owner/accounting_managerのみ)
+      description: |
+        保存済みのAIプロバイダ・APIキーを復号し、対象プロバイダへ実際に最小限のリクエスト
+        (モデル一覧取得など、トークン課金の発生しないエンドポイント)を送信して疎通を確認する。
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      responses:
+        "200":
+          description: |
+            テスト実行結果(HTTPステータスは常に200。テスト自体の成否は `data.success` で判定する)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AiConnectionTestResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /settings/members:
+    get:
+      tags: [Settings]
+      summary: テナント所属メンバー一覧(ロール含む)を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      responses:
+        "200":
+          description: メンバー一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TenantMemberListResponse" }
+
+  /settings/members/{userId}/role:
+    patch:
+      tags: [Settings]
+      summary: メンバーのロールを変更する(owner権限のみ。最後の1人のownerは降格不可)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MemberRoleUpdate" }
+      responses:
+        "200":
+          description: 変更成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TenantMemberResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /settings/members/{userId}:
+    delete:
+      tags: [Settings]
+      summary: メンバーをテナントから削除/アクセス停止する(owner権限のみ)
+      description: |
+        `tenant_users.is_active = false` へのフラグ更新(および当該ユーザーの
+        `user_roles` 全削除)によりアクセスを遮断する。過去に作成した仕訳・経費申請・
+        監査ログ等の参照整合性を保つため、`tenant_users` 行自体は物理削除しない。
+        最後の1人のownerは削除不可。操作者自身は削除不可(離脱は別途対応)。
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 削除(アクセス停止)成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TenantMemberResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /settings/members/invitations:
+    get:
+      tags: [Settings]
+      summary: 招待中(未参加・有効期限内・未取消)の招待一覧を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      responses:
+        "200":
+          description: 招待一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemberInvitationListResponse" }
+    post:
+      tags: [Settings]
+      summary: メンバー招待を発行する(owner/accounting_managerのみ)
+      description: |
+        7日間有効な招待トークンを発行する。生トークンはこのレスポンスでのみ返却され、
+        DBにはSHA-256ハッシュのみ保存される(refresh_tokensと同様の方針)。
+        既に同一テナントに所属しているメールアドレス、または招待中のメールアドレスの
+        場合は 409 ALREADY_EXISTS を返す。
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MemberInvitationCreate" }
+      responses:
+        "200":
+          description: 発行成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemberInvitationCreateResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /settings/members/invitations/{invitationId}:
+    delete:
+      tags: [Settings]
+      summary: メンバー招待を取り消す(owner/accounting_managerのみ)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - name: invitationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 取消成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemberInvitationResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ----------------------------------------------------------------------------
+  # Attachments (電帳法)
+  # ----------------------------------------------------------------------------
+  /attachments:
+    get:
+      tags: [Attachments]
+      summary: "添付ファイルを検索する(電帳法検索要件: 取引年月日/金額/取引先)"
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - name: transaction_date_from
+          in: query
+          schema: { type: string, format: date }
+        - name: transaction_date_to
+          in: query
+          schema: { type: string, format: date }
+        - name: amount
+          in: query
+          schema: { type: number }
+        - name: counterparty_name
+          in: query
+          schema: { type: string }
+          description: 部分一致検索(pg_trgm)
+      responses:
+        "200":
+          description: 添付ファイル一覧
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttachmentListResponse"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Attachments]
+      summary: 証憑ファイルをアップロードする
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, transaction_date, amount, counterparty_name]
+              properties:
+                file: { type: string, format: binary }
+                transaction_date: { type: string, format: date }
+                amount: { type: number }
+                counterparty_name: { type: string }
+      responses:
+        "201":
+          description: アップロード成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttachmentResponse"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /attachments/{id}:
+    get:
+      tags: [Attachments]
+      summary: 添付ファイルのメタデータを取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 添付ファイル詳細
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttachmentResponse"
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /attachments/{id}/links:
+    post:
+      tags: [Attachments]
+      summary: 添付ファイルを業務レコード(仕訳/経費明細/請求書等)へ関連付ける
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [linkable_type, linkable_id]
+              properties:
+                linkable_type:
+                  type: string
+                  enum: [journal_entry, expense_report_line, invoice, vendor_bill, fixed_asset]
+                linkable_id: { type: string, format: uuid }
+      responses:
+        "201": { description: 関連付け成功 }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  # ----------------------------------------------------------------------------
+  # Audit Logs (追記専用)
+  # ----------------------------------------------------------------------------
+  /audit-logs:
+    get:
+      tags: [AuditLogs]
+      summary: 監査ログを検索する(閲覧のみ。書き込みAPIは提供しない)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - name: target_type
+          in: query
+          schema: { type: string }
+        - name: target_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: actor_user_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: occurred_from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: occurred_to
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: 監査ログ一覧
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditLogListResponse"
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  # ----------------------------------------------------------------------------
+  # External Access Grants (税理士・監査人)
+  # ----------------------------------------------------------------------------
+  /external-access-grants:
+    get:
+      tags: [ExternalAccessGrants]
+      summary: 外部閲覧者(税理士/監査人)の時限アクセス許可一覧を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/PageParam"
+      responses:
+        "200":
+          description: アクセス許可一覧
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExternalAccessGrantListResponse"
+    post:
+      tags: [ExternalAccessGrants]
+      summary: 外部閲覧者へ期間限定のアクセス許可を付与する(owner/accounting_managerのみ)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExternalAccessGrantCreate"
+      responses:
+        "201":
+          description: 許可付与成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExternalAccessGrantResponse"
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /external-access-grants/{id}/revoke:
+    post:
+      tags: [ExternalAccessGrants]
+      summary: アクセス許可を即時失効させる(valid_untilを現在時刻に更新)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 失効成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExternalAccessGrantResponse"
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ----------------------------------------------------------------------------
+  # Accounts / TaxCategories / Departments (マスタ)
+  # ----------------------------------------------------------------------------
+  /accounts:
+    get:
+      tags: [Accounts]
+      summary: 勘定科目一覧を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - name: account_type
+          in: query
+          schema: { $ref: "#/components/schemas/AccountType" }
+        - name: is_active
+          in: query
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: 勘定科目一覧
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountListResponse"
+    post:
+      tags: [Accounts]
+      summary: 勘定科目を新規作成する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AccountCreate" }
+      responses:
+        "201":
+          description: 作成成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccountResponse" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /accounts/{id}:
+    get:
+      tags: [Accounts]
+      summary: 勘定科目詳細を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 勘定科目詳細
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccountResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Accounts]
+      summary: 勘定科目を更新する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AccountUpdate" }
+      responses:
+        "200":
+          description: 更新成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccountResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /tax-categories:
+    get:
+      tags: [TaxCategories]
+      summary: 税区分一覧を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/PageParam"
+      responses:
+        "200":
+          description: 税区分一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaxCategoryListResponse" }
+    post:
+      tags: [TaxCategories]
+      summary: 税区分を新規作成する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TaxCategoryCreate" }
+      responses:
+        "201":
+          description: 作成成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaxCategoryResponse" }
+
+  /tax-categories/{id}:
+    get:
+      tags: [TaxCategories]
+      summary: 税区分詳細を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 税区分詳細
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaxCategoryResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [TaxCategories]
+      summary: 税区分を更新する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TaxCategoryCreate" }
+      responses:
+        "200":
+          description: 更新成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaxCategoryResponse" }
+
+  /departments:
+    get:
+      tags: [Departments]
+      summary: 部門一覧を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/PageParam"
+      responses:
+        "200":
+          description: 部門一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DepartmentListResponse" }
+    post:
+      tags: [Departments]
+      summary: 部門を新規作成する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DepartmentCreate" }
+      responses:
+        "201":
+          description: 作成成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DepartmentResponse" }
+
+  /departments/{id}:
+    patch:
+      tags: [Departments]
+      summary: 部門を更新する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DepartmentCreate" }
+      responses:
+        "200":
+          description: 更新成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DepartmentResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ----------------------------------------------------------------------------
+  # Journal Entries (会計コア)
+  # ----------------------------------------------------------------------------
+  /journal-entries:
+    get:
+      tags: [JournalEntries]
+      summary: 仕訳を検索する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/JournalEntryStatus" }
+        - name: entry_date_from
+          in: query
+          schema: { type: string, format: date }
+        - name: entry_date_to
+          in: query
+          schema: { type: string, format: date }
+        - name: source_type
+          in: query
+          schema: { type: string }
+        - name: account_id
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 仕訳一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JournalEntryListResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [JournalEntries]
+      summary: 仕訳を草案(draft)として作成する
+      description: |
+        AI提案・手動入力・他業務(経費精算等)からの起票いずれの場合も、
+        まず draft として作成される。この時点では貸借一致は必須検証されない
+        (貸借一致は `POST /journal-entries/{id}/post` 時に厳格検証される)。
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JournalEntryCreate" }
+      responses:
+        "201":
+          description: 作成成功(draft)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JournalEntryResponse" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /journal-entries/{id}:
+    get:
+      tags: [JournalEntries]
+      summary: 仕訳詳細(明細含む)を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 仕訳詳細
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JournalEntryResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [JournalEntries]
+      summary: 仕訳を編集する(draft状態のみ許可。posted以降はDBトリガーが拒否)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JournalEntryUpdate" }
+      responses:
+        "200":
+          description: 更新成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JournalEntryResponse" }
+        "409":
+          description: draft以外の仕訳は編集不可
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /journal-entries/{id}/lines:
+    get:
+      tags: [JournalEntries]
+      summary: 仕訳明細一覧を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 仕訳明細一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JournalEntryLineListResponse" }
+    post:
+      tags: [JournalEntries]
+      summary: 仕訳明細を追加する(draft状態のみ)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JournalEntryLineCreate" }
+      responses:
+        "201":
+          description: 追加成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JournalEntryLineResponse" }
+
+  /journal-entries/{id}/lines/{lineId}:
+    delete:
+      tags: [JournalEntries]
+      summary: 仕訳明細を削除する(draft状態のみ。DBトリガーによりそれ以外は拒否)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+        - name: lineId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: 削除成功 }
+        "409":
+          description: draft以外の仕訳明細は削除不可
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /journal-entries/{id}/post:
+    post:
+      tags: [JournalEntries]
+      summary: 仕訳を確定する(貸借一致をDBトリガーで検証)
+      description: |
+        貸借が一致しない場合は `INVALID_BALANCE` エラーで409を返す
+        (DB側 `fn_check_journal_balance` トリガーによる最終防御)。
+        承認ルールに該当する場合は先に `pending_approval` へ遷移し、
+        全承認完了後に自動的に `posted` となる。
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      responses:
+        "200":
+          description: 確定成功(またはpending_approvalへの遷移)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JournalEntryResponse" }
+        "409":
+          description: 貸借不一致(INVALID_BALANCE)、または明細不足
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              examples:
+                invalid_balance:
+                  value:
+                    success: false
+                    error:
+                      code: INVALID_BALANCE
+                      message: "借方合計と貸方合計が一致しません"
+                      details: []
+
+  /journal-entries/{id}/void:
+    post:
+      tags: [JournalEntries]
+      summary: 仕訳を即時取消する(確定後24時間以内かつ未参照の場合のみ)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        "200":
+          description: 取消成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JournalEntryResponse" }
+        "409":
+          description: 24時間超過、または他レコードから参照済みのため取消不可(VOID_WINDOW_EXPIRED)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /journal-entries/{id}/reverse:
+    post:
+      tags: [JournalEntries]
+      summary: 反対仕訳を起票する(24時間経過後、または既参照の仕訳の訂正手段)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string }
+                entry_date:
+                  type: string
+                  format: date
+                  description: 未指定時は当日日付
+      responses:
+        "201":
+          description: 反対仕訳(draft)を生成
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JournalEntryResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ----------------------------------------------------------------------------
+  # Bank Accounts / Transactions / Auto Rules (領域A)
+  # ----------------------------------------------------------------------------
+  /bank-accounts:
+    get:
+      tags: [BankAccounts]
+      summary: 銀行口座一覧を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/PageParam"
+      responses:
+        "200":
+          description: 銀行口座一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BankAccountListResponse" }
+    post:
+      tags: [BankAccounts]
+      summary: 銀行口座を登録する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BankAccountCreate" }
+      responses:
+        "201":
+          description: 登録成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BankAccountResponse" }
+
+  /bank-accounts/{id}:
+    get:
+      tags: [BankAccounts]
+      summary: 銀行口座詳細を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 銀行口座詳細
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BankAccountResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [BankAccounts]
+      summary: 銀行口座情報を更新する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BankAccountCreate" }
+      responses:
+        "200":
+          description: 更新成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BankAccountResponse" }
+
+  /bank-transactions:
+    get:
+      tags: [BankTransactions]
+      summary: 銀行明細を検索する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - name: bank_account_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: match_status
+          in: query
+          schema: { $ref: "#/components/schemas/BankMatchStatus" }
+        - name: transaction_date_from
+          in: query
+          schema: { type: string, format: date }
+        - name: transaction_date_to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: 銀行明細一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BankTransactionListResponse" }
+
+  /bank-transactions/import-csv:
+    post:
+      tags: [BankTransactions]
+      summary: 銀行明細CSVを取込む(重複はハッシュ照合で自動スキップ)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, bank_account_id]
+              properties:
+                file: { type: string, format: binary }
+                bank_account_id: { type: string, format: uuid }
+                import_profile_id:
+                  type: string
+                  format: uuid
+                  description: 列マッピングプロファイル(未指定時は銀行口座の既定プロファイル)
+      responses:
+        "200":
+          description: 取込結果サマリー
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { const: true }
+                  data:
+                    type: object
+                    properties:
+                      imported_count: { type: integer }
+                      duplicate_skipped_count: { type: integer }
+                      auto_matched_count: { type: integer }
+                      transactions:
+                        type: array
+                        items: { $ref: "#/components/schemas/BankTransaction" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /bank-transactions/{id}:
+    get:
+      tags: [BankTransactions]
+      summary: 銀行明細詳細を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 銀行明細詳細
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BankTransactionResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /bank-transactions/{id}/match:
+    post:
+      tags: [BankTransactions]
+      summary: 銀行明細を手動で消込先(請求書/仕入請求書/仕訳)に紐付ける
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target_type, target_id]
+              properties:
+                target_type:
+                  type: string
+                  enum: [invoice, vendor_bill, journal_entry]
+                target_id: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 消込成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BankTransactionResponse" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /auto-journal-rules:
+    get:
+      tags: [AutoJournalRules]
+      summary: 自動仕訳ルール一覧を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/PageParam"
+      responses:
+        "200":
+          description: 自動仕訳ルール一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutoJournalRuleListResponse" }
+    post:
+      tags: [AutoJournalRules]
+      summary: 自動仕訳ルールを作成する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AutoJournalRuleCreate" }
+      responses:
+        "201":
+          description: 作成成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutoJournalRuleResponse" }
+
+  /auto-journal-rules/{id}:
+    patch:
+      tags: [AutoJournalRules]
+      summary: 自動仕訳ルールを更新する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AutoJournalRuleCreate" }
+      responses:
+        "200":
+          description: 更新成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutoJournalRuleResponse" }
+    delete:
+      tags: [AutoJournalRules]
+      summary: 自動仕訳ルールを無効化する(is_active=false。物理削除は行わない)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "204": { description: 無効化成功 }
+
+  # ----------------------------------------------------------------------------
+  # Customers / Vendors (取引先マスタ)
+  # ----------------------------------------------------------------------------
+  /customers:
+    get:
+      tags: [Customers]
+      summary: 顧客一覧を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/PageParam"
+        - name: q
+          in: query
+          description: 名称・カナ名のあいまい検索
+          schema: { type: string }
+      responses:
+        "200":
+          description: 顧客一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CustomerListResponse" }
+    post:
+      tags: [Customers]
+      summary: 顧客を新規作成する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CustomerCreate" }
+      responses:
+        "201":
+          description: 作成成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CustomerResponse" }
+
+  /customers/{id}:
+    get:
+      tags: [Customers]
+      summary: 顧客詳細を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 顧客詳細
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CustomerResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Customers]
+      summary: 顧客情報を更新する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CustomerCreate" }
+      responses:
+        "200":
+          description: 更新成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CustomerResponse" }
+
+  /vendors:
+    get:
+      tags: [Vendors]
+      summary: 仕入先一覧を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/PageParam"
+        - name: q
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: 仕入先一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VendorListResponse" }
+    post:
+      tags: [Vendors]
+      summary: 仕入先を新規作成する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VendorCreate" }
+      responses:
+        "201":
+          description: 作成成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VendorResponse" }
+
+  /vendors/{id}:
+    get:
+      tags: [Vendors]
+      summary: 仕入先詳細を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 仕入先詳細
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VendorResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Vendors]
+      summary: 仕入先情報を更新する(全銀FB振込先情報を含む)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VendorCreate" }
+      responses:
+        "200":
+          description: 更新成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VendorResponse" }
+
+  # ----------------------------------------------------------------------------
+  # Invoices (売上請求書 = Accounts Receivable)
+  # ----------------------------------------------------------------------------
+  /invoices:
+    get:
+      tags: [Invoices]
+      summary: 売上請求書を検索する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/InvoiceStatus" }
+        - name: customer_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: due_date_from
+          in: query
+          schema: { type: string, format: date }
+        - name: due_date_to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: 売上請求書一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InvoiceListResponse" }
+    post:
+      tags: [Invoices]
+      summary: 売上請求書を草案(draft)として作成する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InvoiceCreate" }
+      responses:
+        "201":
+          description: 作成成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InvoiceResponse" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /invoices/{id}:
+    get:
+      tags: [Invoices]
+      summary: 売上請求書詳細(明細含む)を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 売上請求書詳細
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InvoiceResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Invoices]
+      summary: 売上請求書を編集する(draft状態のみ)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InvoiceCreate" }
+      responses:
+        "200":
+          description: 更新成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InvoiceResponse" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /invoices/{id}/issue:
+    post:
+      tags: [Invoices]
+      summary: 売上請求書を発行する(売上計上仕訳を自動起票し、以後は追記専用化)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      responses:
+        "200":
+          description: 発行成功(status=issued)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InvoiceResponse" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /invoices/{id}/void:
+    post:
+      tags: [Invoices]
+      summary: 売上請求書を取消す(発行後24時間以内かつ未入金の場合のみ)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      responses:
+        "200":
+          description: 取消成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InvoiceResponse" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /invoices/{id}/credit-notes:
+    post:
+      tags: [Invoices]
+      summary: 発行済み請求書に対する訂正(クレジットノート)を起票する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, reason]
+              properties:
+                amount: { type: number }
+                reason: { type: string }
+      responses:
+        "201":
+          description: クレジットノート作成成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreditNoteResponse" }
+
+  /invoices/{id}/payments:
+    get:
+      tags: [Invoices]
+      summary: 請求書に対する入金消込履歴を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 入金消込一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InvoicePaymentListResponse" }
+    post:
+      tags: [Invoices]
+      summary: 売掛金の入金消込を手動で記録する(一部入金・過入金に対応)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [payment_date, amount]
+              properties:
+                payment_date: { type: string, format: date }
+                amount: { type: number }
+                bank_transaction_id: { type: string, format: uuid }
+      responses:
+        "201":
+          description: |
+            消込成功。全額消込の場合 invoice.status=paid、
+            一部消込の場合は partially_paid へ遷移する。
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InvoicePaymentResponse" }
+
+  # ----------------------------------------------------------------------------
+  # Vendor Bills (仕入請求書/買掛金 = Accounts Payable)
+  # ----------------------------------------------------------------------------
+  /vendor-bills:
+    get:
+      tags: [VendorBills]
+      summary: 仕入請求書/買掛金を検索する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/VendorBillStatus" }
+        - name: vendor_id
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 仕入請求書一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VendorBillListResponse" }
+    post:
+      tags: [VendorBills]
+      summary: 仕入請求書/買掛金を草案(draft)として登録する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VendorBillCreate" }
+      responses:
+        "201":
+          description: 登録成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VendorBillResponse" }
+
+  /vendor-bills/{id}:
+    get:
+      tags: [VendorBills]
+      summary: 仕入請求書詳細(明細含む)を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 仕入請求書詳細
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VendorBillResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [VendorBills]
+      summary: 仕入請求書を編集する(draft状態のみ)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VendorBillCreate" }
+      responses:
+        "200":
+          description: 更新成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VendorBillResponse" }
+
+  /vendor-bills/{id}/submit:
+    post:
+      tags: [VendorBills]
+      summary: 承認申請を提出する(approval_rulesに従いapproval_requestsを生成)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      responses:
+        "200":
+          description: 提出成功(status=pending_approval、または承認不要な場合はapproved)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VendorBillResponse" }
+
+  /vendor-bills/{id}/payments:
+    get:
+      tags: [VendorBills]
+      summary: 仕入請求書に対する支払消込履歴を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 支払消込一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VendorBillPaymentListResponse" }
+    post:
+      tags: [VendorBills]
+      summary: 買掛金の支払消込を手動で記録する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [payment_date, amount]
+              properties:
+                payment_date: { type: string, format: date }
+                amount: { type: number }
+                bank_transaction_id: { type: string, format: uuid }
+      responses:
+        "201":
+          description: 消込成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VendorBillPaymentResponse" }
+
+  # ----------------------------------------------------------------------------
+  # Payment Batches (全銀協FB出力)
+  # ----------------------------------------------------------------------------
+  /payment-batches:
+    get:
+      tags: [PaymentBatches]
+      summary: 支払バッチ一覧を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/PageParam"
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/PaymentBatchStatus" }
+      responses:
+        "200":
+          description: 支払バッチ一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentBatchListResponse" }
+
+  /payment-batches/{id}:
+    get:
+      tags: [PaymentBatches]
+      summary: 支払バッチ詳細(明細含む)を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 支払バッチ詳細
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentBatchResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /payment-batches/export-zengin:
+    post:
+      tags: [PaymentBatches]
+      summary: 承認済みの支払対象(仕入請求書/経費立替金/給与)を集計し全銀協FBデータを生成する
+      description: |
+        対象明細はこの時点でスナップショットとして `payment_batch_items` に固定される
+        (以後の請求書変更の影響を受けない)。生成後は `status=exported` となり、
+        再生成不可(改版時は新バッチを作成する)。
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [payment_date, sources]
+              properties:
+                payment_date: { type: string, format: date }
+                sources:
+                  type: array
+                  description: 支払対象の発生源を横断的に指定する(未指定項目は対象外)
+                  items:
+                    type: object
+                    required: [source_type, source_id]
+                    properties:
+                      source_type:
+                        type: string
+                        enum: [vendor_bill, expense_reimbursement, payroll]
+                      source_id: { type: string, format: uuid }
+      responses:
+        "201":
+          description: 全銀協FBデータ生成成功(ダウンロードURLを含む)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PaymentBatchResponse"
+                  - type: object
+                    properties:
+                      data:
+                        allOf:
+                          - $ref: "#/components/schemas/PaymentBatch"
+                          - type: object
+                            properties:
+                              download_url:
+                                type: string
+                                format: uri
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  # ----------------------------------------------------------------------------
+  # Expense Reports (領域B)
+  # ----------------------------------------------------------------------------
+  /expense-reports:
+    get:
+      tags: [ExpenseReports]
+      summary: 経費精算申請を検索する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/ExpenseReportStatus" }
+        - name: on_behalf_of
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 経費精算申請一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExpenseReportListResponse" }
+    post:
+      tags: [ExpenseReports]
+      summary: |
+        経費精算を申請する(本人申請/代理申請)。
+        申請と同時に先行draft仕訳が生成され、承認ルールが評価される。
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ExpenseReportCreate" }
+      responses:
+        "201":
+          description: 申請成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExpenseReportResponse" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /expense-reports/ocr:
+    post:
+      tags: [ExpenseReports]
+      summary: |
+        レシート・領収書画像をVision AI(設定済みのAIプロバイダー)で解析し、取引情報を
+        `ai_suggestions`(target_type='expense_report', suggestion_type='ocr')へ追記保存する。
+        1枚の画像内に複数のレシート・領収書が写っている場合は、検出した数だけ個別の
+        提案レコードを追記し、その数だけ`suggestions`配列の要素として返す。
+        `expense_report_id`は既存申請への明細追加時はその申請id、新規申請作成中は
+        `POST /expense-reports`にも渡す予定のUUIDを指定する。
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, expense_report_id]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: 領収書・レシート画像(JPEG/PNG/PDF)
+                expense_report_id:
+                  type: string
+                  format: uuid
+      responses:
+        "201":
+          description: 抽出成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExpenseReportOcrResultResponse" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /expense-reports/{id}:
+    get:
+      tags: [ExpenseReports]
+      summary: 経費精算申請詳細(明細含む)を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 経費精算申請詳細
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExpenseReportResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /expense-reports/{id}/lines:
+    post:
+      tags: [ExpenseReports]
+      summary: 経費明細を追加する(交通費/出張旅費/日当等)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ExpenseReportLineCreate" }
+      responses:
+        "201":
+          description: 追加成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExpenseReportLineResponse" }
+
+  # ----------------------------------------------------------------------------
+  # Approval Requests (共通承認ワークフロー)
+  # ----------------------------------------------------------------------------
+  /approval-requests:
+    get:
+      tags: [ApprovalRequests]
+      summary: 承認待ち・承認済みの申請を検索する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/ApprovalRequestStatus" }
+        - name: target_type
+          in: query
+          schema:
+            type: string
+            enum: [journal_entry, expense_report, vendor_bill]
+        - name: pending_for_me
+          in: query
+          description: 現在のユーザーが次の承認ステップの承認者である申請のみに絞り込む
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: 承認申請一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApprovalRequestListResponse" }
+
+  /approval-requests/{id}:
+    get:
+      tags: [ApprovalRequests]
+      summary: 承認申請詳細(承認履歴含む)を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 承認申請詳細
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApprovalRequestResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /approval-requests/{id}/approve:
+    post:
+      tags: [ApprovalRequests]
+      summary: 承認する
+      description: |
+        申請者本人による承認(自己承認)は `SELF_APPROVAL_NOT_ALLOWED` エラーで
+        409を返す(DB側 `fn_prevent_self_approval` トリガーによる最終防御)。
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                comment: { type: string }
+      responses:
+        "200":
+          description: 承認成功(全ステップ完了時は対象リソースがposted/approvedへ遷移)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApprovalRequestResponse" }
+        "409":
+          description: 自己承認、または既に完了した申請への操作
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              examples:
+                self_approval:
+                  value:
+                    success: false
+                    error:
+                      code: SELF_APPROVAL_NOT_ALLOWED
+                      message: "申請者本人は承認者になれません"
+                      details: []
+
+  /approval-requests/{id}/reject:
+    post:
+      tags: [ApprovalRequests]
+      summary: 却下する(対象リソースはdraft等へ差し戻される)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [comment]
+              properties:
+                comment: { type: string }
+      responses:
+        "200":
+          description: 却下成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApprovalRequestResponse" }
+
+  # ----------------------------------------------------------------------------
+  # Recurring Journal Templates (定期仕訳)
+  # ----------------------------------------------------------------------------
+  /recurring-journal-templates:
+    get:
+      tags: [RecurringJournalTemplates]
+      summary: 定期仕訳テンプレート一覧を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/PageParam"
+      responses:
+        "200":
+          description: 定期仕訳テンプレート一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecurringJournalTemplateListResponse" }
+    post:
+      tags: [RecurringJournalTemplates]
+      summary: 定期仕訳テンプレートを作成する(家賃・リース料等の固定費自動起票)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RecurringJournalTemplateCreate" }
+      responses:
+        "201":
+          description: 作成成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecurringJournalTemplateResponse" }
+
+  /recurring-journal-templates/{id}:
+    patch:
+      tags: [RecurringJournalTemplates]
+      summary: 定期仕訳テンプレートを更新する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RecurringJournalTemplateCreate" }
+      responses:
+        "200":
+          description: 更新成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecurringJournalTemplateResponse" }
+    delete:
+      tags: [RecurringJournalTemplates]
+      summary: 定期仕訳テンプレートを無効化する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "204": { description: 無効化成功 }
+
+  /recurring-journal-templates/{id}/run:
+    post:
+      tags: [RecurringJournalTemplates]
+      summary: テンプレートを手動起動し当月分のdraft仕訳を生成する(通常はバッチが自動実行)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      responses:
+        "201":
+          description: draft仕訳を生成
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JournalEntryResponse" }
+
+  # ----------------------------------------------------------------------------
+  # Fixed Assets (領域C)
+  # ----------------------------------------------------------------------------
+  /fixed-assets:
+    get:
+      tags: [FixedAssets]
+      summary: 固定資産台帳を検索する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/FixedAssetStatus" }
+      responses:
+        "200":
+          description: 固定資産一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FixedAssetListResponse" }
+    post:
+      tags: [FixedAssets]
+      summary: 固定資産を登録する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FixedAssetCreate" }
+      responses:
+        "201":
+          description: 登録成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FixedAssetResponse" }
+
+  /fixed-assets/{id}:
+    get:
+      tags: [FixedAssets]
+      summary: 固定資産詳細(償却スケジュール含む)を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 固定資産詳細
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FixedAssetResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [FixedAssets]
+      summary: 固定資産情報を更新する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FixedAssetCreate" }
+      responses:
+        "200":
+          description: 更新成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FixedAssetResponse" }
+
+  /fixed-assets/{id}/dispose:
+    post:
+      tags: [FixedAssets]
+      summary: 固定資産を除却・売却する(除却損/売却損益を自動仕訳)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [disposal_date, disposal_type]
+              properties:
+                disposal_date: { type: string, format: date }
+                disposal_type: { type: string, enum: [disposed, sold] }
+                proceeds_amount: { type: number, default: 0 }
+      responses:
+        "200":
+          description: 除却・売却成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FixedAssetResponse" }
+
+  /fixed-assets/depreciation-runs:
+    post:
+      tags: [FixedAssets]
+      summary: 月次減価償却バッチを実行する(稼働中の全資産を対象にdraft仕訳を一括生成)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fiscal_period_id]
+              properties:
+                fiscal_period_id: { type: string, format: uuid }
+                asset_ids:
+                  type: array
+                  description: 未指定時は稼働中の全資産が対象
+                  items: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 償却バッチ実行結果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { const: true }
+                  data:
+                    type: object
+                    properties:
+                      processed_count: { type: integer }
+                      journal_entry_ids:
+                        type: array
+                        items: { type: string, format: uuid }
+
+  # ----------------------------------------------------------------------------
+  # Reports (試算表・財務三表)
+  # ----------------------------------------------------------------------------
+  /reports/trial-balance:
+    get:
+      tags: [Reports]
+      summary: 試算表を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - name: fiscal_period_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: date_from
+          in: query
+          schema: { type: string, format: date }
+        - name: date_to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: 試算表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TrialBalanceResponse" }
+
+  /reports/pl:
+    get:
+      tags: [Reports]
+      summary: 損益計算書(PL)を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - name: fiscal_year_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: date_from
+          in: query
+          schema: { type: string, format: date }
+        - name: date_to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: 損益計算書
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FinancialStatementResponse" }
+
+  /reports/bs:
+    get:
+      tags: [Reports]
+      summary: 貸借対照表(BS)を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - name: as_of_date
+          in: query
+          required: true
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: 貸借対照表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FinancialStatementResponse" }
+
+  /reports/cash-flow:
+    get:
+      tags: [Reports]
+      summary: キャッシュ・フロー計算書(CF)を取得する
+      description: |
+        確定済み仕訳(status='posted')のうち、現金及び現金同等物(現金・預金勘定)に
+        影響を与える仕訳行を直接法で集計し、相手科目の区分(固定資産科目/純資産科目/その他)に
+        基づき「営業活動」「投資活動」「財務活動」の3区分に分類する。
+        期首残高 + 3区分合計 = 期末残高となり、貸借対照表の現金・預金残高と整合する。
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - name: fiscal_year_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: date_from
+          in: query
+          schema: { type: string, format: date }
+        - name: date_to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: キャッシュ・フロー計算書
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CashFlowStatementResponse" }
+
+  # ----------------------------------------------------------------------------
+  # Consumption Tax Returns (消費税申告)
+  # ----------------------------------------------------------------------------
+  /consumption-tax-returns:
+    get:
+      tags: [ConsumptionTaxReturns]
+      summary: 消費税申告一覧を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/PageParam"
+      responses:
+        "200":
+          description: 消費税申告一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConsumptionTaxReturnListResponse" }
+    post:
+      tags: [ConsumptionTaxReturns]
+      summary: |
+        指定した会計年度・課税方式(本則/簡易/2割特例)で消費税申告データを新規作成し計算する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fiscal_year_id, filing_method]
+              properties:
+                fiscal_year_id: { type: string, format: uuid }
+                filing_method: { $ref: "#/components/schemas/TaxFilingMethod" }
+      responses:
+        "201":
+          description: 作成・計算成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConsumptionTaxReturnResponse" }
+
+  /consumption-tax-returns/{id}:
+    get:
+      tags: [ConsumptionTaxReturns]
+      summary: 消費税申告詳細(区分別内訳含む)を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 消費税申告詳細
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConsumptionTaxReturnResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /consumption-tax-returns/{id}/calculate:
+    post:
+      tags: [ConsumptionTaxReturns]
+      summary: 最新の仕訳データに基づき税額を再計算する(draft状態のみ)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      responses:
+        "200":
+          description: 再計算成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConsumptionTaxReturnResponse" }
+
+  /consumption-tax-returns/{id}/finalize:
+    post:
+      tags: [ConsumptionTaxReturns]
+      summary: 消費税申告を確定する(以後は追記専用)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      responses:
+        "200":
+          description: 確定成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConsumptionTaxReturnResponse" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  # ----------------------------------------------------------------------------
+  # Payroll Imports (領域D)
+  # ----------------------------------------------------------------------------
+  /payroll-import-mappings:
+    get:
+      tags: [PayrollImports]
+      summary: 給与CSV取込マッピング設定の一覧を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - name: is_active
+          in: query
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: 給与CSV取込マッピング設定一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PayrollImportMappingListResponse" }
+    post:
+      tags: [PayrollImports]
+      summary: 給与CSV取込マッピング設定を作成する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PayrollImportMappingCreate" }
+      responses:
+        "201":
+          description: 作成成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PayrollImportMappingResponse" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /payroll-import-mappings/{id}:
+    patch:
+      tags: [PayrollImports]
+      summary: 給与CSV取込マッピング設定を更新する(無効化はis_active:falseで表現する)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PayrollImportMappingCreate" }
+      responses:
+        "200":
+          description: 更新成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PayrollImportMappingResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /payroll-imports:
+    get:
+      tags: [PayrollImports]
+      summary: 給与インポート履歴一覧を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/PageParam"
+      responses:
+        "200":
+          description: 給与インポート履歴一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PayrollImportListResponse" }
+
+  /payroll-imports/{id}:
+    get:
+      tags: [PayrollImports]
+      summary: 給与インポート詳細(従業員別明細含む)を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 給与インポート詳細
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PayrollImportResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /payroll-imports/csv:
+    post:
+      tags: [PayrollImports]
+      summary: |
+        給与ソフトCSVを取込み、役員報酬/給与手当/預り金各種/法定福利費への
+        複合仕訳(draft)を1トランザクションで自動生成する。
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, import_mapping_id, pay_period_start, pay_period_end, payment_date]
+              properties:
+                file: { type: string, format: binary }
+                import_mapping_id: { type: string, format: uuid }
+                pay_period_start: { type: string, format: date }
+                pay_period_end: { type: string, format: date }
+                payment_date: { type: string, format: date }
+      responses:
+        "201":
+          description: 取込・複合仕訳生成成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PayrollImportResponse" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /payroll-imports/{id}/post:
+    post:
+      tags: [PayrollImports]
+      summary: 複合仕訳を確定する(accounting_managerによる最終承認が必須)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      responses:
+        "200":
+          description: 確定成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PayrollImportResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  # ----------------------------------------------------------------------------
+  # AI Suggestions (AI提案の隔離)
+  # ----------------------------------------------------------------------------
+  /ai/suggestions:
+    get:
+      tags: [AiSuggestions]
+      summary: AI提案を検索する(確定データとは物理的に分離された領域)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - name: target_type
+          in: query
+          schema:
+            type: string
+            enum: [journal_entry, expense_report_line, bank_transaction, vendor_bill]
+        - name: target_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: suggestion_type
+          in: query
+          schema:
+            type: string
+            enum: [account_code, tax_category, reconciliation_match, anomaly_flag]
+        - name: accepted
+          in: query
+          description: 未判定のみ取得する場合は指定しない
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: AI提案一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AiSuggestionListResponse" }
+
+  /ai/suggestions/{id}:
+    get:
+      tags: [AiSuggestions]
+      summary: AI提案詳細を取得する(候補データ・信頼度スコアを含む)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: AI提案詳細
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AiSuggestionResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /ai/suggestions/{id}/accept:
+    post:
+      tags: [AiSuggestions]
+      summary: |
+        AI提案を採用する。この操作自体は確定処理ではなく、対象の
+        草案(draft)レコードへ提案内容を反映する決定的ロジックをトリガーする
+        (例: 提案された勘定科目コードを検証した上でjournal_entry_lines.account_idへ反映)。
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      responses:
+        "200":
+          description: 採用成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AiSuggestionResponse" }
+        "409":
+          description: 対象レコードが既にdraft以外へ遷移しているため反映不可
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /ai/suggestions/{id}/reject:
+    post:
+      tags: [AiSuggestions]
+      summary: AI提案を不採用にする
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        "200":
+          description: 不採用成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AiSuggestionResponse" }
+
+# ==============================================================================
+# COMPONENTS
+# ==============================================================================
+components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWTアクセストークン。`tenant_id` クレームを含み、`X-Tenant-ID` ヘッダーと
+        一致しない場合はAPI層で403 (`TENANT_MISMATCH`) を返す。
+
+  parameters:
+    TenantIdHeader:
+      name: X-Tenant-ID
+      in: header
+      required: true
+      description: 操作対象テナントのUUID。JWTクレームの tenant_id と一致する必要がある。
+      schema: { type: string, format: uuid }
+
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: |
+        副作用を伴うPOST操作の冪等性を保証するクライアント生成キー(推奨: UUID)。
+        同一キーでの再送は最初のレスポンスをそのまま返す。
+      schema: { type: string }
+
+    IdPathParam:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+    PageParam:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+
+    PageSizeParam:
+      name: page_size
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+
+  responses:
+    BadRequest:
+      description: リクエストが不正です
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    Unauthorized:
+      description: 認証に失敗しました(トークン欠落・無効・期限切れ)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    Forbidden:
+      description: 権限がありません(RBAC不足、またはX-Tenant-IDとJWTクレームの不一致)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    NotFound:
+      description: リソースが見つかりません(RLSにより越境アクセス時も同一の404を返す)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    Conflict:
+      description: 状態遷移ルール・DB制約違反等によりリクエストを実行できません
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    UnprocessableEntity:
+      description: 入力値のバリデーションエラー
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  schemas:
+
+    # ---- 共通エンベロープ ----
+    Meta:
+      type: object
+      properties:
+        request_id: { type: string, format: uuid }
+        pagination:
+          type: object
+          properties:
+            page: { type: integer }
+            page_size: { type: integer }
+            total_count: { type: integer }
+            total_pages: { type: integer }
+
+    ApiError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: |
+            例: INVALID_BALANCE, VALIDATION_ERROR, NOT_FOUND, UNAUTHORIZED, FORBIDDEN,
+            TENANT_MISMATCH, IDEMPOTENCY_KEY_CONFLICT, VOID_WINDOW_EXPIRED,
+            SELF_APPROVAL_NOT_ALLOWED, DUPLICATE_IMPORT, CONFLICT, ALREADY_EXISTS,
+            INVITATION_EXPIRED, INVITATION_REVOKED, INVITATION_ALREADY_ACCEPTED
+        message: { type: string }
+        details:
+          type: array
+          items: { type: object }
+
+    ErrorResponse:
+      type: object
+      required: [success, error]
+      properties:
+        success: { const: false }
+        error: { $ref: "#/components/schemas/ApiError" }
+
+    # ---- Enums (DBのENUM型と対応) ----
+    AccountType:
+      type: string
+      enum: [asset, liability, equity, revenue, expense]
+    DebitCredit:
+      type: string
+      enum: [debit, credit]
+    JournalEntryStatus:
+      type: string
+      enum: [draft, pending_approval, posted, rejected, voided, reversed]
+    InvoiceStatus:
+      type: string
+      enum: [draft, issued, partially_paid, paid, overdue, voided, credit_note_issued]
+    VendorBillStatus:
+      type: string
+      enum: [draft, pending_approval, approved, rejected, scheduled_for_payment, paid]
+    BankMatchStatus:
+      type: string
+      enum: [unmatched, auto_matched, manually_matched, reconciled, ignored]
+    PaymentBatchStatus:
+      type: string
+      enum: [draft, exported, completed, cancelled]
+    ExpenseReportStatus:
+      type: string
+      enum: [submitted, in_review, approved, rejected, reimbursement_scheduled, reimbursed]
+    PaymentMethod:
+      type: string
+      enum: [cash, corporate_card, bank_transfer, employee_advance]
+    ApprovalAction:
+      type: string
+      enum: [approve, reject]
+    ApprovalRequestStatus:
+      type: string
+      enum: [pending, approved, rejected]
+    DepreciationMethod:
+      type: string
+      enum: [straight_line, declining_balance]
+    FixedAssetStatus:
+      type: string
+      enum: [active, disposed, sold]
+    TaxFilingMethod:
+      type: string
+      enum: [general, simplified, twenty_percent_special]
+    TaxType:
+      type: string
+      enum: [taxable, non_taxable, exempt, out_of_scope]
+
+    # ---- Auth (signup / invite) ----
+    SignupRequest:
+      type: object
+      required: [email, password, name, tenant_name]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, format: password, minLength: 8 }
+        name: { type: string, description: "ユーザー名" }
+        tenant_name: { type: string, description: "会社/テナント名" }
+    AuthSession:
+      type: object
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        mfa_required: { const: false }
+        tenants:
+          type: array
+          items:
+            type: object
+            properties:
+              tenant_id: { type: string, format: uuid }
+              tenant_name: { type: string }
+    InvitationValidation:
+      type: object
+      properties:
+        tenant_name: { type: string }
+        email: { type: string, format: email }
+        role:
+          type: string
+          enum: [owner, accounting_manager, accountant, approver, employee, payroll_admin, viewer_external, system_service]
+    AcceptInviteRequest:
+      type: object
+      required: [token, password, name]
+      properties:
+        token: { type: string, description: "招待メール/URLに含まれる生トークン" }
+        password: { type: string, format: password, minLength: 8 }
+        name: { type: string, description: "ユーザー名(既存アカウントに紐付く場合は無視される)" }
+
+    # ---- Tenant / User ----
+    Tenant:
+      type: object
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        name: { type: string }
+        legal_name: { type: string }
+        representative_name: { type: string, nullable: true, description: "代表者名" }
+        address: { type: string, nullable: true, description: "所在地" }
+        fiscal_year_start_month: { type: integer, minimum: 1, maximum: 12 }
+        invoice_registration_number: { type: string, nullable: true, description: "適格請求書発行事業者登録番号(T+数字13桁)" }
+        consumption_tax_filing_method: { $ref: "#/components/schemas/TaxFilingMethod" }
+        base_currency_code: { type: string, minLength: 3, maxLength: 3 }
+        is_active: { type: boolean, readOnly: true }
+    TenantSettingsUpdate:
+      type: object
+      properties:
+        name: { type: string }
+        legal_name: { type: string }
+        representative_name: { type: string }
+        address: { type: string }
+        fiscal_year_start_month: { type: integer, minimum: 1, maximum: 12 }
+        invoice_registration_number:
+          type: string
+          nullable: true
+          pattern: "^T\\d{13}$"
+          description: "適格請求書発行事業者登録番号(T+数字13桁)"
+        consumption_tax_filing_method: { $ref: "#/components/schemas/TaxFilingMethod" }
+        base_currency_code: { type: string, minLength: 3, maxLength: 3 }
+    TenantResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/Tenant" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    AccountingSettings:
+      type: object
+      readOnly: true
+      properties:
+        rounding_rule:
+          type: string
+          enum: [floor, ceil, round]
+          description: "端数処理ルール(floor=切り捨て/ceil=切り上げ/round=四捨五入)"
+        default_tax_category_id: { type: string, format: uuid, nullable: true }
+    AccountingSettingsUpdate:
+      type: object
+      properties:
+        rounding_rule: { type: string, enum: [floor, ceil, round] }
+        default_tax_category_id: { type: string, format: uuid, nullable: true }
+    AccountingSettingsResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/AccountingSettings" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    AiIntegrationSettings:
+      type: object
+      readOnly: true
+      properties:
+        provider:
+          type: string
+          nullable: true
+          enum: [gemini, openai, anthropic]
+        api_key_masked:
+          type: string
+          nullable: true
+          description: "末尾4桁のみ表示するマスク済みAPIキー(例: \"••••1234\")。未設定時はnull"
+        has_api_key: { type: boolean }
+        last_tested_at: { type: string, format: date-time, nullable: true }
+        last_test_result:
+          type: string
+          nullable: true
+          enum: [success, failure]
+    BankConnectorStatus:
+      type: object
+      readOnly: true
+      properties:
+        status:
+          type: string
+          enum: [not_connected, connected]
+    IntegrationSettings:
+      type: object
+      readOnly: true
+      properties:
+        ai: { $ref: "#/components/schemas/AiIntegrationSettings" }
+        bank_connector: { $ref: "#/components/schemas/BankConnectorStatus" }
+    IntegrationSettingsResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/IntegrationSettings" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    AiSettingsUpdate:
+      type: object
+      required: [provider]
+      properties:
+        provider:
+          type: string
+          enum: [gemini, openai, anthropic]
+        api_key:
+          type: string
+          description: 省略時は既存のAPIキーを保持したままproviderのみ更新する
+    AiIntegrationSettingsResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/AiIntegrationSettings" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    AiConnectionTestResult:
+      type: object
+      readOnly: true
+      properties:
+        success: { type: boolean }
+        message: { type: string }
+        http_status: { type: integer, nullable: true }
+    AiConnectionTestResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/AiConnectionTestResult" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    TenantMember:
+      type: object
+      readOnly: true
+      properties:
+        user_id: { type: string, format: uuid }
+        email: { type: string, format: email, nullable: true }
+        name: { type: string }
+        employee_code: { type: string, nullable: true }
+        department: { type: string, nullable: true }
+        is_active: { type: boolean, description: "テナントへの所属自体が有効か(tenant_users.is_active)" }
+        roles:
+          type: array
+          items:
+            type: string
+            enum: [owner, accounting_manager, accountant, approver, employee, payroll_admin, viewer_external, system_service]
+    TenantMemberListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/TenantMember" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    TenantMemberResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/TenantMember" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    MemberRoleUpdate:
+      type: object
+      required: [role]
+      properties:
+        role:
+          type: string
+          enum: [owner, accounting_manager, accountant, approver, employee, payroll_admin, viewer_external, system_service]
+
+    MemberInvitation:
+      type: object
+      readOnly: true
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        role:
+          type: string
+          enum: [owner, accounting_manager, accountant, approver, employee, payroll_admin, viewer_external, system_service]
+        expires_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+    MemberInvitationCreate:
+      type: object
+      required: [email, role]
+      properties:
+        email: { type: string, format: email }
+        role:
+          type: string
+          enum: [owner, accounting_manager, accountant, approver, employee, payroll_admin, viewer_external, system_service]
+    MemberInvitationCreated:
+      allOf:
+        - $ref: "#/components/schemas/MemberInvitation"
+        - type: object
+          properties:
+            token: { type: string, description: "招待の生トークン。このレスポンスでのみ返却される" }
+            invite_url: { type: string, description: "招待受諾用URL(tokenをクエリパラメータに含む)" }
+    MemberInvitationCreateResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/MemberInvitationCreated" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    MemberInvitationListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/MemberInvitation" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    MemberInvitationResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/MemberInvitation" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        email: { type: string, format: email }
+        name: { type: string }
+        is_active: { type: boolean }
+        roles:
+          type: array
+          description: 現在のテナントにおけるロールコード一覧
+          items:
+            type: string
+            enum: [owner, accounting_manager, accountant, approver, employee, payroll_admin, viewer_external, system_service]
+    UserResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/User" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    # ---- Attachments ----
+    Attachment:
+      type: object
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        file_name: { type: string }
+        storage_path: { type: string, readOnly: true }
+        mime_type: { type: string }
+        file_hash: { type: string, readOnly: true }
+        transaction_date: { type: string, format: date }
+        amount: { type: number }
+        counterparty_name: { type: string }
+        uploaded_by: { type: string, format: uuid, readOnly: true }
+        uploaded_at: { type: string, format: date-time, readOnly: true }
+    AttachmentResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/Attachment" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    AttachmentListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Attachment" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    # ---- Audit Logs ----
+    AuditLog:
+      type: object
+      readOnly: true
+      properties:
+        id: { type: string, format: uuid }
+        actor_user_id: { type: string, format: uuid, nullable: true }
+        action: { type: string, description: "例: journal_entry.posted, invoice.issued" }
+        target_type: { type: string }
+        target_id: { type: string, format: uuid, nullable: true }
+        before_data: { type: object, nullable: true }
+        after_data: { type: object, nullable: true }
+        ip_address: { type: string, nullable: true }
+        occurred_at: { type: string, format: date-time }
+    AuditLogListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/AuditLog" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    # ---- External Access Grants ----
+    ExternalAccessGrant:
+      type: object
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        user_id: { type: string, format: uuid }
+        valid_from: { type: string, format: date-time }
+        valid_until: { type: string, format: date-time }
+        can_export: { type: boolean, default: false }
+        granted_by: { type: string, format: uuid, readOnly: true }
+        granted_at: { type: string, format: date-time, readOnly: true }
+    ExternalAccessGrantCreate:
+      type: object
+      required: [user_id, valid_from, valid_until]
+      properties:
+        user_id: { type: string, format: uuid }
+        valid_from: { type: string, format: date-time }
+        valid_until: { type: string, format: date-time }
+        can_export: { type: boolean, default: false }
+    ExternalAccessGrantResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/ExternalAccessGrant" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    ExternalAccessGrantListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/ExternalAccessGrant" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    # ---- Accounts / TaxCategories / Departments ----
+    Account:
+      type: object
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        code: { type: string }
+        name: { type: string }
+        category_id: { type: string, format: uuid, nullable: true }
+        account_type: { $ref: "#/components/schemas/AccountType" }
+        normal_balance: { $ref: "#/components/schemas/DebitCredit" }
+        parent_account_id: { type: string, format: uuid, nullable: true }
+        default_tax_category_code: { type: string, nullable: true }
+        allow_manual_entry: { type: boolean, default: true }
+        is_active: { type: boolean, default: true }
+    AccountCreate:
+      type: object
+      required: [code, name, account_type, normal_balance]
+      properties:
+        code: { type: string }
+        name: { type: string }
+        category_id: { type: string, format: uuid }
+        account_type: { $ref: "#/components/schemas/AccountType" }
+        normal_balance: { $ref: "#/components/schemas/DebitCredit" }
+        parent_account_id: { type: string, format: uuid }
+        default_tax_category_code: { type: string }
+        allow_manual_entry: { type: boolean, default: true }
+    AccountUpdate:
+      type: object
+      properties:
+        name: { type: string }
+        category_id: { type: string, format: uuid }
+        allow_manual_entry: { type: boolean }
+        is_active: { type: boolean }
+    AccountResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/Account" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    AccountListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Account" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    TaxCategory:
+      type: object
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        code: { type: string }
+        name: { type: string }
+        tax_type: { $ref: "#/components/schemas/TaxType" }
+        tax_rate: { type: number, minimum: 0, maximum: 100 }
+        is_reduced_rate: { type: boolean, default: false }
+        is_active: { type: boolean, default: true }
+    TaxCategoryCreate:
+      type: object
+      required: [code, name, tax_type, tax_rate]
+      properties:
+        code: { type: string }
+        name: { type: string }
+        tax_type: { $ref: "#/components/schemas/TaxType" }
+        tax_rate: { type: number, minimum: 0, maximum: 100 }
+        is_reduced_rate: { type: boolean, default: false }
+    TaxCategoryResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/TaxCategory" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    TaxCategoryListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/TaxCategory" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    Department:
+      type: object
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        code: { type: string }
+        name: { type: string }
+        is_active: { type: boolean, default: true }
+    DepartmentCreate:
+      type: object
+      required: [code, name]
+      properties:
+        code: { type: string }
+        name: { type: string }
+        is_active: { type: boolean, default: true }
+    DepartmentResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/Department" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    DepartmentListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Department" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    # ---- Journal Entries ----
+    JournalEntryLine:
+      type: object
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        line_no: { type: integer }
+        account_id: { type: string, format: uuid }
+        debit_credit: { $ref: "#/components/schemas/DebitCredit" }
+        amount: { type: number, exclusiveMinimum: 0 }
+        tax_category_id: { type: string, format: uuid, nullable: true }
+        tax_amount: { type: number, minimum: 0, default: 0 }
+        department_id: { type: string, format: uuid, nullable: true }
+        customer_id: { type: string, format: uuid, nullable: true }
+        vendor_id: { type: string, format: uuid, nullable: true }
+        description: { type: string, nullable: true }
+    JournalEntryLineCreate:
+      type: object
+      required: [account_id, debit_credit, amount]
+      properties:
+        account_id: { type: string, format: uuid }
+        debit_credit: { $ref: "#/components/schemas/DebitCredit" }
+        amount: { type: number, exclusiveMinimum: 0 }
+        tax_category_id: { type: string, format: uuid }
+        department_id: { type: string, format: uuid }
+        customer_id: { type: string, format: uuid }
+        vendor_id: { type: string, format: uuid }
+        description: { type: string }
+    JournalEntryLineResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/JournalEntryLine" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    JournalEntryLineListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/JournalEntryLine" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    JournalEntry:
+      type: object
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        entry_no: { type: string, readOnly: true }
+        entry_date: { type: string, format: date }
+        fiscal_period_id: { type: string, format: uuid, nullable: true }
+        description: { type: string, nullable: true }
+        status: { $ref: "#/components/schemas/JournalEntryStatus" }
+        source_type:
+          type: string
+          nullable: true
+          enum:
+            - manual
+            - expense_report
+            - invoice
+            - vendor_bill
+            - bank_auto_rule
+            - depreciation_batch
+            - accrual_batch
+            - recurring_template
+            - payroll_import
+            - ai_suggestion
+            - reversal
+        source_id: { type: string, format: uuid, nullable: true }
+        currency_code: { type: string, default: JPY }
+        exchange_rate: { type: number, default: 1 }
+        reversal_of_entry_id: { type: string, format: uuid, nullable: true }
+        posted_at: { type: string, format: date-time, nullable: true, readOnly: true }
+        voided_at: { type: string, format: date-time, nullable: true, readOnly: true }
+        created_by: { type: string, format: uuid, readOnly: true }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/JournalEntryLine" }
+    JournalEntryCreate:
+      type: object
+      required: [entry_date, lines]
+      properties:
+        entry_date: { type: string, format: date }
+        description: { type: string }
+        fiscal_period_id: { type: string, format: uuid }
+        currency_code: { type: string, default: JPY }
+        exchange_rate: { type: number, default: 1 }
+        lines:
+          type: array
+          minItems: 2
+          items: { $ref: "#/components/schemas/JournalEntryLineCreate" }
+    JournalEntryUpdate:
+      type: object
+      properties:
+        entry_date: { type: string, format: date }
+        description: { type: string }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/JournalEntryLineCreate" }
+    JournalEntryResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/JournalEntry" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    JournalEntryListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/JournalEntry" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    # ---- Bank Accounts / Transactions / Auto Rules ----
+    BankAccount:
+      type: object
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        bank_name: { type: string }
+        bank_code: { type: string, nullable: true }
+        branch_name: { type: string, nullable: true }
+        branch_code: { type: string, nullable: true }
+        account_type: { type: string, enum: [ordinary, checking] }
+        account_number: { type: string }
+        account_holder_kana: { type: string, nullable: true }
+        currency_code: { type: string, default: JPY }
+        opening_balance: { type: number, default: 0 }
+        linked_account_id: { type: string, format: uuid, nullable: true }
+        is_active: { type: boolean, default: true }
+    BankAccountCreate:
+      type: object
+      required: [bank_name, account_type, account_number]
+      properties:
+        bank_name: { type: string }
+        bank_code: { type: string }
+        branch_name: { type: string }
+        branch_code: { type: string }
+        account_type: { type: string, enum: [ordinary, checking] }
+        account_number: { type: string }
+        account_holder_kana: { type: string }
+        currency_code: { type: string, default: JPY }
+        opening_balance: { type: number, default: 0 }
+        linked_account_id: { type: string, format: uuid }
+    BankAccountResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/BankAccount" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    BankAccountListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/BankAccount" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    BankTransaction:
+      type: object
+      readOnly: true
+      properties:
+        id: { type: string, format: uuid }
+        bank_account_id: { type: string, format: uuid }
+        transaction_date: { type: string, format: date }
+        description: { type: string, nullable: true }
+        amount: { type: number, description: "入金は正、出金は負" }
+        balance_after: { type: number, nullable: true }
+        match_status: { $ref: "#/components/schemas/BankMatchStatus" }
+        matched_journal_entry_id: { type: string, format: uuid, nullable: true }
+        imported_at: { type: string, format: date-time }
+    BankTransactionResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/BankTransaction" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    BankTransactionListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/BankTransaction" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    AutoJournalRule:
+      type: object
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        rule_name: { type: string }
+        priority: { type: integer, default: 100 }
+        source: { type: string, enum: [bank, card] }
+        match_pattern: { type: string }
+        min_amount: { type: number, nullable: true }
+        max_amount: { type: number, nullable: true }
+        debit_account_id: { type: string, format: uuid, nullable: true }
+        credit_account_id: { type: string, format: uuid, nullable: true }
+        is_active: { type: boolean, default: true }
+    AutoJournalRuleCreate:
+      type: object
+      required: [rule_name, source, match_pattern]
+      properties:
+        rule_name: { type: string }
+        priority: { type: integer, default: 100 }
+        source: { type: string, enum: [bank, card] }
+        match_pattern: { type: string }
+        min_amount: { type: number }
+        max_amount: { type: number }
+        debit_account_id: { type: string, format: uuid }
+        credit_account_id: { type: string, format: uuid }
+    AutoJournalRuleResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/AutoJournalRule" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    AutoJournalRuleListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/AutoJournalRule" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    # ---- Customers / Vendors ----
+    Customer:
+      type: object
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        code: { type: string }
+        name: { type: string }
+        kana_name: { type: string, nullable: true }
+        is_active: { type: boolean, default: true }
+    CustomerCreate:
+      type: object
+      required: [code, name]
+      properties:
+        code: { type: string }
+        name: { type: string }
+        kana_name: { type: string }
+    CustomerResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/Customer" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    CustomerListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Customer" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    Vendor:
+      type: object
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        code: { type: string }
+        name: { type: string }
+        kana_name: { type: string, nullable: true }
+        invoice_registration_number: { type: string, nullable: true }
+        bank_account_info:
+          type: object
+          nullable: true
+          description: 全銀FB振込先情報(銀行/支店/科目/口座番号/名義カナ)
+          properties:
+            bank_name: { type: string }
+            bank_code: { type: string }
+            branch_name: { type: string }
+            branch_code: { type: string }
+            account_type: { type: string, enum: [ordinary, checking] }
+            account_number: { type: string }
+            account_holder_kana: { type: string }
+        is_active: { type: boolean, default: true }
+    VendorCreate:
+      type: object
+      required: [code, name]
+      properties:
+        code: { type: string }
+        name: { type: string }
+        kana_name: { type: string }
+        invoice_registration_number: { type: string }
+        bank_account_info:
+          type: object
+          properties:
+            bank_name: { type: string }
+            bank_code: { type: string }
+            branch_name: { type: string }
+            branch_code: { type: string }
+            account_type: { type: string, enum: [ordinary, checking] }
+            account_number: { type: string }
+            account_holder_kana: { type: string }
+    VendorResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/Vendor" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    VendorListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Vendor" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    # ---- Invoices (AR) ----
+    InvoiceLine:
+      type: object
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        line_no: { type: integer }
+        description: { type: string }
+        quantity: { type: number, default: 1 }
+        unit_price: { type: number }
+        amount: { type: number }
+        tax_category_id: { type: string, format: uuid }
+        account_id: { type: string, format: uuid }
+    InvoiceLineCreate:
+      type: object
+      required: [description, unit_price, tax_category_id, account_id]
+      properties:
+        description: { type: string }
+        quantity: { type: number, default: 1 }
+        unit_price: { type: number }
+        tax_category_id: { type: string, format: uuid }
+        account_id: { type: string, format: uuid }
+
+    Invoice:
+      type: object
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        invoice_no: { type: string, readOnly: true }
+        customer_id: { type: string, format: uuid }
+        issue_date: { type: string, format: date }
+        due_date: { type: string, format: date }
+        status: { $ref: "#/components/schemas/InvoiceStatus" }
+        subtotal_amount: { type: number, readOnly: true }
+        tax_amount: { type: number, readOnly: true }
+        total_amount: { type: number, readOnly: true }
+        currency_code: { type: string, default: JPY }
+        journal_entry_id: { type: string, format: uuid, nullable: true, readOnly: true }
+        issued_at: { type: string, format: date-time, nullable: true, readOnly: true }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/InvoiceLine" }
+    InvoiceCreate:
+      type: object
+      required: [customer_id, issue_date, due_date, lines]
+      properties:
+        customer_id: { type: string, format: uuid }
+        issue_date: { type: string, format: date }
+        due_date: { type: string, format: date }
+        currency_code: { type: string, default: JPY }
+        lines:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/InvoiceLineCreate" }
+    InvoiceResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/Invoice" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    InvoiceListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Invoice" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    CreditNote:
+      type: object
+      readOnly: true
+      properties:
+        id: { type: string, format: uuid }
+        original_invoice_id: { type: string, format: uuid }
+        credit_note_no: { type: string }
+        issue_date: { type: string, format: date }
+        amount: { type: number }
+        reason: { type: string }
+        journal_entry_id: { type: string, format: uuid, nullable: true }
+    CreditNoteResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/CreditNote" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    InvoicePayment:
+      type: object
+      readOnly: true
+      properties:
+        id: { type: string, format: uuid }
+        invoice_id: { type: string, format: uuid }
+        payment_date: { type: string, format: date }
+        amount: { type: number }
+        bank_transaction_id: { type: string, format: uuid, nullable: true }
+        journal_entry_id: { type: string, format: uuid, nullable: true }
+        matched_by: { type: string, enum: [auto, manual] }
+    InvoicePaymentResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/InvoicePayment" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    InvoicePaymentListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/InvoicePayment" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    # ---- Vendor Bills (AP) ----
+    VendorBillLine:
+      type: object
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        line_no: { type: integer }
+        description: { type: string }
+        amount: { type: number, exclusiveMinimum: 0 }
+        tax_category_id: { type: string, format: uuid }
+        account_id: { type: string, format: uuid }
+        department_id: { type: string, format: uuid, nullable: true }
+    VendorBillLineCreate:
+      type: object
+      required: [description, amount, tax_category_id, account_id]
+      properties:
+        description: { type: string }
+        amount: { type: number, exclusiveMinimum: 0 }
+        tax_category_id: { type: string, format: uuid }
+        account_id: { type: string, format: uuid }
+        department_id: { type: string, format: uuid }
+
+    VendorBill:
+      type: object
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        bill_no: { type: string, readOnly: true }
+        vendor_id: { type: string, format: uuid }
+        bill_date: { type: string, format: date }
+        due_date: { type: string, format: date }
+        status: { $ref: "#/components/schemas/VendorBillStatus" }
+        subtotal_amount: { type: number, readOnly: true }
+        tax_amount: { type: number, readOnly: true }
+        total_amount: { type: number, readOnly: true }
+        payment_method: { $ref: "#/components/schemas/PaymentMethod" }
+        journal_entry_id: { type: string, format: uuid, nullable: true, readOnly: true }
+        current_approval_step: { type: integer, readOnly: true }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/VendorBillLine" }
+    VendorBillCreate:
+      type: object
+      required: [vendor_id, bill_date, due_date, lines]
+      properties:
+        vendor_id: { type: string, format: uuid }
+        bill_date: { type: string, format: date }
+        due_date: { type: string, format: date }
+        payment_method: { $ref: "#/components/schemas/PaymentMethod" }
+        lines:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/VendorBillLineCreate" }
+    VendorBillResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/VendorBill" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    VendorBillListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/VendorBill" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    VendorBillPayment:
+      type: object
+      readOnly: true
+      properties:
+        id: { type: string, format: uuid }
+        vendor_bill_id: { type: string, format: uuid }
+        payment_date: { type: string, format: date }
+        amount: { type: number }
+        bank_transaction_id: { type: string, format: uuid, nullable: true }
+        payment_batch_item_id: { type: string, format: uuid, nullable: true }
+        journal_entry_id: { type: string, format: uuid, nullable: true }
+        matched_by: { type: string, enum: [auto, manual] }
+    VendorBillPaymentResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/VendorBillPayment" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    VendorBillPaymentListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/VendorBillPayment" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    # ---- Payment Batches ----
+    PaymentBatchItem:
+      type: object
+      readOnly: true
+      properties:
+        id: { type: string, format: uuid }
+        source_type: { type: string, enum: [vendor_bill, expense_reimbursement, payroll] }
+        source_id: { type: string, format: uuid }
+        payee_name: { type: string }
+        amount: { type: number }
+
+    PaymentBatch:
+      type: object
+      readOnly: true
+      properties:
+        id: { type: string, format: uuid }
+        batch_no: { type: string }
+        payment_date: { type: string, format: date }
+        batch_type: { type: string, enum: [zengin_transfer] }
+        status: { $ref: "#/components/schemas/PaymentBatchStatus" }
+        total_amount: { type: number }
+        file_hash: { type: string, nullable: true }
+        exported_at: { type: string, format: date-time, nullable: true }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/PaymentBatchItem" }
+    PaymentBatchResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/PaymentBatch" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    PaymentBatchListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/PaymentBatch" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    # ---- Expense Reports ----
+    ExpenseReportLine:
+      type: object
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        line_no: { type: integer }
+        expense_date: { type: string, format: date }
+        category_id: { type: string, format: uuid }
+        description: { type: string, nullable: true }
+        amount: { type: number, exclusiveMinimum: 0 }
+        payment_method: { $ref: "#/components/schemas/PaymentMethod" }
+        tax_category_id: { type: string, format: uuid, nullable: true }
+        card_transaction_id: { type: string, format: uuid, nullable: true }
+    ExpenseReportLineCreate:
+      type: object
+      required: [expense_date, category_id, amount, payment_method]
+      properties:
+        expense_date: { type: string, format: date }
+        category_id: { type: string, format: uuid }
+        description: { type: string }
+        amount: { type: number, exclusiveMinimum: 0 }
+        payment_method: { $ref: "#/components/schemas/PaymentMethod" }
+        tax_category_id: { type: string, format: uuid }
+        card_transaction_id: { type: string, format: uuid }
+    ExpenseReportLineResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/ExpenseReportLine" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    ExpenseReport:
+      type: object
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        report_no: { type: string, readOnly: true }
+        submitted_by: { type: string, format: uuid, readOnly: true }
+        on_behalf_of: { type: string, format: uuid }
+        purpose: { type: string, nullable: true }
+        status: { $ref: "#/components/schemas/ExpenseReportStatus" }
+        total_amount: { type: number, readOnly: true }
+        journal_entry_id: { type: string, format: uuid, nullable: true, readOnly: true }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/ExpenseReportLine" }
+    ExpenseReportCreate:
+      type: object
+      required: [on_behalf_of, lines]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: |
+            省略可。レシートOCR機能でフロントエンドが撮影段階で事前生成したUUIDを指定すると、
+            そのUUIDを対象にした`ai_suggestions`(target_type='expense_report')のOCR提案の
+            target_idと、確定後の申請idが一致する。省略時はサーバー側で自動採番する。
+        on_behalf_of:
+          type: string
+          format: uuid
+          description: 代理申請の場合は費用が帰属する従業員のID。本人申請時は自身のID。
+        purpose: { type: string }
+        lines:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/ExpenseReportLineCreate" }
+    ExpenseReportOcrSuggestionData:
+      type: object
+      readOnly: true
+      required: [confidence_score, model_name]
+      properties:
+        transaction_date: { type: string, format: date, nullable: true }
+        amount: { type: number, nullable: true }
+        vendor_name: { type: string, nullable: true }
+        invoice_registration_number: { type: string, nullable: true }
+        suggested_account_id: { type: string, format: uuid, nullable: true }
+        confidence_score: { type: number, minimum: 0, maximum: 1 }
+        model_name: { type: string }
+    ExpenseReportOcrSuggestion:
+      type: object
+      readOnly: true
+      required: [id, data]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: 追記された `ai_suggestions` レコードのid
+        data: { $ref: "#/components/schemas/ExpenseReportOcrSuggestionData" }
+    ExpenseReportOcrResult:
+      type: object
+      readOnly: true
+      required: [suggestions]
+      properties:
+        suggestions:
+          type: array
+          description: 画像内から検出されたレシート数ぶんの提案(1枚に複数のレシートが写っている場合は複数件)
+          items: { $ref: "#/components/schemas/ExpenseReportOcrSuggestion" }
+    ExpenseReportOcrResultResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/ExpenseReportOcrResult" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    ExpenseReportResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/ExpenseReport" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    ExpenseReportListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/ExpenseReport" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    # ---- Approval Requests ----
+    ApprovalHistoryEntry:
+      type: object
+      readOnly: true
+      properties:
+        id: { type: string, format: uuid }
+        step_number: { type: integer }
+        approver_id: { type: string, format: uuid }
+        action: { $ref: "#/components/schemas/ApprovalAction" }
+        comment: { type: string, nullable: true }
+        acted_at: { type: string, format: date-time }
+
+    ApprovalRequest:
+      type: object
+      readOnly: true
+      properties:
+        id: { type: string, format: uuid }
+        target_type: { type: string, enum: [journal_entry, expense_report, vendor_bill] }
+        target_id: { type: string, format: uuid }
+        submitted_by: { type: string, format: uuid }
+        total_steps: { type: integer }
+        current_step: { type: integer }
+        status: { $ref: "#/components/schemas/ApprovalRequestStatus" }
+        history:
+          type: array
+          items: { $ref: "#/components/schemas/ApprovalHistoryEntry" }
+    ApprovalRequestResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/ApprovalRequest" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    ApprovalRequestListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/ApprovalRequest" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    # ---- Recurring Journal Templates ----
+    RecurringJournalTemplate:
+      type: object
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        template_name: { type: string }
+        frequency: { type: string, enum: [monthly, quarterly, annually], default: monthly }
+        day_of_month: { type: integer, minimum: 1, maximum: 31 }
+        debit_account_id: { type: string, format: uuid }
+        credit_account_id: { type: string, format: uuid }
+        amount: { type: number, exclusiveMinimum: 0 }
+        description: { type: string, nullable: true }
+        next_run_date: { type: string, format: date }
+        is_active: { type: boolean, default: true }
+    RecurringJournalTemplateCreate:
+      type: object
+      required: [template_name, day_of_month, debit_account_id, credit_account_id, amount, next_run_date]
+      properties:
+        template_name: { type: string }
+        frequency: { type: string, enum: [monthly, quarterly, annually], default: monthly }
+        day_of_month: { type: integer, minimum: 1, maximum: 31 }
+        debit_account_id: { type: string, format: uuid }
+        credit_account_id: { type: string, format: uuid }
+        amount: { type: number, exclusiveMinimum: 0 }
+        description: { type: string }
+        next_run_date: { type: string, format: date }
+    RecurringJournalTemplateResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/RecurringJournalTemplate" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    RecurringJournalTemplateListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/RecurringJournalTemplate" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    # ---- Fixed Assets ----
+    DepreciationSchedule:
+      type: object
+      readOnly: true
+      properties:
+        id: { type: string, format: uuid }
+        fiscal_period_id: { type: string, format: uuid }
+        scheduled_amount: { type: number }
+        actual_amount: { type: number, nullable: true }
+        journal_entry_id: { type: string, format: uuid, nullable: true }
+        status: { type: string, enum: [scheduled, posted] }
+
+    FixedAsset:
+      type: object
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        asset_no: { type: string, readOnly: true }
+        name: { type: string }
+        category: { type: string, nullable: true }
+        acquisition_date: { type: string, format: date }
+        acquisition_cost: { type: number, exclusiveMinimum: 0 }
+        useful_life_years: { type: integer, exclusiveMinimum: 0 }
+        depreciation_method: { $ref: "#/components/schemas/DepreciationMethod" }
+        salvage_value: { type: number, default: 0 }
+        status: { $ref: "#/components/schemas/FixedAssetStatus" }
+        accumulated_depreciation: { type: number, readOnly: true }
+        department_id: { type: string, format: uuid, nullable: true }
+        asset_account_id: { type: string, format: uuid }
+        depreciation_expense_account_id: { type: string, format: uuid }
+        depreciation_schedules:
+          type: array
+          items: { $ref: "#/components/schemas/DepreciationSchedule" }
+    FixedAssetCreate:
+      type: object
+      required:
+        - name
+        - acquisition_date
+        - acquisition_cost
+        - useful_life_years
+        - depreciation_method
+        - asset_account_id
+        - depreciation_expense_account_id
+      properties:
+        name: { type: string }
+        category: { type: string }
+        acquisition_date: { type: string, format: date }
+        acquisition_cost: { type: number, exclusiveMinimum: 0 }
+        useful_life_years: { type: integer, exclusiveMinimum: 0 }
+        depreciation_method: { $ref: "#/components/schemas/DepreciationMethod" }
+        salvage_value: { type: number, default: 0 }
+        department_id: { type: string, format: uuid }
+        asset_account_id: { type: string, format: uuid }
+        depreciation_expense_account_id: { type: string, format: uuid }
+    FixedAssetResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/FixedAsset" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    FixedAssetListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/FixedAsset" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    # ---- Reports ----
+    TrialBalanceLine:
+      type: object
+      readOnly: true
+      properties:
+        account_id: { type: string, format: uuid }
+        account_code: { type: string }
+        account_name: { type: string }
+        opening_balance: { type: number }
+        debit_total: { type: number }
+        credit_total: { type: number }
+        closing_balance: { type: number }
+    TrialBalanceResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/TrialBalanceLine" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    FinancialStatementLine:
+      type: object
+      readOnly: true
+      properties:
+        account_code: { type: string }
+        account_name: { type: string }
+        amount: { type: number }
+        section: { type: string, description: "例: 流動資産, 売上高, 販管費" }
+    FinancialStatementResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: object
+          properties:
+            period_label: { type: string }
+            lines:
+              type: array
+              items: { $ref: "#/components/schemas/FinancialStatementLine" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    CashFlowStatement:
+      type: object
+      readOnly: true
+      properties:
+        period_label: { type: string }
+        beginning_cash_balance: { type: number, description: "現金及び現金同等物の期首残高" }
+        operating_activities:
+          type: array
+          items: { $ref: "#/components/schemas/FinancialStatementLine" }
+        operating_activities_total: { type: number }
+        investing_activities:
+          type: array
+          items: { $ref: "#/components/schemas/FinancialStatementLine" }
+        investing_activities_total: { type: number }
+        financing_activities:
+          type: array
+          items: { $ref: "#/components/schemas/FinancialStatementLine" }
+        financing_activities_total: { type: number }
+        net_change_in_cash: { type: number, description: "現金及び現金同等物の増減額" }
+        ending_cash_balance: { type: number, description: "現金及び現金同等物の期末残高(BSの現金・預金残高と一致)" }
+    CashFlowStatementResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/CashFlowStatement" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    # ---- Consumption Tax Returns ----
+    ConsumptionTaxReturnLine:
+      type: object
+      readOnly: true
+      properties:
+        id: { type: string, format: uuid }
+        category: { type: string, description: "例: 課税売上10%, 課税仕入8%軽減" }
+        amount: { type: number }
+
+    ConsumptionTaxReturn:
+      type: object
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        fiscal_year_id: { type: string, format: uuid }
+        filing_method: { $ref: "#/components/schemas/TaxFilingMethod" }
+        taxable_sales_amount: { type: number, readOnly: true }
+        taxable_purchase_amount: { type: number, readOnly: true }
+        tax_due_amount: { type: number, readOnly: true }
+        status: { type: string, enum: [draft, finalized] }
+        finalized_at: { type: string, format: date-time, nullable: true, readOnly: true }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/ConsumptionTaxReturnLine" }
+    ConsumptionTaxReturnResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/ConsumptionTaxReturn" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    ConsumptionTaxReturnListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/ConsumptionTaxReturn" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    # ---- Payroll Imports ----
+    PayrollImportLine:
+      type: object
+      readOnly: true
+      properties:
+        id: { type: string, format: uuid }
+        employee_name: { type: string }
+        employee_code: { type: string, nullable: true }
+        executive_compensation_amount: { type: number }
+        salary_amount: { type: number }
+        withholding_tax_amount: { type: number }
+        resident_tax_amount: { type: number }
+        social_insurance_employee_amount: { type: number }
+        social_insurance_company_amount: { type: number }
+        net_payment_amount: { type: number }
+
+    PayrollImport:
+      type: object
+      readOnly: true
+      properties:
+        id: { type: string, format: uuid }
+        pay_period_start: { type: string, format: date }
+        pay_period_end: { type: string, format: date }
+        payment_date: { type: string, format: date }
+        status: { type: string, enum: [imported, posted] }
+        journal_entry_id: { type: string, format: uuid, nullable: true }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/PayrollImportLine" }
+    PayrollImportResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/PayrollImport" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    PayrollImportListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/PayrollImport" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    # ---- Payroll Import Mappings ----
+    PayrollImportColumnMapping:
+      type: object
+      description: 給与CSVのヘッダー名 -> 内部項目名 の対応(値は取込対象CSVの列見出し文字列)
+      properties:
+        employee_name: { type: string }
+        employee_code: { type: string }
+        executive_compensation_amount: { type: string }
+        salary_amount: { type: string }
+        withholding_tax_amount: { type: string }
+        resident_tax_amount: { type: string }
+        social_insurance_employee_amount: { type: string }
+        social_insurance_company_amount: { type: string }
+        net_payment_amount: { type: string }
+    PayrollImportAccountMapping:
+      type: object
+      description: 給与項目 -> 計上先勘定科目ID の対応
+      required:
+        - net_payment_account_id
+      properties:
+        executive_compensation_account_id: { type: string, format: uuid, nullable: true }
+        salary_account_id: { type: string, format: uuid, nullable: true }
+        withholding_tax_account_id: { type: string, format: uuid, nullable: true }
+        resident_tax_account_id: { type: string, format: uuid, nullable: true }
+        social_insurance_employee_account_id: { type: string, format: uuid, nullable: true }
+        social_insurance_company_expense_account_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 法定福利費(会社負担分・借方)
+        social_insurance_company_payable_account_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 未払法定福利費(会社負担分・貸方)
+        net_payment_account_id:
+          type: string
+          format: uuid
+          description: 差引支給額の貸方科目(未払金/現金預金等)
+    PayrollImportMapping:
+      type: object
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        name: { type: string }
+        column_mapping: { $ref: "#/components/schemas/PayrollImportColumnMapping" }
+        account_mapping: { $ref: "#/components/schemas/PayrollImportAccountMapping" }
+        is_active: { type: boolean, default: true }
+    PayrollImportMappingCreate:
+      type: object
+      required: [name, column_mapping, account_mapping]
+      properties:
+        name: { type: string }
+        column_mapping: { $ref: "#/components/schemas/PayrollImportColumnMapping" }
+        account_mapping: { $ref: "#/components/schemas/PayrollImportAccountMapping" }
+        is_active: { type: boolean, default: true }
+    PayrollImportMappingResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/PayrollImportMapping" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    PayrollImportMappingListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/PayrollImportMapping" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    # ---- AI Suggestions ----
+    AiSuggestion:
+      type: object
+      readOnly: true
+      properties:
+        id: { type: string, format: uuid }
+        target_type:
+          type: string
+          enum: [journal_entry, expense_report_line, bank_transaction, vendor_bill, expense_report]
+        target_id: { type: string, format: uuid }
+        suggestion_type:
+          type: string
+          enum: [account_code, tax_category, reconciliation_match, anomaly_flag, ocr]
+        payload:
+          type: object
+          description: |
+            候補データ。例(account_code):
+            {"suggested_account_code": "5000", "candidates": [{"code":"5000","score":0.92}]}
+            例(ocr): {"transaction_date": "2026-08-01", "amount": 3300, "vendor_name": "…",
+            "invoice_registration_number": "T1234567890123", "suggested_account_id": "…"}
+          properties:
+            suggested_account_code: { type: string, nullable: true }
+            candidates:
+              type: array
+              items:
+                type: object
+                properties:
+                  code: { type: string }
+                  score: { type: number }
+            transaction_date: { type: string, format: date, nullable: true }
+            amount: { type: number, nullable: true }
+            vendor_name: { type: string, nullable: true }
+            invoice_registration_number: { type: string, nullable: true }
+            suggested_account_id: { type: string, format: uuid, nullable: true }
+        confidence_score: { type: number, minimum: 0, maximum: 1, nullable: true }
+        model_name: { type: string }
+        accepted: { type: boolean, nullable: true, description: "NULL=未判定" }
+        created_at: { type: string, format: date-time }
+    AiSuggestionResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/AiSuggestion" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    AiSuggestionListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/AiSuggestion" }
+        meta: { $ref: "#/components/schemas/Meta" }
