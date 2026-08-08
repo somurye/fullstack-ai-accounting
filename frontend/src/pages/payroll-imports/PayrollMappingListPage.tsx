@@ -144,10 +144,10 @@ function MappingForm({
           </div>
         ))}
 
-        <div className="grid grid-cols-3 gap-3 border-t border-surface-800 pt-3">
+        <div className="space-y-3 border-t border-surface-800 pt-3">
           <div>
             <label className="mb-1 block text-xs font-medium text-surface-400">
-              社会保険料 会社負担 列見出し
+              社会保険料 会社負担(列見出し)
             </label>
             <input
               type="text"
@@ -156,35 +156,37 @@ function MappingForm({
               className={inputClass()}
             />
           </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-surface-400">法定福利費(借方)</label>
-            <select
-              value={form.account_mapping.social_insurance_company_expense_account_id ?? ''}
-              onChange={(e) => setAccount('social_insurance_company_expense_account_id', e.target.value)}
-              className={inputClass()}
-            >
-              <option value="">未設定</option>
-              {accounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.code} {a.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-surface-400">未払法定福利費(貸方)</label>
-            <select
-              value={form.account_mapping.social_insurance_company_payable_account_id ?? ''}
-              onChange={(e) => setAccount('social_insurance_company_payable_account_id', e.target.value)}
-              className={inputClass()}
-            >
-              <option value="">未設定</option>
-              {accounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.code} {a.name}
-                </option>
-              ))}
-            </select>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-surface-400">法定福利費(借方)</label>
+              <select
+                value={form.account_mapping.social_insurance_company_expense_account_id ?? ''}
+                onChange={(e) => setAccount('social_insurance_company_expense_account_id', e.target.value)}
+                className={inputClass()}
+              >
+                <option value="">未設定</option>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.code} {a.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-surface-400">未払法定福利費(貸方)</label>
+              <select
+                value={form.account_mapping.social_insurance_company_payable_account_id ?? ''}
+                onChange={(e) => setAccount('social_insurance_company_payable_account_id', e.target.value)}
+                className={inputClass()}
+              >
+                <option value="">未設定</option>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.code} {a.name}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
       </div>
