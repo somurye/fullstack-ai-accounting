@@ -1,6 +1,9 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppLayout } from './components/layout/AppLayout';
+import { Role } from './lib/rbac';
 import { ProtectedRoute } from './routes/ProtectedRoute';
+import { RequireRole } from './routes/RequireRole';
+import { ForbiddenPage } from './pages/ForbiddenPage';
 import { LoginPage } from './pages/auth/LoginPage';
 import { SignupPage } from './pages/auth/SignupPage';
 import { AcceptInvitePage } from './pages/auth/AcceptInvitePage';
@@ -73,9 +76,20 @@ export default function App() {
           <Route path="/fixed-assets/new" element={<FixedAssetFormPage />} />
           <Route path="/fixed-assets/:id" element={<FixedAssetFormPage />} />
           <Route path="/consumption-tax-returns" element={<ConsumptionTaxReturnsPage />} />
-          <Route path="/reports" element={<ReportsPage />} />
+          <Route path="/forbidden" element={<ForbiddenPage />} />
+
+          {/* 職務分掌(SoD)RBAC: 財務諸表は ADMIN / ACCOUNTANT のみ */}
+          <Route element={<RequireRole roles={[Role.ADMIN, Role.ACCOUNTANT]} />}>
+            <Route path="/reports" element={<ReportsPage />} />
+          </Route>
+
           <Route path="/ai/suggestions" element={<AiSuggestionListPage />} />
-          <Route path="/audit-logs" element={<AuditLogListPage />} />
+
+          {/* 職務分掌(SoD)RBAC: 監査ログは ADMIN / ACCOUNTANT に加え、時限アクセス許可を持つ外部閲覧者も対象 */}
+          <Route element={<RequireRole roles={[Role.ADMIN, Role.ACCOUNTANT, 'viewer_external']} />}>
+            <Route path="/audit-logs" element={<AuditLogListPage />} />
+          </Route>
+
           <Route path="/attachments" element={<AttachmentSearchPage />} />
           <Route path="/customers" element={<CustomerListPage />} />
           <Route path="/vendors" element={<VendorListPage />} />

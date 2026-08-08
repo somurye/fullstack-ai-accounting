@@ -1,6 +1,9 @@
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { RequestContext } from '../../common/context/request-context';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { Role } from '../../common/enums/role.enum';
 import { AppException } from '../../common/exceptions/app.exception';
+import { RolesGuard } from '../../common/guards/roles.guard';
 import { TenantAuthGuard } from '../../common/guards/tenant-auth.guard';
 import { successEnvelope } from '../../common/http/envelope';
 import { parseWithZod } from '../../common/validation/zod-parse';
@@ -13,9 +16,14 @@ import { ReportsService } from './reports.service';
  * `docs/openapi.yaml` の `tags: [Reports]` に定義されたエンドポイントを実装する。
  * すべて読み取り専用のリアルタイム集計クエリであり、`journal_entries.status = 'posted'`の
  * 確定済み仕訳のみを対象とする。
+ *
+ * 職務分掌(SoD)RBAC: 財務諸表(試算表/PL/BS/CF)は`ADMIN`/`ACCOUNTANT`のみ閲覧可能
+ * (このリポジトリには独立した`/financial-statements`モジュールは存在せず、
+ * 財務諸表の実体はこの`ReportsController`であるため、ここへ適用する)。
  */
 @Controller('reports')
-@UseGuards(TenantAuthGuard)
+@UseGuards(TenantAuthGuard, RolesGuard)
+@Roles(Role.ADMIN, Role.ACCOUNTANT)
 export class ReportsController {
   constructor(private readonly reportsService: ReportsService) {}
 

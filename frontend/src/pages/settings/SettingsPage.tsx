@@ -54,6 +54,7 @@ const ROLE_OPTIONS: RoleCode[] = [
   'owner',
   'accounting_manager',
   'accountant',
+  'bookkeeper',
   'approver',
   'employee',
   'payroll_admin',

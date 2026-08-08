@@ -1,6 +1,8 @@
 import { Landmark, Link2, Sparkles, Upload, Wand2 } from 'lucide-react';
 import { useState } from 'react';
 import { Modal } from '../../components/ui/Modal';
+import { hasAnyRole, Role } from '../../lib/rbac';
+import { useAuthStore } from '../../stores/authStore';
 import { useBankAccounts } from '../bank-accounts/hooks';
 import { useAiSuggestions } from '../ai-suggestions/hooks';
 import { useAccounts } from '../settings/accounts/hooks';
@@ -194,6 +196,9 @@ function MatchModal({ transaction, onClose }: { transaction: BankTransaction; on
 }
 
 export function BankTransactionListPage() {
+  const currentUserRoles = useAuthStore((state) => state.user?.roles);
+  const canMatch = hasAnyRole(currentUserRoles, [Role.ADMIN, Role.BOOKKEEPER]);
+
   const { data: bankAccountsData } = useBankAccounts({ page_size: 200 });
   const bankAccounts = bankAccountsData?.bankAccounts ?? [];
 
@@ -307,6 +312,8 @@ export function BankTransactionListPage() {
                     <button
                       type="button"
                       className="btn-secondary !py-1 text-xs"
+                      disabled={!canMatch}
+                      title={canMatch ? undefined : '消込の実行は ADMIN / BOOKKEEPER ロールのみ操作できます'}
                       onClick={() => setMatchingTransaction(tx)}
                     >
                       マッチング

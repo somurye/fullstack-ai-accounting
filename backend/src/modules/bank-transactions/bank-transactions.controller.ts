@@ -12,7 +12,10 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { z } from 'zod';
 import { RequestContext } from '../../common/context/request-context';
+import { Roles } from '../../common/decorators/roles.decorator';
+import { Role } from '../../common/enums/role.enum';
 import { AppException } from '../../common/exceptions/app.exception';
+import { RolesGuard } from '../../common/guards/roles.guard';
 import { TenantAuthGuard } from '../../common/guards/tenant-auth.guard';
 import { successEnvelope } from '../../common/http/envelope';
 import { CSV_UPLOAD_MAX_BYTES } from '../../common/http/upload-limits';
@@ -69,7 +72,10 @@ export class BankTransactionsController {
     return successEnvelope(transaction);
   }
 
+  /** 職務分掌(SoD)RBAC: 消込の実行(=会計帳簿への実質的な影響を伴う操作)は`ADMIN`/`BOOKKEEPER`のみ */
   @Post(':id/match')
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN, Role.BOOKKEEPER)
   async match(@Param('id') id: string, @Body() body: unknown) {
     const tenantId = this.requireTenantId();
     const userId = this.requireUserId();

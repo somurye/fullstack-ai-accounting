@@ -45,7 +45,8 @@ export const ROUNDING_RULE_LABEL: Record<NonNullable<AccountingSettings['roundin
 export const ROLE_LABEL: Record<RoleCode, string> = {
   owner: 'オーナー(管理者)',
   accounting_manager: '経理責任者',
-  accountant: '経理担当',
+  accountant: '会計担当',
+  bookkeeper: '経理担当(出納・消込)',
   approver: '承認者',
   employee: '一般社員',
   payroll_admin: '給与担当',

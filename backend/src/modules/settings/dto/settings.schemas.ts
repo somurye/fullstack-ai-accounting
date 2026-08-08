@@ -10,6 +10,7 @@ export const ROLE_CODES = [
   'owner',
   'accounting_manager',
   'accountant',
+  'bookkeeper',
   'approver',
   'employee',
   'payroll_admin',

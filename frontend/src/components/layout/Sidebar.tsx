@@ -4,6 +4,7 @@ import {
   Building2,
   FileStack,
   Landmark,
+  LayoutDashboard,
   Paperclip,
   Percent,
   Receipt,
@@ -21,12 +22,16 @@ import {
 } from 'lucide-react';
 import type { ComponentType } from 'react';
 import { NavLink } from 'react-router-dom';
+import { hasAnyRole, Role } from '../../lib/rbac';
 import { cn } from '../../lib/utils';
+import { useAuthStore } from '../../stores/authStore';
 
 interface NavItem {
   label: string;
   to: string;
   icon: ComponentType<{ className?: string }>;
+  /** 指定した場合、現在のユーザーがこのいずれかのロールを保有していなければ非表示にする(職務分掌RBAC) */
+  roles?: string[];
 }
 
 interface NavGroup {
@@ -40,10 +45,19 @@ interface NavGroup {
  */
 const NAV_GROUPS: NavGroup[] = [
   {
+    title: 'ホーム',
+    items: [{ label: 'ダッシュボード', to: '/dashboard', icon: LayoutDashboard }],
+  },
+  {
     title: '会計コア',
     items: [
       { label: '仕訳', to: '/journal-entries', icon: BookOpen },
-      { label: '試算表・財務三表', to: '/reports', icon: BarChart3 },
+      {
+        label: '試算表・財務三表',
+        to: '/reports',
+        icon: BarChart3,
+        roles: [Role.ADMIN, Role.ACCOUNTANT],
+      },
     ],
   },
   {
@@ -89,7 +103,12 @@ const NAV_GROUPS: NavGroup[] = [
   {
     title: 'ガバナンス',
     items: [
-      { label: '監査ログ', to: '/audit-logs', icon: ShieldCheck },
+      {
+        label: '監査ログ',
+        to: '/audit-logs',
+        icon: ShieldCheck,
+        roles: [Role.ADMIN, Role.ACCOUNTANT, 'viewer_external'],
+      },
       { label: '証憑管理(電帳法)', to: '/attachments', icon: Paperclip },
       { label: '外部アクセス管理', to: '/settings/external-access', icon: ShieldAlert },
       { label: 'AI提案', to: '/ai/suggestions', icon: Sparkles },
@@ -102,6 +121,13 @@ const NAV_GROUPS: NavGroup[] = [
 ];
 
 export function Sidebar() {
+  const userRoles = useAuthStore((state) => state.user?.roles);
+
+  const visibleGroups = NAV_GROUPS.map((group) => ({
+    ...group,
+    items: group.items.filter((item) => !item.roles || hasAnyRole(userRoles, item.roles)),
+  })).filter((group) => group.items.length > 0);
+
   return (
     <aside className="flex h-full w-64 shrink-0 flex-col border-r border-surface-800 bg-surface-900">
       <div className="flex h-16 shrink-0 items-center gap-2 border-b border-surface-800 px-5">
@@ -114,7 +140,7 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 space-y-6 overflow-y-auto px-3 py-4">
-        {NAV_GROUPS.map((group) => (
+        {visibleGroups.map((group) => (
           <div key={group.title}>
             <p className="mb-2 px-3 text-xs font-semibold uppercase tracking-wider text-surface-500">
               {group.title}
