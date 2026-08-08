@@ -1,8 +1,8 @@
-import { Landmark, Pencil, Plus } from 'lucide-react';
+import { Landmark, Pencil, Plus, RefreshCw } from 'lucide-react';
 import { useState } from 'react';
 import { Modal } from '../../components/ui/Modal';
 import { useAccounts } from '../settings/accounts/hooks';
-import { useBankAccounts, useCreateBankAccount, useUpdateBankAccount } from './hooks';
+import { useBankAccounts, useCreateBankAccount, useSyncBankTransactions, useUpdateBankAccount } from './hooks';
 import type { BankAccount, BankAccountFormInput } from './types';
 
 const EMPTY_FORM: BankAccountFormInput = {
@@ -163,6 +163,7 @@ export function BankAccountListPage() {
   const { data, isLoading } = useBankAccounts({ page_size: 200 });
   const createMutation = useCreateBankAccount();
   const updateMutation = useUpdateBankAccount();
+  const syncMutation = useSyncBankTransactions();
 
   const [modalMode, setModalMode] = useState<'create' | 'edit' | null>(null);
   const [editing, setEditing] = useState<BankAccount | null>(null);
@@ -244,17 +245,41 @@ export function BankAccountListPage() {
                   </span>
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <button
-                    type="button"
-                    className="btn-secondary flex items-center gap-1 !py-1 text-xs"
-                    onClick={() => {
-                      setEditing(bankAccount);
-                      setModalMode('edit');
-                    }}
-                  >
-                    <Pencil className="h-3 w-3" />
-                    編集
-                  </button>
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      className="btn-secondary flex items-center gap-1 !py-1 text-xs"
+                      disabled={syncMutation.isPending}
+                      title="銀行API連携(モック)から明細を取得し、既存の自動仕訳ルールで自動消込します"
+                      onClick={() =>
+                        syncMutation.mutate({ bank_account_id: bankAccount.id as string })
+                      }
+                    >
+                      <RefreshCw
+                        className={`h-3 w-3 ${
+                          syncMutation.isPending &&
+                          syncMutation.variables?.bank_account_id === bankAccount.id
+                            ? 'animate-spin'
+                            : ''
+                        }`}
+                      />
+                      {syncMutation.isPending &&
+                      syncMutation.variables?.bank_account_id === bankAccount.id
+                        ? '同期中…'
+                        : 'APIから明細を取得(モック同期)'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-secondary flex items-center gap-1 !py-1 text-xs"
+                      onClick={() => {
+                        setEditing(bankAccount);
+                        setModalMode('edit');
+                      }}
+                    >
+                      <Pencil className="h-3 w-3" />
+                      編集
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}

@@ -1,6 +1,12 @@
 import { apiClient } from '../../lib/apiClient';
 import type { components } from '../../types/api.generated';
-import type { BankAccount, BankAccountFormInput, BankAccountListParams } from './types';
+import type {
+  BankAccount,
+  BankAccountFormInput,
+  BankAccountListParams,
+  BankSyncParams,
+  BankSyncResult,
+} from './types';
 
 type Meta = components['schemas']['Meta'];
 
@@ -29,5 +35,15 @@ export async function updateBankAccount(id: string, dto: BankAccountFormInput): 
     dto,
   );
   if (!data.data) throw new Error('銀行口座の更新に失敗しました');
+  return data.data;
+}
+
+/** 銀行API連携(モック)経由で明細を取得し、既存の自動消込エンジンへ連携する */
+export async function syncBankTransactions(params: BankSyncParams): Promise<BankSyncResult> {
+  const { data } = await apiClient.post<{ success: true; data: BankSyncResult }>(
+    '/bank-integration/sync',
+    params,
+  );
+  if (!data.data) throw new Error('銀行明細のAPI同期に失敗しました');
   return data.data;
 }

@@ -28,6 +28,7 @@ import { TenantsModule } from './modules/tenants/tenants.module';
 import { UsersModule } from './modules/users/users.module';
 import { BankAccountsModule } from './modules/bank-accounts/bank-accounts.module';
 import { BankTransactionsModule } from './modules/bank-transactions/bank-transactions.module';
+import { BankIntegrationModule } from './modules/bank-integration/bank-integration.module';
 import { AutoJournalRulesModule } from './modules/auto-journal-rules/auto-journal-rules.module';
 import { PayrollImportMappingsModule } from './modules/payroll-import-mappings/payroll-import-mappings.module';
 import { PayrollImportsModule } from './modules/payroll-imports/payroll-imports.module';
@@ -79,6 +80,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
     UsersModule,
     BankAccountsModule,
     BankTransactionsModule,
+    BankIntegrationModule,
     AutoJournalRulesModule,
     PayrollImportMappingsModule,
     PayrollImportsModule,

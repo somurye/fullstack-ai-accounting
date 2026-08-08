@@ -3,8 +3,11 @@ import { formatApiErrorMessage } from '../../../lib/apiClient';
 import { toast } from '../../../stores/toastStore';
 import {
   cancelInvitation,
+  connectBankConnector,
   createInvitation,
+  disconnectBankConnector,
   fetchAccountingSettings,
+  fetchBankConnectionStatus,
   fetchIntegrationSettings,
   fetchInvitations,
   fetchMembers,
@@ -29,6 +32,7 @@ const ACCOUNTING_SETTINGS_KEY = 'settings-accounting';
 const MEMBERS_KEY = 'settings-members';
 const INVITATIONS_KEY = 'settings-member-invitations';
 const INTEGRATION_SETTINGS_KEY = 'settings-integrations';
+const BANK_CONNECTION_STATUS_KEY = 'bank-connection-status';
 
 export function useTenantSettings() {
   return useQuery({ queryKey: [TENANT_SETTINGS_KEY], queryFn: fetchTenantSettings });
@@ -159,6 +163,38 @@ export function useTestAiIntegrationConnection() {
       } else {
         toast.error(result.message ?? '接続テストに失敗しました');
       }
+    },
+    onError: (error) => {
+      toast.error(formatApiErrorMessage(error));
+    },
+  });
+}
+
+export function useBankConnectionStatus() {
+  return useQuery({ queryKey: [BANK_CONNECTION_STATUS_KEY], queryFn: fetchBankConnectionStatus });
+}
+
+export function useConnectBankConnector() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => connectBankConnector(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [BANK_CONNECTION_STATUS_KEY] });
+      toast.success('銀行APIとの認証連携が完了しました');
+    },
+    onError: (error) => {
+      toast.error(formatApiErrorMessage(error));
+    },
+  });
+}
+
+export function useDisconnectBankConnector() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => disconnectBankConnector(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [BANK_CONNECTION_STATUS_KEY] });
+      toast.info('銀行API連携を解除しました');
     },
     onError: (error) => {
       toast.error(formatApiErrorMessage(error));

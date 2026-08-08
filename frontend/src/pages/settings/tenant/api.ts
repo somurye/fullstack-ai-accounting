@@ -6,6 +6,7 @@ import type {
   AiConnectionTestResult,
   AiIntegrationSettings,
   AiSettingsUpdate,
+  BankConnectionStatus,
   IntegrationSettings,
   MemberInvitation,
   MemberInvitationCreateParams,
@@ -131,5 +132,29 @@ export async function testAiIntegrationConnection(): Promise<AiConnectionTestRes
     meta?: Meta;
   }>('/settings/integrations/ai/test');
   if (!data.data) throw new Error('接続テストに失敗しました');
+  return data.data;
+}
+
+export async function fetchBankConnectionStatus(): Promise<BankConnectionStatus> {
+  const { data } = await apiClient.get<{ success: true; data: BankConnectionStatus; meta?: Meta }>(
+    '/bank-integration/status',
+  );
+  if (!data.data) throw new Error('銀行コネクタの連携状態を取得できませんでした');
+  return data.data;
+}
+
+export async function connectBankConnector(): Promise<BankConnectionStatus> {
+  const { data } = await apiClient.post<{ success: true; data: BankConnectionStatus; meta?: Meta }>(
+    '/bank-integration/connect',
+  );
+  if (!data.data) throw new Error('銀行APIとの認証連携に失敗しました');
+  return data.data;
+}
+
+export async function disconnectBankConnector(): Promise<BankConnectionStatus> {
+  const { data } = await apiClient.post<{ success: true; data: BankConnectionStatus; meta?: Meta }>(
+    '/bank-integration/disconnect',
+  );
+  if (!data.data) throw new Error('銀行API連携の解除に失敗しました');
   return data.data;
 }

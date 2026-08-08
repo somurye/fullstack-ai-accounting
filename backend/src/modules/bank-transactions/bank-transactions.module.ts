@@ -10,5 +10,6 @@ import { BankTransactionsService } from './bank-transactions.service';
   imports: [AuditLogsModule, AiSuggestionsModule, InvoicesModule, VendorBillsModule],
   controllers: [BankTransactionsController],
   providers: [BankTransactionsService],
+  exports: [BankTransactionsService],
 })
 export class BankTransactionsModule {}

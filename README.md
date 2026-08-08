@@ -16,6 +16,8 @@
   貸借・PL/BS・CF間の整合性をDB制約とアプリケーションロジックの両方で保証。
 - **外部税理士向け 14日間時限アクセス制御**
   監査・税理士向け専用ロール（`viewer_external`）による期限付きアクセス。
+- **銀行オープンAPI連携（アダプタ方式・モック実装）**
+  設定画面からOAuth風の認証連携（連携／解除）を行い、連携後は共通`IBankApiClient`インターフェース経由で明細を取得。冪等な取込（`external_transaction_id`による重複排除）と、既存の自動消込エンジンへの連携までをワンクリックで実行する。プロバイダーは`BANK_PROVIDER`環境変数で切り替え可能な設計（現状は`mock`のみ実装）。
 
 ## 技術スタック（Tech Stack）
 
@@ -56,11 +58,19 @@ docker-compose up -d
 
 `pgvector/pgvector:pg16` イメージでPostgreSQLが `localhost:5432` に起動する（DB名: `keiri_kaikei`）。
 
+続けて、スーパーユーザー`postgres`でスキーマを流し込む（`001`がテーブル本体・RLS・実行ロール作成、`002`/`003`が銀行連携機能向けの追加カラム）。
+
+```bash
+docker compose exec -T postgres psql -U postgres -d keiri_kaikei < sql/001_initial_schema_all_in_one.sql
+docker compose exec -T postgres psql -U postgres -d keiri_kaikei < sql/002_bank_integration.sql
+docker compose exec -T postgres psql -U postgres -d keiri_kaikei < sql/003_bank_connector_link_status.sql
+```
+
 ### 2. バックエンド
 
 ```bash
 cd backend
-cp .env.example .env   # DATABASE_URL / JWT_SECRET / SETTINGS_ENCRYPTION_KEY を環境に合わせて設定
+cp .env.example .env   # DATABASE_URL / JWT_SECRET / SETTINGS_ENCRYPTION_KEY / BANK_PROVIDER を環境に合わせて設定
 npm install
 npm run start:dev
 ```

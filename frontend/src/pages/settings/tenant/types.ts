@@ -15,6 +15,12 @@ export type AiSettingsUpdate = components['schemas']['AiSettingsUpdate'];
 export type AiConnectionTestResult = components['schemas']['AiConnectionTestResult'];
 export type AiProvider = NonNullable<AiIntegrationSettings['provider']>;
 
+export interface BankConnectionStatus {
+  is_linked: boolean;
+  provider: string | null;
+  linked_at: string | null;
+}
+
 export const AI_PROVIDER_LABEL: Record<AiProvider, string> = {
   gemini: 'Gemini',
   openai: 'OpenAI',

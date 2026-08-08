@@ -12,14 +12,18 @@ import {
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useTaxCategories } from '../journal-entries/hooks';
+import { useSyncAllBankAccounts } from '../bank-accounts/hooks';
 import { useAuthStore } from '../../stores/authStore';
 import { Modal } from '../../components/ui/Modal';
 import { toast } from '../../stores/toastStore';
 import { ExternalAccessPage } from './ExternalAccessPage';
 import {
   useAccountingSettings,
+  useBankConnectionStatus,
   useCancelInvitation,
+  useConnectBankConnector,
   useCreateInvitation,
+  useDisconnectBankConnector,
   useIntegrationSettings,
   useInvitations,
   useMembers,
@@ -679,6 +683,12 @@ function IntegrationsTab({ canEdit }: { canEdit: boolean }) {
   const updateAiMutation = useUpdateAiIntegrationSettings();
   const testMutation = useTestAiIntegrationConnection();
 
+  const { data: bankStatus, isLoading: bankStatusLoading } = useBankConnectionStatus();
+  const connectMutation = useConnectBankConnector();
+  const disconnectMutation = useDisconnectBankConnector();
+  const syncAllMutation = useSyncAllBankAccounts();
+  const [showConnectModal, setShowConnectModal] = useState(false);
+
   const [provider, setProvider] = useState<AiProvider>('anthropic');
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [showApiKey, setShowApiKey] = useState(false);
@@ -694,7 +704,6 @@ function IntegrationsTab({ canEdit }: { canEdit: boolean }) {
   }
 
   const ai = integrations.ai;
-  const bank = integrations.bank_connector;
 
   const handleSave = async (): Promise<void> => {
     await updateAiMutation.mutateAsync({
@@ -808,18 +817,87 @@ function IntegrationsTab({ canEdit }: { canEdit: boolean }) {
         <div className="flex items-center justify-between rounded-lg border border-surface-800 bg-surface-850/60 px-4 py-3">
           <div>
             <p className="text-sm text-surface-100">銀行API / 外部決済連携</p>
-            <span className={bank?.status === 'connected' ? 'badge-posted mt-1 inline-flex' : 'badge-draft mt-1 inline-flex'}>
-              {bank?.status === 'connected' ? '接続済み' : '未連携'}
+            <span className={bankStatus?.is_linked ? 'badge-posted mt-1 inline-flex' : 'badge-draft mt-1 inline-flex'}>
+              {bankStatus?.is_linked ? '連携済み' : '未連携'}
             </span>
+            {bankStatus?.is_linked && (
+              <p className="mt-1 text-xs text-surface-500">
+                モック銀行オープンAPI(開発用)と接続されています。最終同期:{' '}
+                {bankStatus.linked_at
+                  ? new Intl.DateTimeFormat('ja-JP', { dateStyle: 'medium', timeStyle: 'short' }).format(
+                      new Date(bankStatus.linked_at),
+                    )
+                  : '-'}
+              </p>
+            )}
           </div>
-          <button type="button" className="btn-secondary" disabled title="対応する銀行/決済プロバイダのOAuth連携は今後の実装予定です">
-            認証連携する
-          </button>
+          {canEdit ? (
+            bankStatus?.is_linked ? (
+              <div className="flex shrink-0 gap-2">
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={syncAllMutation.isPending}
+                  onClick={() => syncAllMutation.mutate()}
+                >
+                  {syncAllMutation.isPending ? '同期中…' : '今すぐ明細同期'}
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={disconnectMutation.isPending}
+                  onClick={() => disconnectMutation.mutate()}
+                >
+                  {disconnectMutation.isPending ? '解除中…' : '連携解除'}
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="btn-primary shrink-0"
+                disabled={bankStatusLoading}
+                onClick={() => setShowConnectModal(true)}
+              >
+                認証連携する
+              </button>
+            )
+          ) : (
+            <span className="text-xs text-surface-500">
+              連携の変更は owner / accounting_manager ロールのみ実行できます
+            </span>
+          )}
         </div>
         <p className="text-xs text-surface-500">
-          現時点では特定の銀行/決済プロバイダとのOAuth連携先が未実装のため、ステータス表示のみのプレースホルダーです。銀行口座情報自体は「銀行口座」画面から手動で登録できます。
+          モック銀行オープンAPI(開発用)経由で明細を取得し、既存の自動消込エンジンと連携します。実際の銀行/決済プロバイダとの本番連携は今後の実装予定です。銀行口座情報自体は「銀行口座」画面から手動で登録できます。
         </p>
       </div>
+
+      {showConnectModal && (
+        <Modal title="銀行APIとの認証連携" onClose={() => setShowConnectModal(false)}>
+          <div className="space-y-4">
+            <p className="text-sm text-surface-200">モック銀行APIへの接続を許可しますか?</p>
+            <p className="text-xs text-surface-500">
+              許可すると、モック銀行オープンAPI(開発用)との連携が有効になり、「今すぐ明細同期」等から明細取得・自動消込が行えるようになります。
+            </p>
+            <div className="flex justify-end gap-2">
+              <button type="button" className="btn-secondary" onClick={() => setShowConnectModal(false)}>
+                キャンセル
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={connectMutation.isPending}
+                onClick={async () => {
+                  await connectMutation.mutateAsync();
+                  setShowConnectModal(false);
+                }}
+              >
+                {connectMutation.isPending ? '連携中…' : '許可して連携'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

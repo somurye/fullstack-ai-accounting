@@ -1,3 +1,7 @@
+// `DatabaseService`等が`process.env`を読むどのモジュールよりも前に読み込む必要があるため、
+// importの最初の行に置く(dotenvは既に設定済みの環境変数を上書きしないため、
+// コンテナ/PaaS等が直接環境変数を注入する本番運用でも安全に無害化される)。
+import 'dotenv/config';
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import helmet from 'helmet';
