@@ -1095,9 +1095,13 @@ export interface paths {
                 query?: {
                     page?: components["parameters"]["PageParam"];
                     page_size?: components["parameters"]["PageSizeParam"];
-                    target_type?: string;
+                    target_type?: "journal_entry" | "expense_report" | "invoice" | "vendor_bill" | "bank_transaction" | "bank_account" | "payroll_import" | "fixed_asset" | "consumption_tax_return" | "payment_batch" | "external_access_grant" | "attachment" | "tenant" | "user";
                     target_id?: string;
                     actor_user_id?: string;
+                    /** @description 操作者名の部分一致検索 */
+                    actor_name?: string;
+                    /** @description 操作者名・対象名・対象IDのフリーワード部分一致検索 */
+                    keyword?: string;
                     occurred_from?: string;
                     occurred_to?: string;
                 };
@@ -5816,14 +5820,19 @@ export interface components {
             id?: string;
             /** Format: uuid */
             actor_user_id?: string | null;
+            /** @description actor_user_id に対応するユーザー名(退会・システム動作時はnull) */
+            actor_user_name?: string | null;
             /** @description 例: journal_entry.posted, invoice.issued */
             action?: string;
             target_type?: string;
             /** Format: uuid */
             target_id?: string | null;
+            /** @description target_type が user の場合のみ設定される対象ユーザー名 */
+            target_name?: string | null;
             before_data?: Record<string, never> | null;
             after_data?: Record<string, never> | null;
             ip_address?: string | null;
+            user_agent?: string | null;
             /** Format: date-time */
             occurred_at?: string;
         };

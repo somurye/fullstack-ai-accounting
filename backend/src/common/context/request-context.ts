@@ -15,6 +15,8 @@ export interface RequestContextStore {
   requestId: string;
   /** クライアントIPアドレス(`audit_logs.ip_address`用)。ミドルウェアが`req.ip`から設定する */
   ipAddress: string | null;
+  /** クライアントUser-Agent(`audit_logs.user_agent`用)。ミドルウェアが`User-Agent`ヘッダーから設定する */
+  userAgent: string | null;
 }
 
 /**
@@ -55,6 +57,10 @@ export class RequestContext {
 
   static getIpAddress(): string | null {
     return this.storage.getStore()?.ipAddress ?? null;
+  }
+
+  static getUserAgent(): string | null {
+    return this.storage.getStore()?.userAgent ?? null;
   }
 
   /** `TenantAuthGuard` がJWT検証成功後に呼び出し、認可済みユーザーIDを反映する */

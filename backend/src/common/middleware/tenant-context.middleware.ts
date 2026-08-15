@@ -27,8 +27,17 @@ export class TenantContextMiddleware implements NestMiddleware {
 
     res.setHeader('X-Request-ID', requestId);
 
-    RequestContext.run({ tenantId, userId: null, requestId, ipAddress: req.ip ?? null }, () => {
-      next();
-    });
+    RequestContext.run(
+      {
+        tenantId,
+        userId: null,
+        requestId,
+        ipAddress: req.ip ?? null,
+        userAgent: req.header('user-agent') ?? null,
+      },
+      () => {
+        next();
+      },
+    );
   }
 }

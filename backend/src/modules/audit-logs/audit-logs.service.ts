@@ -40,8 +40,8 @@ export class AuditLogsService {
   async record(client: PoolClient, tenantId: string, params: RecordAuditLogParams): Promise<void> {
     await client.query(
       `INSERT INTO audit_logs
-         (tenant_id, actor_user_id, action, target_type, target_id, before_data, after_data, ip_address)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::inet)`,
+         (tenant_id, actor_user_id, action, target_type, target_id, before_data, after_data, ip_address, user_agent)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::inet, $9)`,
       [
         tenantId,
         params.actorUserId,
@@ -51,52 +51,78 @@ export class AuditLogsService {
         JSON.stringify(params.beforeData ?? null),
         JSON.stringify(params.afterData ?? null),
         RequestContext.getIpAddress(),
+        RequestContext.getUserAgent(),
       ],
     );
   }
 
+  /**
+   * `keyword`(操作者名・対象名・対象IDのフリーワード検索)は `target_name` という
+   * 計算列(`AUDIT_LOG_TARGET_NAME_EXPR`)に対してもフィルタする必要があるため、
+   * 一度CTE(`filtered`)へ列として確定させてから外側でILIKEするか、WHERE句自体を
+   * 二重生成するかの二択となる。CASE式を二重に埋め込むより読みやすく、
+   * かつオプティマイザにも意図が伝わりやすいCTE方式を採用する。
+   */
   async list(
     tenantId: string,
     userId: string | null,
     query: AuditLogListQuery,
   ): Promise<AuditLogListResult> {
     return this.db.transaction(tenantId, userId, async (client) => {
-      const conditions: string[] = ['tenant_id = $1'];
+      const conditions: string[] = ['al.tenant_id = $1'];
       const params: unknown[] = [tenantId];
 
       if (query.target_type) {
         params.push(query.target_type);
-        conditions.push(`target_type = $${params.length}`);
+        conditions.push(`al.target_type = $${params.length}`);
       }
       if (query.target_id) {
         params.push(query.target_id);
-        conditions.push(`target_id = $${params.length}`);
+        conditions.push(`al.target_id = $${params.length}`);
       }
       if (query.actor_user_id) {
         params.push(query.actor_user_id);
-        conditions.push(`actor_user_id = $${params.length}`);
+        conditions.push(`al.actor_user_id = $${params.length}`);
+      }
+      if (query.actor_name) {
+        params.push(`%${query.actor_name}%`);
+        conditions.push(`actor.name ILIKE $${params.length}`);
       }
       if (query.occurred_from) {
         params.push(query.occurred_from);
-        conditions.push(`occurred_at >= $${params.length}`);
+        conditions.push(`al.occurred_at >= $${params.length}`);
       }
       if (query.occurred_to) {
         params.push(query.occurred_to);
-        conditions.push(`occurred_at <= $${params.length}`);
+        conditions.push(`al.occurred_at <= $${params.length}`);
       }
 
       const whereClause = conditions.join(' AND ');
+      const cte = `
+        WITH filtered AS (
+          SELECT ${AUDIT_LOG_COLUMNS}
+          FROM audit_logs al
+          LEFT JOIN users actor ON actor.id = al.actor_user_id
+          WHERE ${whereClause}
+        )
+      `;
+
+      let keywordClause = '';
+      if (query.keyword) {
+        params.push(`%${query.keyword}%`);
+        const p = params.length;
+        keywordClause = `WHERE (actor_user_name ILIKE $${p} OR target_name ILIKE $${p} OR target_id::text ILIKE $${p} OR action ILIKE $${p})`;
+      }
 
       const countResult = await client.query<{ count: string }>(
-        `SELECT COUNT(*)::text AS count FROM audit_logs WHERE ${whereClause}`,
+        `${cte} SELECT COUNT(*)::text AS count FROM filtered ${keywordClause}`,
         params,
       );
       const totalCount = Number(countResult.rows[0]?.count ?? 0);
 
       const listParams = [...params, query.page_size, (query.page - 1) * query.page_size];
       const result = await client.query<AuditLogRow>(
-        `SELECT ${AUDIT_LOG_COLUMNS} FROM audit_logs
-         WHERE ${whereClause}
+        `${cte} SELECT * FROM filtered ${keywordClause}
          ORDER BY occurred_at DESC
          LIMIT $${listParams.length - 1} OFFSET $${listParams.length}`,
         listParams,

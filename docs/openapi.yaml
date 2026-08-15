@@ -638,13 +638,39 @@ paths:
         - $ref: "#/components/parameters/PageSizeParam"
         - name: target_type
           in: query
-          schema: { type: string }
+          schema:
+            type: string
+            enum:
+              [
+                journal_entry,
+                expense_report,
+                invoice,
+                vendor_bill,
+                bank_transaction,
+                bank_account,
+                payroll_import,
+                fixed_asset,
+                consumption_tax_return,
+                payment_batch,
+                external_access_grant,
+                attachment,
+                tenant,
+                user,
+              ]
         - name: target_id
           in: query
           schema: { type: string, format: uuid }
         - name: actor_user_id
           in: query
           schema: { type: string, format: uuid }
+        - name: actor_name
+          in: query
+          description: 操作者名の部分一致検索
+          schema: { type: string }
+        - name: keyword
+          in: query
+          description: 操作者名・対象名・対象IDのフリーワード部分一致検索
+          schema: { type: string }
         - name: occurred_from
           in: query
           schema: { type: string, format: date-time }
@@ -3208,12 +3234,15 @@ components:
       properties:
         id: { type: string, format: uuid }
         actor_user_id: { type: string, format: uuid, nullable: true }
+        actor_user_name: { type: string, nullable: true, description: "actor_user_id に対応するユーザー名(退会・システム動作時はnull)" }
         action: { type: string, description: "例: journal_entry.posted, invoice.issued" }
         target_type: { type: string }
         target_id: { type: string, format: uuid, nullable: true }
+        target_name: { type: string, nullable: true, description: "target_type が user の場合のみ設定される対象ユーザー名" }
         before_data: { type: object, nullable: true }
         after_data: { type: object, nullable: true }
         ip_address: { type: string, nullable: true }
+        user_agent: { type: string, nullable: true }
         occurred_at: { type: string, format: date-time }
     AuditLogListResponse:
       type: object
