@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, LogOut, User as UserIcon } from 'lucide-react';
 import type { ChangeEvent } from 'react';
 import { logout as logoutRequest } from '../../pages/auth/api';
@@ -17,12 +18,18 @@ export function Header() {
   const currentTenantId = useAuthStore((state) => state.currentTenantId);
   const setCurrentTenant = useAuthStore((state) => state.setCurrentTenant);
   const logout = useAuthStore((state) => state.logout);
+  const queryClient = useQueryClient();
 
   const currentTenantName =
     availableTenants.find((t) => t.tenant_id === currentTenantId)?.tenant_name ?? '未選択';
 
   const handleTenantChange = (event: ChangeEvent<HTMLSelectElement>): void => {
-    setCurrentTenant(event.target.value);
+    const nextTenantId = event.target.value;
+    // 空値(未選択option等)や、選択肢が確定する前の中途半端なイベントは無視する。
+    if (!nextTenantId || nextTenantId === currentTenantId) return;
+    setCurrentTenant(nextTenantId);
+    // 新しいテナントIDを伴ったヘッダーで各種データを再取得させる。
+    void queryClient.invalidateQueries();
   };
 
   const handleLogout = (): void => {

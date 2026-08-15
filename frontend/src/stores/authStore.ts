@@ -71,21 +71,37 @@ export const useAuthStore = create<AuthStore>()(
       ...initialState,
 
       setSession: ({ accessToken, refreshToken = null, user = null, tenants = [] }) => {
-        set((state) => ({
-          accessToken,
-          refreshToken,
-          user: user ?? state.user,
-          availableTenants: tenants.length > 0 ? tenants : state.availableTenants,
-          currentTenantId:
-            state.currentTenantId ??
-            tenants[0]?.tenant_id ??
-            state.availableTenants[0]?.tenant_id ??
-            null,
-        }));
+        set((state) => {
+          // 空文字は「未選択」と同義に扱う(過去に空文字が永続化された場合の
+          // 自己修復も兼ねる)。`??` は `""` にはフォールバックしないため `||` を使う。
+          const existingCurrentTenantId = state.currentTenantId || null;
+          return {
+            accessToken,
+            refreshToken,
+            user: user ?? state.user,
+            availableTenants: tenants.length > 0 ? tenants : state.availableTenants,
+            currentTenantId:
+              existingCurrentTenantId ??
+              tenants[0]?.tenant_id ??
+              state.availableTenants[0]?.tenant_id ??
+              null,
+          };
+        });
       },
 
       setCurrentTenant: (tenantId) => {
-        set({ currentTenantId: tenantId });
+        if (!tenantId) return;
+        set((state) => {
+          // テナント一覧が既知の場合、そこに存在しないIDへの切替は無視する
+          // (不正な値や、選択肢が確定する前の中途半端なonChangeイベント対策)。
+          if (
+            state.availableTenants.length > 0 &&
+            !state.availableTenants.some((tenant) => tenant.tenant_id === tenantId)
+          ) {
+            return state;
+          }
+          return { ...state, currentTenantId: tenantId };
+        });
       },
 
       setUser: (user) => {
