@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import iconv from 'iconv-lite';
 
 /**
  * zengin-format.ts
@@ -15,10 +16,11 @@ import { createHash } from 'crypto';
  * 検査文字アルゴリズムではなく、口座情報+金額の数字列に対する簡易mod10
  * チェックサム(改ざん・入力誤り検知用)として実装している。
  *
- * ファイルは実際のShift-JISバイト列ではなく、半角カナ相当のUnicodeコードポイント
- * (U+FF61-U+FF9F等)を1文字1バイト相当として扱うテキスト表現で生成する
- * (Node標準にShift-JISエンコーダがなく、本タスクの依存追加はスコープ外のため)。
- * 実際の銀行送信時はこのテキストをShift-JISへ再エンコードする必要がある。
+ * `generateZenginTransferFile()` はJS文字列(半角カナ相当のUnicodeコードポイント
+ * U+FF61-U+FF9F等を1文字1バイト相当として扱うテキスト表現)を返す。実際の銀行送信
+ * では全銀協仕様上Shift-JISでの提出が必須のため、`encodeZenginContentToShiftJis()`で
+ * `iconv-lite`によりバイト列へ変換してからダウンロードレスポンスとして返す
+ * (`payment-batches.controller.ts`)。
  */
 
 const HALF_WIDTH_KANA_MAP: Record<string, string> = {
@@ -63,10 +65,23 @@ export function toHalfWidthKana(input: string | null | undefined): string {
   return result;
 }
 
+/**
+ * `iconv.encode(value, 'Shift_JIS').length`でShift-JISバイト長を測る。
+ * `toHalfWidthKana()`は半角カナ・半角英数のみを変換対象とし、漢字(会社名・銀行名等に
+ * 残りうる)はそのまま通過させるため、漢字はShift-JISで2バイトになる。
+ * JS文字列の`.length`(UTF-16コードユニット数)で桁数を測ると、漢字混入時に
+ * 実際のバイト長とズレて固定長120バイトの前提が崩れるため、必ずバイト長基準で
+ * 切り詰め・パディングする。
+ */
 function padText(value: string | null | undefined, length: number): string {
   const converted = toHalfWidthKana(value ?? '').toUpperCase();
-  const truncated = converted.length > length ? converted.slice(0, length) : converted;
-  return truncated.padEnd(length, ' ');
+
+  let truncated = converted;
+  while (iconv.encode(truncated, 'Shift_JIS').length > length && truncated.length > 0) {
+    truncated = truncated.slice(0, -1);
+  }
+  const usedBytes = iconv.encode(truncated, 'Shift_JIS').length;
+  return truncated + ' '.repeat(Math.max(0, length - usedBytes));
 }
 
 function padNumber(value: number, length: number): string {
@@ -119,9 +134,16 @@ export interface ZenginTransferItem {
   amount: number;
 }
 
+/**
+ * 各固定長項目は`padText`/`padNumber`によりバイト長で厳密に120へ揃えられているはずだが、
+ * ダミー埋め(`' '.repeat(n)`等)のnが誤っていた場合等の回帰を検知するため、
+ * 最終防衛としてShift-JISエンコード後の実バイト長で再検証する
+ * (JS文字列の`.length`では漢字混入時のズレを検知できないため不十分)。
+ */
 function assertRecordLength(record: string, label: string): string {
-  if (record.length !== 120) {
-    throw new Error(`${label}レコードの長さが120バイトではありません(実際: ${record.length})`);
+  const byteLength = iconv.encode(record, 'Shift_JIS').length;
+  if (byteLength !== 120) {
+    throw new Error(`${label}レコードの長さが120バイト(Shift-JIS換算)ではありません(実際: ${byteLength}バイト)`);
   }
   return record;
 }
@@ -220,4 +242,14 @@ export function generateZenginTransferFile(
   const content = lines.join('\r\n') + '\r\n';
   const sha256 = createHash('sha256').update(content, 'utf8').digest('hex');
   return { content, sha256, recordCount: lines.length };
+}
+
+/**
+ * 生成したテキスト表現を実際の銀行提出用Shift-JISバイト列へ変換する。
+ * `toHalfWidthKana()`により全角文字は既に半角へ正規化済みのため、変換対象は
+ * ASCII/半角カナ(1バイト圏)のみで、Shift-JISの実装差異(CP932拡張領域等)による
+ * 変換結果のブレは生じない。
+ */
+export function encodeZenginContentToShiftJis(content: string): Buffer {
+  return iconv.encode(content, 'Shift_JIS');
 }

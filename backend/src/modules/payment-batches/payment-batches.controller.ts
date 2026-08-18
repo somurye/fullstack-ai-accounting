@@ -6,6 +6,7 @@ import { AppException } from '../../common/exceptions/app.exception';
 import { TenantAuthGuard } from '../../common/guards/tenant-auth.guard';
 import { successEnvelope } from '../../common/http/envelope';
 import { parseWithZod } from '../../common/validation/zod-parse';
+import { encodeZenginContentToShiftJis } from '../../common/zengin/zengin-format';
 import { exportZenginSchema, paymentBatchListQuerySchema } from './dto/payment-batch.schemas';
 import { PaymentBatchesService } from './payment-batches.service';
 
@@ -57,8 +58,17 @@ export class PaymentBatchesController {
     return successEnvelope(batch);
   }
 
+  /**
+   * 全銀協仕様は提出データがShift-JISであることを前提とするため、生成したテキストを
+   * `encodeZenginContentToShiftJis()`でバイト列へ変換して返す
+   * (`?encoding=utf8`指定時のみ、内容確認・デバッグ用にUTF-8のまま返す)。
+   */
   @Get(':id/download')
-  async download(@Param('id') id: string, @Res() res: Response) {
+  async download(
+    @Param('id') id: string,
+    @Query('encoding') encoding: string | undefined,
+    @Res() res: Response,
+  ) {
     const tenantId = this.requireTenantId();
     const parsedId = parseWithZod(idParamSchema, id);
     const { batchNo, content } = await this.paymentBatchesService.downloadZenginFile(
@@ -66,11 +76,16 @@ export class PaymentBatchesController {
       RequestContext.getUserId(),
       parsedId,
     );
+
+    const useUtf8 = encoding === 'utf8';
+    const body = useUtf8 ? content : encodeZenginContentToShiftJis(content);
+    const charset = useUtf8 ? 'utf-8' : 'Shift_JIS';
+
     res
       .status(200)
-      .header('Content-Type', 'text/plain; charset=utf-8')
+      .header('Content-Type', `text/plain; charset=${charset}`)
       .header('Content-Disposition', `attachment; filename="${batchNo}.txt"`)
-      .send(content);
+      .send(body);
   }
 
   private requireTenantId(): string {

@@ -38,6 +38,17 @@ export async function uploadAttachment(params: AttachmentUploadParams): Promise<
   return data.data;
 }
 
+/**
+ * 証憑プレビュー用にファイル実体を取得する。`apiClient`のBearerトークン/
+ * X-Tenant-IDヘッダーを通す必要があるため、`<img src="...">`への直接指定はできず、
+ * blobとして取得してobject URLを生成する(呼び出し側で`URL.revokeObjectURL`必須)。
+ */
+export async function fetchAttachmentContent(id: string): Promise<{ blob: Blob; contentType: string }> {
+  const response = await apiClient.get(`/attachments/${id}/content`, { responseType: 'blob' });
+  const contentType = (response.headers['content-type'] as string | undefined) ?? 'application/octet-stream';
+  return { blob: response.data as Blob, contentType };
+}
+
 export async function linkAttachment(
   attachmentId: string,
   linkableType: AttachmentLinkableType,

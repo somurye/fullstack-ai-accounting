@@ -602,6 +602,22 @@ paths:
                 $ref: "#/components/schemas/AttachmentResponse"
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /attachments/{id}/content:
+    get:
+      tags: [Attachments]
+      summary: "証憑の実ファイルをストリーム返却する(電帳法プレビュー/インライン表示用)"
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: "ファイル本体(Content-Type/Content-Disposition: inline は元ファイルに応じて設定)"
+          content:
+            image/png: { schema: { type: string, format: binary } }
+            image/jpeg: { schema: { type: string, format: binary } }
+            application/pdf: { schema: { type: string, format: binary } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /attachments/{id}/links:
     post:
       tags: [Attachments]

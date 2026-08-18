@@ -1033,6 +1033,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/attachments/{id}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 証憑の実ファイルをストリーム返却する(電帳法プレビュー/インライン表示用) */
+        get: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description 操作対象テナントのUUID。JWTクレームの tenant_id と一致する必要がある。 */
+                    "X-Tenant-ID": components["parameters"]["TenantIdHeader"];
+                };
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description ファイル本体(Content-Type/Content-Disposition: inline は元ファイルに応じて設定) */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "image/png": string;
+                        "image/jpeg": string;
+                        "application/pdf": string;
+                    };
+                };
+                404: components["responses"]["NotFound"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/attachments/{id}/links": {
         parameters: {
             query?: never;

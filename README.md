@@ -58,12 +58,23 @@ docker-compose up -d
 
 `pgvector/pgvector:pg16` イメージでPostgreSQLが `localhost:5432` に起動する（DB名: `keiri_kaikei`）。
 
-続けて、スーパーユーザー`postgres`でスキーマを流し込む（`001`がテーブル本体・RLS・実行ロール作成、`002`/`003`が銀行連携機能向けの追加カラム）。
+続けて、スーパーユーザー`postgres`でスキーマを流し込む（`001`がテーブル本体・RLS・実行ロール作成、`002`以降は追加カラム・追加機能向けの増分マイグレーション）。
+
+`sql/001_initial_schema_all_in_one.sql` 〜 `sql/005_*.sql` までを連番順に一括適用するには、`backend`ディレクトリで以下を実行する（`DATABASE_URL`は`postgres`スーパーユーザーで接続できる値を指定する。`sql/`配下に新しいマイグレーションファイルが追加されても、個別に`psql -f`を積み増す必要がなくなる）。
+
+```bash
+cd backend
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/keiri_kaikei" npm run db:migrate
+```
+
+個別に1ファイルずつ適用する場合は従来どおり以下でも可能:
 
 ```bash
 docker compose exec -T postgres psql -U postgres -d keiri_kaikei < sql/001_initial_schema_all_in_one.sql
 docker compose exec -T postgres psql -U postgres -d keiri_kaikei < sql/002_bank_integration.sql
 docker compose exec -T postgres psql -U postgres -d keiri_kaikei < sql/003_bank_connector_link_status.sql
+docker compose exec -T postgres psql -U postgres -d keiri_kaikei < sql/004_rbac_bookkeeper_role.sql
+docker compose exec -T postgres psql -U postgres -d keiri_kaikei < sql/005_audit_logs_search_upgrade.sql
 ```
 
 ### 2. バックエンド
@@ -95,3 +106,4 @@ npm run dev
 
 - `.env` および実際のAPIキー・DB接続情報はコミットしないこと（`.gitignore` で除外済み）。
 - 本番環境の `JWT_SECRET` / `SETTINGS_ENCRYPTION_KEY` / DB認証情報は、必ずシークレットマネージャ経由で注入すること。
+- `NODE_ENV=production` 起動時、`JWT_SECRET` / `SETTINGS_ENCRYPTION_KEY` が未設定、または `.env.example` 由来のデフォルト値のままの場合はfail-fastでプロセスが即座に終了する（`backend/src/config/validate-production-env.ts`）。

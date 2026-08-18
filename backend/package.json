@@ -15,6 +15,7 @@
     "test": "jest",
     "generate:types": "openapi-typescript ../docs/openapi.yaml -o src/types/api.generated.ts",
     "db:apply-schema": "psql \"$DATABASE_URL\" -f ../sql/001_initial_schema_all_in_one.sql",
+    "db:migrate": "node ../scripts/db-migrate.js",
     "db:verify-schema": "python3 ../scripts/verify_schema.py --dsn \"$DATABASE_URL\""
   },
   "dependencies": {
@@ -25,6 +26,7 @@
     "@nestjs/platform-express": "^10.4.5",
     "dotenv": "^17.4.2",
     "helmet": "^7.1.0",
+    "iconv-lite": "^0.6.3",
     "pg": "^8.13.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",

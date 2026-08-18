@@ -1,5 +1,6 @@
-import { Link2, Upload } from 'lucide-react';
+import { Eye, Link2, Upload } from 'lucide-react';
 import { useState } from 'react';
+import { AttachmentViewerModal } from './AttachmentViewerModal';
 import { useAttachments, useLinkAttachment, useUploadAttachment } from './hooks';
 import { ATTACHMENT_LINKABLE_TYPES, type Attachment, type AttachmentLinkableType } from './types';
 
@@ -155,6 +156,7 @@ export function AttachmentSearchPage() {
   const [dateTo, setDateTo] = useState('');
   const [amount, setAmount] = useState('');
   const [counterpartyName, setCounterpartyName] = useState('');
+  const [previewAttachment, setPreviewAttachment] = useState<Attachment | null>(null);
 
   const { data, isLoading } = useAttachments({
     transaction_date_from: dateFrom || undefined,
@@ -232,15 +234,29 @@ export function AttachmentSearchPage() {
                   {a.transaction_date} ・ {currencyFormatter.format(a.amount ?? 0)} ・ {a.counterparty_name}
                 </p>
               </div>
-              <span className="text-xs text-surface-500">
-                {a.uploaded_at ? dateTimeFormatter.format(new Date(a.uploaded_at)) : '—'}
-              </span>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-surface-500">
+                  {a.uploaded_at ? dateTimeFormatter.format(new Date(a.uploaded_at)) : '—'}
+                </span>
+                <button
+                  type="button"
+                  className="btn-secondary inline-flex items-center gap-1 !py-1 text-xs"
+                  onClick={() => setPreviewAttachment(a)}
+                >
+                  <Eye className="h-3.5 w-3.5" />
+                  プレビュー
+                </button>
+              </div>
             </div>
             <p className="break-all font-mono text-[11px] text-surface-500">SHA-256: {a.file_hash}</p>
             <LinkRow attachment={a} />
           </div>
         ))}
       </div>
+
+      {previewAttachment && (
+        <AttachmentViewerModal attachment={previewAttachment} onClose={() => setPreviewAttachment(null)} />
+      )}
     </div>
   );
 }

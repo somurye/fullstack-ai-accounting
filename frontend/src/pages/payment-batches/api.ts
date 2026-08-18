@@ -39,10 +39,16 @@ export async function exportZengin(payload: ExportZenginRequest): Promise<Paymen
   return data.data;
 }
 
-/** 全銀協FBデータファイルをダウンロードし、ブラウザから保存できるようにする */
+/**
+ * 全銀協FBデータファイルをダウンロードし、ブラウザから保存できるようにする。
+ * サーバーは銀行提出用にShift-JISでエンコード済みのバイト列を返す(`Content-Type`に
+ * 実際の文字コードが載る)ため、ブラウザ側で再エンコードせずバイト列をそのまま
+ * blobへ渡す(テキストとして読み込むと文字コードが化けるため`responseType: 'blob'`必須)。
+ */
 export async function downloadPaymentBatchFile(id: string, batchNo: string): Promise<void> {
   const response = await apiClient.get(`/payment-batches/${id}/download`, { responseType: 'blob' });
-  const blob = new Blob([response.data], { type: 'text/plain;charset=utf-8' });
+  const contentType = (response.headers['content-type'] as string | undefined) ?? 'text/plain;charset=Shift_JIS';
+  const blob = new Blob([response.data], { type: contentType });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;

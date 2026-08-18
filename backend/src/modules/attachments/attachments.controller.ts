@@ -1,3 +1,4 @@
+import { createReadStream } from 'node:fs';
 import {
   Body,
   Controller,
@@ -5,11 +6,13 @@ import {
   Param,
   Post,
   Query,
+  Res,
   UploadedFile,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
 import { z } from 'zod';
 import { RequestContext } from '../../common/context/request-context';
 import { AppException } from '../../common/exceptions/app.exception';
@@ -76,6 +79,41 @@ export class AttachmentsController {
       parsedId,
     );
     return successEnvelope(attachment);
+  }
+
+  /**
+   * 電帳法(電子帳簿保存法)のスキャナ保存要件は、保存した証憑を必要に応じて速やかに
+   * 可視できることを求める。`Content-Disposition: inline`でブラウザ内プレビュー
+   * (画像/PDF)をそのまま可能にする。
+   */
+  @Get(':id/content')
+  @UseGuards(ExternalAccessGuard)
+  async content(@Param('id') id: string, @Res() res: Response): Promise<void> {
+    const tenantId = this.requireTenantId();
+    const parsedId = parseWithZod(idParamSchema, id);
+    const { storagePath, mimeType, fileName } = await this.attachmentsService.getFileContent(
+      tenantId,
+      RequestContext.getUserId(),
+      parsedId,
+    );
+
+    res
+      .status(200)
+      .header('Content-Type', mimeType || 'application/octet-stream')
+      .header('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(fileName)}`);
+
+    const stream = createReadStream(storagePath);
+    stream.on('error', () => {
+      if (!res.headersSent) {
+        res.status(404).json({
+          success: false,
+          error: { code: 'NOT_FOUND', message: '証憑ファイルの実体が見つかりません' },
+        });
+      } else {
+        res.end();
+      }
+    });
+    stream.pipe(res);
   }
 
   @Post(':id/links')

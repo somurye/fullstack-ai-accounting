@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { Injectable } from '@nestjs/common';
 import { DatabaseService } from '../../database/database.service';
 import { AppException } from '../../common/exceptions/app.exception';
@@ -61,9 +61,14 @@ export class AttachmentsService {
   ): Promise<AttachmentDto> {
     const fileHash = createHash('sha256').update(file.buffer).digest('hex');
 
+    // `path.basename`でディレクトリ区切り(`../`等)を物理除去してからパス結合に用いる。
+    // これを怠ると、細工されたoriginalname("../../etc/passwd"等)がテナント専用ディレクトリを
+    // 脱出するパストラバーサルに悪用されうる。DBへ保存する表示用ファイル名も同じ値で統一する。
+    const safeFileName = basename(file.originalname);
+
     const tenantDir = join(STORAGE_ROOT, tenantId);
     await mkdir(tenantDir, { recursive: true });
-    const storedFileName = `${randomUUID()}_${file.originalname}`;
+    const storedFileName = `${randomUUID()}_${safeFileName}`;
     const storagePath = join(tenantDir, storedFileName);
     await writeFile(storagePath, file.buffer);
 
@@ -75,7 +80,7 @@ export class AttachmentsService {
          RETURNING ${ATTACHMENT_COLUMNS}`,
         [
           tenantId,
-          file.originalname,
+          safeFileName,
           storagePath,
           file.mimetype,
           fileHash,
@@ -166,6 +171,29 @@ export class AttachmentsService {
         throw AppException.notFound('指定された添付ファイルが見つかりません');
       }
       return mapAttachmentRow(row);
+    });
+  }
+
+  /**
+   * `GET /attachments/:id/content` 用。テナント認可(RLS)を通過した上で、ディスク上の
+   * 実ファイルパスとプレビュー表示に必要なメタデータのみを返す(証憑プレビュー/
+   * インラインダウンロードは電帳法のスキャナ保存要件で求められる可視性確保のため)。
+   */
+  async getFileContent(
+    tenantId: string,
+    userId: string | null,
+    id: string,
+  ): Promise<{ storagePath: string; mimeType: string; fileName: string }> {
+    return this.db.transaction(tenantId, userId, async (client) => {
+      const result = await client.query<{ storage_path: string; mime_type: string; file_name: string }>(
+        `SELECT storage_path, mime_type, file_name FROM attachments WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, id],
+      );
+      const row = result.rows[0];
+      if (!row) {
+        throw AppException.notFound('指定された添付ファイルが見つかりません');
+      }
+      return { storagePath: row.storage_path, mimeType: row.mime_type, fileName: row.file_name };
     });
   }
 

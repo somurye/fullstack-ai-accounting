@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppLayout } from './components/layout/AppLayout';
 import { Role } from './lib/rbac';
@@ -7,36 +8,112 @@ import { ForbiddenPage } from './pages/ForbiddenPage';
 import { LoginPage } from './pages/auth/LoginPage';
 import { SignupPage } from './pages/auth/SignupPage';
 import { AcceptInvitePage } from './pages/auth/AcceptInvitePage';
-import { DashboardPage } from './pages/DashboardPage';
-import { JournalEntryFormPage } from './pages/journal-entries/JournalEntryFormPage';
-import { JournalEntryListPage } from './pages/journal-entries/JournalEntryListPage';
-import { ExpenseReportFormPage } from './pages/expense-reports/ExpenseReportFormPage';
-import { ExpenseReportListPage } from './pages/expense-reports/ExpenseReportListPage';
-import { InvoiceFormPage } from './pages/invoices/InvoiceFormPage';
-import { InvoiceListPage } from './pages/invoices/InvoiceListPage';
-import { VendorBillFormPage } from './pages/vendor-bills/VendorBillFormPage';
-import { VendorBillListPage } from './pages/vendor-bills/VendorBillListPage';
-import { PaymentBatchListPage } from './pages/payment-batches/PaymentBatchListPage';
-import { FixedAssetFormPage } from './pages/fixed-assets/FixedAssetFormPage';
-import { FixedAssetListPage } from './pages/fixed-assets/FixedAssetListPage';
-import { ConsumptionTaxReturnsPage } from './pages/consumption-tax-returns/ConsumptionTaxReturnsPage';
-import { ReportsPage } from './pages/reports/ReportsPage';
-import { AiSuggestionListPage } from './pages/ai-suggestions/AiSuggestionListPage';
-import { AuditLogListPage } from './pages/audit-logs/AuditLogListPage';
-import { AttachmentSearchPage } from './pages/attachments/AttachmentSearchPage';
-import { ExternalAccessPage } from './pages/settings/ExternalAccessPage';
-import { CustomerListPage } from './pages/customers/CustomerListPage';
-import { VendorListPage } from './pages/vendors/VendorListPage';
-import { AccountsSettingsPage } from './pages/settings/AccountsSettingsPage';
-import { TaxCategoriesSettingsPage } from './pages/settings/TaxCategoriesSettingsPage';
-import { DepartmentsSettingsPage } from './pages/settings/DepartmentsSettingsPage';
-import { BankAccountListPage } from './pages/bank-accounts/BankAccountListPage';
-import { BankTransactionListPage } from './pages/bank-transactions/BankTransactionListPage';
-import { AutoJournalRuleListPage } from './pages/settings/AutoJournalRuleListPage';
-import { PayrollImportPage } from './pages/payroll-imports/PayrollImportPage';
-import { PayrollMappingListPage } from './pages/payroll-imports/PayrollMappingListPage';
-import { ApprovalRequestListPage } from './pages/approval-requests/ApprovalRequestListPage';
-import { SettingsPage } from './pages/settings/SettingsPage';
+
+/**
+ * ページ単位のコード分割。
+ * ==========================
+ * ダッシュボード以降の各業務画面は認証後にしか到達しないため、初回バンドル
+ * (`dist/assets/index-*.js`)に含める必要がない。`React.lazy`による動的importで
+ * ルートごとの別チャンクへ分割し、初回ロード時間を短縮する。名前付きexportのため
+ * `.then(m => ({ default: m.XxxPage }))`で`React.lazy`が要求するdefault exportへ
+ * 変換している。
+ */
+const DashboardPage = lazy(() => import('./pages/DashboardPage').then((m) => ({ default: m.DashboardPage })));
+const JournalEntryFormPage = lazy(() =>
+  import('./pages/journal-entries/JournalEntryFormPage').then((m) => ({ default: m.JournalEntryFormPage })),
+);
+const JournalEntryListPage = lazy(() =>
+  import('./pages/journal-entries/JournalEntryListPage').then((m) => ({ default: m.JournalEntryListPage })),
+);
+const ExpenseReportFormPage = lazy(() =>
+  import('./pages/expense-reports/ExpenseReportFormPage').then((m) => ({ default: m.ExpenseReportFormPage })),
+);
+const ExpenseReportListPage = lazy(() =>
+  import('./pages/expense-reports/ExpenseReportListPage').then((m) => ({ default: m.ExpenseReportListPage })),
+);
+const InvoiceFormPage = lazy(() =>
+  import('./pages/invoices/InvoiceFormPage').then((m) => ({ default: m.InvoiceFormPage })),
+);
+const InvoiceListPage = lazy(() =>
+  import('./pages/invoices/InvoiceListPage').then((m) => ({ default: m.InvoiceListPage })),
+);
+const VendorBillFormPage = lazy(() =>
+  import('./pages/vendor-bills/VendorBillFormPage').then((m) => ({ default: m.VendorBillFormPage })),
+);
+const VendorBillListPage = lazy(() =>
+  import('./pages/vendor-bills/VendorBillListPage').then((m) => ({ default: m.VendorBillListPage })),
+);
+const PaymentBatchListPage = lazy(() =>
+  import('./pages/payment-batches/PaymentBatchListPage').then((m) => ({ default: m.PaymentBatchListPage })),
+);
+const FixedAssetFormPage = lazy(() =>
+  import('./pages/fixed-assets/FixedAssetFormPage').then((m) => ({ default: m.FixedAssetFormPage })),
+);
+const FixedAssetListPage = lazy(() =>
+  import('./pages/fixed-assets/FixedAssetListPage').then((m) => ({ default: m.FixedAssetListPage })),
+);
+const ConsumptionTaxReturnsPage = lazy(() =>
+  import('./pages/consumption-tax-returns/ConsumptionTaxReturnsPage').then((m) => ({
+    default: m.ConsumptionTaxReturnsPage,
+  })),
+);
+const ReportsPage = lazy(() => import('./pages/reports/ReportsPage').then((m) => ({ default: m.ReportsPage })));
+const AiSuggestionListPage = lazy(() =>
+  import('./pages/ai-suggestions/AiSuggestionListPage').then((m) => ({ default: m.AiSuggestionListPage })),
+);
+const AuditLogListPage = lazy(() =>
+  import('./pages/audit-logs/AuditLogListPage').then((m) => ({ default: m.AuditLogListPage })),
+);
+const AttachmentSearchPage = lazy(() =>
+  import('./pages/attachments/AttachmentSearchPage').then((m) => ({ default: m.AttachmentSearchPage })),
+);
+const ExternalAccessPage = lazy(() =>
+  import('./pages/settings/ExternalAccessPage').then((m) => ({ default: m.ExternalAccessPage })),
+);
+const CustomerListPage = lazy(() =>
+  import('./pages/customers/CustomerListPage').then((m) => ({ default: m.CustomerListPage })),
+);
+const VendorListPage = lazy(() =>
+  import('./pages/vendors/VendorListPage').then((m) => ({ default: m.VendorListPage })),
+);
+const AccountsSettingsPage = lazy(() =>
+  import('./pages/settings/AccountsSettingsPage').then((m) => ({ default: m.AccountsSettingsPage })),
+);
+const TaxCategoriesSettingsPage = lazy(() =>
+  import('./pages/settings/TaxCategoriesSettingsPage').then((m) => ({ default: m.TaxCategoriesSettingsPage })),
+);
+const DepartmentsSettingsPage = lazy(() =>
+  import('./pages/settings/DepartmentsSettingsPage').then((m) => ({ default: m.DepartmentsSettingsPage })),
+);
+const BankAccountListPage = lazy(() =>
+  import('./pages/bank-accounts/BankAccountListPage').then((m) => ({ default: m.BankAccountListPage })),
+);
+const BankTransactionListPage = lazy(() =>
+  import('./pages/bank-transactions/BankTransactionListPage').then((m) => ({ default: m.BankTransactionListPage })),
+);
+const AutoJournalRuleListPage = lazy(() =>
+  import('./pages/settings/AutoJournalRuleListPage').then((m) => ({ default: m.AutoJournalRuleListPage })),
+);
+const PayrollImportPage = lazy(() =>
+  import('./pages/payroll-imports/PayrollImportPage').then((m) => ({ default: m.PayrollImportPage })),
+);
+const PayrollMappingListPage = lazy(() =>
+  import('./pages/payroll-imports/PayrollMappingListPage').then((m) => ({ default: m.PayrollMappingListPage })),
+);
+const ApprovalRequestListPage = lazy(() =>
+  import('./pages/approval-requests/ApprovalRequestListPage').then((m) => ({
+    default: m.ApprovalRequestListPage,
+  })),
+);
+const SettingsPage = lazy(() => import('./pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
+
+function RouteFallback() {
+  return (
+    <div className="flex h-full min-h-[40vh] items-center justify-center">
+      <p className="text-sm text-surface-500">読み込み中…</p>
+    </div>
+  );
+}
 
 /**
  * App
@@ -50,62 +127,64 @@ import { SettingsPage } from './pages/settings/SettingsPage';
  */
 export default function App() {
   return (
-    <Routes>
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/signup" element={<SignupPage />} />
-      <Route path="/accept-invite" element={<AcceptInvitePage />} />
+    <Suspense fallback={<RouteFallback />}>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/signup" element={<SignupPage />} />
+        <Route path="/accept-invite" element={<AcceptInvitePage />} />
 
-      <Route element={<ProtectedRoute />}>
-        <Route element={<AppLayout />}>
-          <Route index element={<Navigate to="/dashboard" replace />} />
-          <Route path="/dashboard" element={<DashboardPage />} />
-          <Route path="/journal-entries" element={<JournalEntryListPage />} />
-          <Route path="/journal-entries/new" element={<JournalEntryFormPage />} />
-          <Route path="/journal-entries/:id" element={<JournalEntryFormPage />} />
-          <Route path="/expense-reports" element={<ExpenseReportListPage />} />
-          <Route path="/expense-reports/new" element={<ExpenseReportFormPage />} />
-          <Route path="/expense-reports/:id" element={<ExpenseReportFormPage />} />
-          <Route path="/invoices" element={<InvoiceListPage />} />
-          <Route path="/invoices/new" element={<InvoiceFormPage />} />
-          <Route path="/invoices/:id" element={<InvoiceFormPage />} />
-          <Route path="/vendor-bills" element={<VendorBillListPage />} />
-          <Route path="/vendor-bills/new" element={<VendorBillFormPage />} />
-          <Route path="/vendor-bills/:id" element={<VendorBillFormPage />} />
-          <Route path="/payment-batches" element={<PaymentBatchListPage />} />
-          <Route path="/fixed-assets" element={<FixedAssetListPage />} />
-          <Route path="/fixed-assets/new" element={<FixedAssetFormPage />} />
-          <Route path="/fixed-assets/:id" element={<FixedAssetFormPage />} />
-          <Route path="/consumption-tax-returns" element={<ConsumptionTaxReturnsPage />} />
-          <Route path="/forbidden" element={<ForbiddenPage />} />
+        <Route element={<ProtectedRoute />}>
+          <Route element={<AppLayout />}>
+            <Route index element={<Navigate to="/dashboard" replace />} />
+            <Route path="/dashboard" element={<DashboardPage />} />
+            <Route path="/journal-entries" element={<JournalEntryListPage />} />
+            <Route path="/journal-entries/new" element={<JournalEntryFormPage />} />
+            <Route path="/journal-entries/:id" element={<JournalEntryFormPage />} />
+            <Route path="/expense-reports" element={<ExpenseReportListPage />} />
+            <Route path="/expense-reports/new" element={<ExpenseReportFormPage />} />
+            <Route path="/expense-reports/:id" element={<ExpenseReportFormPage />} />
+            <Route path="/invoices" element={<InvoiceListPage />} />
+            <Route path="/invoices/new" element={<InvoiceFormPage />} />
+            <Route path="/invoices/:id" element={<InvoiceFormPage />} />
+            <Route path="/vendor-bills" element={<VendorBillListPage />} />
+            <Route path="/vendor-bills/new" element={<VendorBillFormPage />} />
+            <Route path="/vendor-bills/:id" element={<VendorBillFormPage />} />
+            <Route path="/payment-batches" element={<PaymentBatchListPage />} />
+            <Route path="/fixed-assets" element={<FixedAssetListPage />} />
+            <Route path="/fixed-assets/new" element={<FixedAssetFormPage />} />
+            <Route path="/fixed-assets/:id" element={<FixedAssetFormPage />} />
+            <Route path="/consumption-tax-returns" element={<ConsumptionTaxReturnsPage />} />
+            <Route path="/forbidden" element={<ForbiddenPage />} />
 
-          {/* 職務分掌(SoD)RBAC: 財務諸表は ADMIN / ACCOUNTANT のみ */}
-          <Route element={<RequireRole roles={[Role.ADMIN, Role.ACCOUNTANT]} />}>
-            <Route path="/reports" element={<ReportsPage />} />
+            {/* 職務分掌(SoD)RBAC: 財務諸表は ADMIN / ACCOUNTANT のみ */}
+            <Route element={<RequireRole roles={[Role.ADMIN, Role.ACCOUNTANT]} />}>
+              <Route path="/reports" element={<ReportsPage />} />
+            </Route>
+
+            <Route path="/ai/suggestions" element={<AiSuggestionListPage />} />
+
+            {/* 職務分掌(SoD)RBAC: 監査ログは ADMIN / ACCOUNTANT に加え、時限アクセス許可を持つ外部閲覧者も対象 */}
+            <Route element={<RequireRole roles={[Role.ADMIN, Role.ACCOUNTANT, 'viewer_external']} />}>
+              <Route path="/audit-logs" element={<AuditLogListPage />} />
+            </Route>
+
+            <Route path="/attachments" element={<AttachmentSearchPage />} />
+            <Route path="/customers" element={<CustomerListPage />} />
+            <Route path="/vendors" element={<VendorListPage />} />
+            <Route path="/bank-accounts" element={<BankAccountListPage />} />
+            <Route path="/bank-transactions" element={<BankTransactionListPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/settings/accounts" element={<AccountsSettingsPage />} />
+            <Route path="/settings/tax-categories" element={<TaxCategoriesSettingsPage />} />
+            <Route path="/settings/departments" element={<DepartmentsSettingsPage />} />
+            <Route path="/settings/auto-journal-rules" element={<AutoJournalRuleListPage />} />
+            <Route path="/settings/external-access" element={<ExternalAccessPage />} />
+            <Route path="/payroll-imports" element={<PayrollImportPage />} />
+            <Route path="/payroll-import-mappings" element={<PayrollMappingListPage />} />
+            <Route path="/approval-requests" element={<ApprovalRequestListPage />} />
           </Route>
-
-          <Route path="/ai/suggestions" element={<AiSuggestionListPage />} />
-
-          {/* 職務分掌(SoD)RBAC: 監査ログは ADMIN / ACCOUNTANT に加え、時限アクセス許可を持つ外部閲覧者も対象 */}
-          <Route element={<RequireRole roles={[Role.ADMIN, Role.ACCOUNTANT, 'viewer_external']} />}>
-            <Route path="/audit-logs" element={<AuditLogListPage />} />
-          </Route>
-
-          <Route path="/attachments" element={<AttachmentSearchPage />} />
-          <Route path="/customers" element={<CustomerListPage />} />
-          <Route path="/vendors" element={<VendorListPage />} />
-          <Route path="/bank-accounts" element={<BankAccountListPage />} />
-          <Route path="/bank-transactions" element={<BankTransactionListPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/settings/accounts" element={<AccountsSettingsPage />} />
-          <Route path="/settings/tax-categories" element={<TaxCategoriesSettingsPage />} />
-          <Route path="/settings/departments" element={<DepartmentsSettingsPage />} />
-          <Route path="/settings/auto-journal-rules" element={<AutoJournalRuleListPage />} />
-          <Route path="/settings/external-access" element={<ExternalAccessPage />} />
-          <Route path="/payroll-imports" element={<PayrollImportPage />} />
-          <Route path="/payroll-import-mappings" element={<PayrollMappingListPage />} />
-          <Route path="/approval-requests" element={<ApprovalRequestListPage />} />
         </Route>
-      </Route>
-    </Routes>
+      </Routes>
+    </Suspense>
   );
 }

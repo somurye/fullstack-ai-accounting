@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { formatApiErrorMessage } from '../../lib/apiClient';
 import { toast } from '../../stores/toastStore';
-import { fetchAttachments, linkAttachment, uploadAttachment } from './api';
+import { fetchAttachmentContent, fetchAttachments, linkAttachment, uploadAttachment } from './api';
 import type { AttachmentLinkableType, AttachmentListParams, AttachmentUploadParams } from './types';
 
 const ATTACHMENTS_KEY = 'attachments';
@@ -10,6 +10,17 @@ export function useAttachments(params: AttachmentListParams) {
   return useQuery({
     queryKey: [ATTACHMENTS_KEY, 'list', params],
     queryFn: () => fetchAttachments(params),
+  });
+}
+
+/** 証憑ファイル実体(blob)を取得する。ファイル内容は改ざん不可(追記専用)のため無期限にキャッシュしてよい */
+export function useAttachmentContent(id: string | null) {
+  return useQuery({
+    queryKey: [ATTACHMENTS_KEY, 'content', id],
+    queryFn: () => fetchAttachmentContent(id as string),
+    enabled: id !== null,
+    staleTime: Infinity,
+    gcTime: Infinity,
   });
 }
 

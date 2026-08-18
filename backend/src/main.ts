@@ -6,6 +6,7 @@ import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
+import { validateProductionEnv } from './config/validate-production-env';
 
 /**
  * main.ts
@@ -19,6 +20,8 @@ import { AppModule } from './app.module';
  *   (pg.Poolの正常クローズ)が確実に呼び出されるようにする。
  */
 async function bootstrap(): Promise<void> {
+  validateProductionEnv();
+
   // `CORS_ORIGIN`未設定時に`origin: true`(全オリジンをリクエストのOriginヘッダーへ
   // 反射)へフォールバックすると、`credentials: true`と組み合わさって
   // 設定漏れがそのまま「任意オリジンからの資格情報付きリクエストを許可する」
