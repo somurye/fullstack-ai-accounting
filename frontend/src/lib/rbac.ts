@@ -18,3 +18,17 @@ export const Role = {
 export function hasAnyRole(userRoles: string[] | undefined, allowedRoles: string[]): boolean {
   return (userRoles ?? []).some((role) => allowedRoles.includes(role));
 }
+
+/**
+ * ログイン後の遷移先を決定する。PC用の管理画面(試算表・仕訳・各種マスタ等)を
+ * 使う理由が無い「EMPLOYEE専任」ユーザー(経理・承認いずれの権限も持たない一般社員)は、
+ * スマホ特化の経費申請ウィザードを起点にする。ADMIN/ACCOUNTANT/BOOKKEEPER/APPROVERの
+ * いずれかを1つでも保有していれば、従来どおりPCダッシュボードへ遷移する
+ * (これらのロールを持つユーザーは経理業務・承認業務でPC画面を必要とするため)。
+ */
+export function resolveHomePath(userRoles: string[] | undefined): string {
+  const isEmployeeOnly =
+    hasAnyRole(userRoles, [Role.EMPLOYEE]) &&
+    !hasAnyRole(userRoles, [Role.ADMIN, Role.ACCOUNTANT, Role.BOOKKEEPER, Role.APPROVER]);
+  return isEmployeeOnly ? '/mobile/expense-apply' : '/dashboard';
+}

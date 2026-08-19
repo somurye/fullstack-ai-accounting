@@ -1,13 +1,15 @@
 import { lazy, Suspense } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppLayout } from './components/layout/AppLayout';
-import { Role } from './lib/rbac';
+import { MobileLayout } from './components/layout/MobileLayout';
+import { Role, resolveHomePath } from './lib/rbac';
 import { ProtectedRoute } from './routes/ProtectedRoute';
 import { RequireRole } from './routes/RequireRole';
 import { ForbiddenPage } from './pages/ForbiddenPage';
 import { LoginPage } from './pages/auth/LoginPage';
 import { SignupPage } from './pages/auth/SignupPage';
 import { AcceptInvitePage } from './pages/auth/AcceptInvitePage';
+import { useAuthStore } from './stores/authStore';
 
 /**
  * ページ単位のコード分割。
@@ -106,6 +108,12 @@ const ApprovalRequestListPage = lazy(() =>
   })),
 );
 const SettingsPage = lazy(() => import('./pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
+const MobileExpenseApplyPage = lazy(() =>
+  import('./pages/mobile/MobileExpenseApplyPage').then((m) => ({ default: m.MobileExpenseApplyPage })),
+);
+const MobileMyApplicationsPage = lazy(() =>
+  import('./pages/mobile/MobileMyApplicationsPage').then((m) => ({ default: m.MobileMyApplicationsPage })),
+);
 
 function RouteFallback() {
   return (
@@ -113,6 +121,17 @@ function RouteFallback() {
       <p className="text-sm text-surface-500">読み込み中…</p>
     </div>
   );
+}
+
+/**
+ * `/`直アクセス時の遷移先をロールに応じて出し分ける。EMPLOYEE専任ユーザーは
+ * PCダッシュボードではなくスマホ経費申請ウィザードを起点にする(`resolveHomePath`)。
+ * ログイン成功直後の遷移も同じ関数で決定しており(`LoginPage.tsx`)、ここでは
+ * 既存セッションでの直接アクセス・リロード時の一貫性を担保する。
+ */
+function HomeRedirect() {
+  const userRoles = useAuthStore((state) => state.user?.roles);
+  return <Navigate to={resolveHomePath(userRoles)} replace />;
 }
 
 /**
@@ -134,8 +153,18 @@ export default function App() {
         <Route path="/accept-invite" element={<AcceptInvitePage />} />
 
         <Route element={<ProtectedRoute />}>
+          {/* スマホ専用画面: 一般社員(EMPLOYEE)向けの経費申請ウィザード。承認者/管理者も
+              自分の経費を申請する場合にアクセスできるよう、APPROVER/ADMINも許可する。
+              PC用の`AppLayout`(サイドバー付き)とは別系統の`MobileLayout`を使う。 */}
+          <Route element={<RequireRole roles={[Role.EMPLOYEE, Role.APPROVER, Role.ADMIN]} />}>
+            <Route element={<MobileLayout />}>
+              <Route path="/mobile/expense-apply" element={<MobileExpenseApplyPage />} />
+              <Route path="/mobile/my-applications" element={<MobileMyApplicationsPage />} />
+            </Route>
+          </Route>
+
           <Route element={<AppLayout />}>
-            <Route index element={<Navigate to="/dashboard" replace />} />
+            <Route index element={<HomeRedirect />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/journal-entries" element={<JournalEntryListPage />} />
             <Route path="/journal-entries/new" element={<JournalEntryFormPage />} />

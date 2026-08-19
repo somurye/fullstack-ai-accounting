@@ -2,6 +2,7 @@ import { KeyRound, Lock, LogIn, Mail } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { formatApiErrorMessage } from '../../lib/apiClient';
+import { resolveHomePath } from '../../lib/rbac';
 import { useAuthStore } from '../../stores/authStore';
 import { fetchCurrentUser } from './api';
 import { useLogin, useVerifyMfa } from './hooks';
@@ -38,14 +39,16 @@ export function LoginPage() {
     tenantList: AuthTenantSummary[],
   ): Promise<void> => {
     setSession({ accessToken, refreshToken, tenants: tenantList });
+    let roles: string[] | undefined;
     try {
       const user = await fetchCurrentUser();
       setUser(user);
+      roles = user.roles;
     } catch {
       // プロフィール取得に失敗してもセッション自体は有効なため、ログインは継続する
-      // (ヘッダーのユーザー名表示が空になるのみ)。
+      // (ヘッダーのユーザー名表示が空になるのみ。ロール不明のためPCダッシュボードへ遷移する)。
     }
-    navigate('/dashboard', { replace: true });
+    navigate(resolveHomePath(roles), { replace: true });
   };
 
   const handleCredentialsSubmit = async (): Promise<void> => {
