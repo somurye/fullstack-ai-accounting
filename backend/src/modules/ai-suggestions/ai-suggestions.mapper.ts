@@ -2,24 +2,33 @@ import type { components } from '../../types/api.generated';
 
 export type AiSuggestionDto = components['schemas']['AiSuggestion'];
 
+export interface SuggestedField<T = unknown> {
+  value: T;
+  confidence: number;
+  rationale?: string;
+}
+
 /**
- * `payload` は openapi.yaml 上 `suggested_account_code` / `candidates` のみを
- * 明示しているが、JSONB列でありスキーマに `additionalProperties: false` は
- * 課されていないため、本実装ではリクエストへ渡す追加コンテキストを自由に
- * 混在させている(`target_line_no`: journal_entry対象時にどの明細行へ反映するかの
- * 決定的な指定 / `rejection_reason`: 不採用理由)。
+ * `payload` は openapi.yaml 上 `suggested_account_code` / `candidates` / `suggested_fields` 等を
+ * 定義している。JSONB列でありスキーマに `additionalProperties: false` は
+ * 課されていないため、汎用構造化提案やドメイン固有コンテキストを柔軟に保持する。
  */
 export interface AiSuggestionPayload {
+  document_type?: string;
+  suggested_fields?: Record<string, SuggestedField>;
+
   suggested_account_code?: string | null;
   candidates?: { code: string; score: number; name?: string }[];
   target_line_no?: number;
   rejection_reason?: string | null;
+
   /** suggestion_type='ocr' 専用フィールド(レシートOCR抽出結果) */
   transaction_date?: string | null;
   amount?: number | null;
   vendor_name?: string | null;
   invoice_registration_number?: string | null;
   suggested_account_id?: string | null;
+
   [key: string]: unknown;
 }
 

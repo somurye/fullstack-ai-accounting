@@ -11,6 +11,9 @@ export const AI_SUGGESTION_TARGET_TYPES = [
   'bank_transaction',
   'vendor_bill',
   'expense_report',
+  'contract',
+  'attachment',
+  'purchase_request',
 ] as const;
 
 export const AI_SUGGESTION_TYPES = [
@@ -19,6 +22,8 @@ export const AI_SUGGESTION_TYPES = [
   'reconciliation_match',
   'anomaly_flag',
   'ocr',
+  'contract_terms',
+  'generic_fields',
 ] as const;
 
 /**
