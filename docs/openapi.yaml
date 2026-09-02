@@ -2988,7 +2988,7 @@ components:
         email: { type: string, format: email }
         role:
           type: string
-          enum: [owner, accounting_manager, accountant, bookkeeper, approver, employee, payroll_admin, viewer_external, system_service]
+          enum: [owner, accounting_manager, accountant, bookkeeper, approver, employee, payroll_admin, viewer_external, system_service, legal_admin, legal_viewer]
     AcceptInviteRequest:
       type: object
       required: [token, password, name]
@@ -3135,7 +3135,7 @@ components:
           type: array
           items:
             type: string
-            enum: [owner, accounting_manager, accountant, bookkeeper, approver, employee, payroll_admin, viewer_external, system_service]
+            enum: [owner, accounting_manager, accountant, bookkeeper, approver, employee, payroll_admin, viewer_external, system_service, legal_admin, legal_viewer]
     TenantMemberListResponse:
       type: object
       properties:
@@ -3156,7 +3156,7 @@ components:
       properties:
         role:
           type: string
-          enum: [owner, accounting_manager, accountant, bookkeeper, approver, employee, payroll_admin, viewer_external, system_service]
+          enum: [owner, accounting_manager, accountant, bookkeeper, approver, employee, payroll_admin, viewer_external, system_service, legal_admin, legal_viewer]
 
     MemberInvitation:
       type: object
@@ -3166,7 +3166,7 @@ components:
         email: { type: string, format: email }
         role:
           type: string
-          enum: [owner, accounting_manager, accountant, bookkeeper, approver, employee, payroll_admin, viewer_external, system_service]
+          enum: [owner, accounting_manager, accountant, bookkeeper, approver, employee, payroll_admin, viewer_external, system_service, legal_admin, legal_viewer]
         expires_at: { type: string, format: date-time }
         created_at: { type: string, format: date-time }
     MemberInvitationCreate:
@@ -3176,7 +3176,7 @@ components:
         email: { type: string, format: email }
         role:
           type: string
-          enum: [owner, accounting_manager, accountant, bookkeeper, approver, employee, payroll_admin, viewer_external, system_service]
+          enum: [owner, accounting_manager, accountant, bookkeeper, approver, employee, payroll_admin, viewer_external, system_service, legal_admin, legal_viewer]
     MemberInvitationCreated:
       allOf:
         - $ref: "#/components/schemas/MemberInvitation"
@@ -3217,7 +3217,7 @@ components:
           description: 現在のテナントにおけるロールコード一覧
           items:
             type: string
-            enum: [owner, accounting_manager, accountant, bookkeeper, approver, employee, payroll_admin, viewer_external, system_service]
+            enum: [owner, accounting_manager, accountant, bookkeeper, approver, employee, payroll_admin, viewer_external, system_service, legal_admin, legal_viewer]
     UserResponse:
       type: object
       properties:

@@ -85,10 +85,10 @@ ChatGPT（SO）は実コードとの差分照合を前提にレビューする�
 
 | タスクID | タスク名 | 概要 | 依存 | ステータス |
 |----------|----------|------|------|-----------|
-| P0-T1 | `approval_rules`/`approval_requests`のtarget_type拡張 | `contract`, `purchase_request`等を新たなtarget_typeとして受け入れられるようENUM/CHECK制約とルールエンジンを拡張 | なし | ✅ SO正式PASS（コミット96ffcf4、mainマージ指示済み） |
-| P0-T2 | `attachments`テーブルの汎用化確認・拡張 | 現状レシート/請求書向け前提の列（`counterparty_name`等）が契約書にも自然にフィットするか検証し、必要なら`document_category`列を追加 | なし | ✅ SO正式PASS（コミット6ddd3cb、DEBT-001を記録済み、mainマージ指示済み） |
-| P0-T3 | AIゲートウェイの汎用提案インターフェース定義 | OCR/科目提案に限定されている現行の提案スキーマを、「文書種別によらず`suggested_fields: JSON`を返す」形に一般化 | なし | ✅ SO判定CONDITIONAL PASS（コミットe01384d、DEBT-002/003を記録済み、mainマージ指示済み） |
-| P0-T4 | ロール／権限マスタへの新ロール追加 | `viewer_legal`等、総務・法務向けロールをRBACに追加（既存`viewer_external`と同パターン） | なし | 未着手 |
+| P0-T1 | `approval_rules`/`approval_requests`のtarget_type拡張 | `contract`, `purchase_request`等を新たなtarget_typeとして受け入れられるようENUM/CHECK制約とルールエンジンを拡張 | なし | ✅ SO正式PASS（mainマージ完了） |
+| P0-T2 | `attachments`テーブルの汎用化確認・拡張 | 現状レシート/請求書向け前提の列（`counterparty_name`等）が契約書にも自然にフィットするか検証し、必要なら`document_category`列を追加 | なし | ✅ SO正式PASS（mainマージ完了） |
+| P0-T3 | AIゲートウェイの汎用提案インターフェース定義 | OCR/科目提案に限定されている現行の提案スキーマを、「文書種別によらず`suggested_fields: JSON`を返す」形に一般化 | なし | ✅ SO判定CONDITIONAL PASS（mainマージ完了） |
+| P0-T4 | ロール／権限マスタへの新ロール追加 | `legal_admin`, `legal_viewer` ロールおよび `contract.*` 権限をRBACに追加 | なし | 実装完了・SOレビュー依頼 |
 
 ### 2.3 Phase 0 実装指示プロンプト（Gemini向け）
 

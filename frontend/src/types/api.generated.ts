@@ -5641,7 +5641,7 @@ export interface components {
             /** Format: email */
             email?: string;
             /** @enum {string} */
-            role?: "owner" | "accounting_manager" | "accountant" | "bookkeeper" | "approver" | "employee" | "payroll_admin" | "viewer_external" | "system_service";
+            role?: "owner" | "accounting_manager" | "accountant" | "bookkeeper" | "approver" | "employee" | "payroll_admin" | "viewer_external" | "system_service" | "legal_admin" | "legal_viewer";
         };
         AcceptInviteRequest: {
             /** @description 招待メール/URLに含まれる生トークン */
@@ -5763,7 +5763,7 @@ export interface components {
             department?: string | null;
             /** @description テナントへの所属自体が有効か(tenant_users.is_active) */
             is_active?: boolean;
-            roles?: ("owner" | "accounting_manager" | "accountant" | "bookkeeper" | "approver" | "employee" | "payroll_admin" | "viewer_external" | "system_service")[];
+            roles?: ("owner" | "accounting_manager" | "accountant" | "bookkeeper" | "approver" | "employee" | "payroll_admin" | "viewer_external" | "system_service" | "legal_admin" | "legal_viewer")[];
         };
         TenantMemberListResponse: {
             /** @constant */
@@ -5779,7 +5779,7 @@ export interface components {
         };
         MemberRoleUpdate: {
             /** @enum {string} */
-            role: "owner" | "accounting_manager" | "accountant" | "bookkeeper" | "approver" | "employee" | "payroll_admin" | "viewer_external" | "system_service";
+            role: "owner" | "accounting_manager" | "accountant" | "bookkeeper" | "approver" | "employee" | "payroll_admin" | "viewer_external" | "system_service" | "legal_admin" | "legal_viewer";
         };
         MemberInvitation: {
             /** Format: uuid */
@@ -5787,7 +5787,7 @@ export interface components {
             /** Format: email */
             email?: string;
             /** @enum {string} */
-            role?: "owner" | "accounting_manager" | "accountant" | "bookkeeper" | "approver" | "employee" | "payroll_admin" | "viewer_external" | "system_service";
+            role?: "owner" | "accounting_manager" | "accountant" | "bookkeeper" | "approver" | "employee" | "payroll_admin" | "viewer_external" | "system_service" | "legal_admin" | "legal_viewer";
             /** Format: date-time */
             expires_at?: string;
             /** Format: date-time */
@@ -5797,7 +5797,7 @@ export interface components {
             /** Format: email */
             email: string;
             /** @enum {string} */
-            role: "owner" | "accounting_manager" | "accountant" | "bookkeeper" | "approver" | "employee" | "payroll_admin" | "viewer_external" | "system_service";
+            role: "owner" | "accounting_manager" | "accountant" | "bookkeeper" | "approver" | "employee" | "payroll_admin" | "viewer_external" | "system_service" | "legal_admin" | "legal_viewer";
         };
         MemberInvitationCreated: components["schemas"]["MemberInvitation"] & {
             /** @description 招待の生トークン。このレスポンスでのみ返却される */
@@ -5831,7 +5831,7 @@ export interface components {
             name?: string;
             is_active?: boolean;
             /** @description 現在のテナントにおけるロールコード一覧 */
-            roles?: ("owner" | "accounting_manager" | "accountant" | "bookkeeper" | "approver" | "employee" | "payroll_admin" | "viewer_external" | "system_service")[];
+            roles?: ("owner" | "accounting_manager" | "accountant" | "bookkeeper" | "approver" | "employee" | "payroll_admin" | "viewer_external" | "system_service" | "legal_admin" | "legal_viewer")[];
         };
         UserResponse: {
             /** @constant */

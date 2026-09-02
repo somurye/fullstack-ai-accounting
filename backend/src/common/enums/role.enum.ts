@@ -21,4 +21,8 @@ export enum Role {
   APPROVER = 'approver',
   /** 一般社員。自身の申請作成・閲覧のみ */
   EMPLOYEE = 'employee',
+  /** 法務管理者。契約書の作成・閲覧・編集・承認・解約処理 */
+  LEGAL_ADMIN = 'legal_admin',
+  /** 法務閲覧者。契約書の閲覧のみ */
+  LEGAL_VIEWER = 'legal_viewer',
 }
