@@ -2715,7 +2715,7 @@ paths:
           in: query
           schema:
             type: string
-            enum: [journal_entry, expense_report_line, bank_transaction, vendor_bill]
+            enum: [journal_entry, expense_report_line, bank_transaction, vendor_bill, expense_report, contract, attachment, purchase_request]
         - name: target_id
           in: query
           schema: { type: string, format: uuid }
@@ -2723,7 +2723,7 @@ paths:
           in: query
           schema:
             type: string
-            enum: [account_code, tax_category, reconciliation_match, anomaly_flag]
+            enum: [account_code, tax_category, reconciliation_match, anomaly_flag, ocr, contract_terms, generic_fields]
         - name: accepted
           in: query
           description: 未判定のみ取得する場合は指定しない
@@ -4523,11 +4523,11 @@ components:
         id: { type: string, format: uuid }
         target_type:
           type: string
-          enum: [journal_entry, expense_report_line, bank_transaction, vendor_bill, expense_report]
+          enum: [journal_entry, expense_report_line, bank_transaction, vendor_bill, expense_report, contract, attachment, purchase_request]
         target_id: { type: string, format: uuid }
         suggestion_type:
           type: string
-          enum: [account_code, tax_category, reconciliation_match, anomaly_flag, ocr]
+          enum: [account_code, tax_category, reconciliation_match, anomaly_flag, ocr, contract_terms, generic_fields]
         payload:
           type: object
           description: |
@@ -4535,7 +4535,18 @@ components:
             {"suggested_account_code": "5000", "candidates": [{"code":"5000","score":0.92}]}
             例(ocr): {"transaction_date": "2026-08-01", "amount": 3300, "vendor_name": "…",
             "invoice_registration_number": "T1234567890123", "suggested_account_id": "…"}
+            例(汎用/契約書): {"document_type": "contract", "suggested_fields": {"contract_title": {"value": "秘密保持契約書", "confidence": 0.95, "rationale": "表題より抽出"}}}
           properties:
+            document_type: { type: string, description: "文書種別(contract, invoice, receipt, purchase_order等)" }
+            suggested_fields:
+              type: object
+              description: 汎用構造化提案フィールド辞書
+              additionalProperties:
+                type: object
+                properties:
+                  value: { description: "抽出された値(文字列・数値・真偽値等)" }
+                  confidence: { type: number, minimum: 0, maximum: 1, description: "信頼度スコア (0.0〜1.0)" }
+                  rationale: { type: string, description: "推論根拠・抽出元テキスト" }
             suggested_account_code: { type: string, nullable: true }
             candidates:
               type: array

@@ -5368,9 +5368,9 @@ export interface paths {
                 query?: {
                     page?: components["parameters"]["PageParam"];
                     page_size?: components["parameters"]["PageSizeParam"];
-                    target_type?: "journal_entry" | "expense_report_line" | "bank_transaction" | "vendor_bill";
+                    target_type?: "journal_entry" | "expense_report_line" | "bank_transaction" | "vendor_bill" | "expense_report" | "contract" | "attachment" | "purchase_request";
                     target_id?: string;
-                    suggestion_type?: "account_code" | "tax_category" | "reconciliation_match" | "anomaly_flag";
+                    suggestion_type?: "account_code" | "tax_category" | "reconciliation_match" | "anomaly_flag" | "ocr" | "contract_terms" | "generic_fields";
                     /** @description 未判定のみ取得する場合は指定しない */
                     accepted?: boolean;
                 };
@@ -7083,18 +7083,32 @@ export interface components {
             /** Format: uuid */
             id?: string;
             /** @enum {string} */
-            target_type?: "journal_entry" | "expense_report_line" | "bank_transaction" | "vendor_bill" | "expense_report";
+            target_type?: "journal_entry" | "expense_report_line" | "bank_transaction" | "vendor_bill" | "expense_report" | "contract" | "attachment" | "purchase_request";
             /** Format: uuid */
             target_id?: string;
             /** @enum {string} */
-            suggestion_type?: "account_code" | "tax_category" | "reconciliation_match" | "anomaly_flag" | "ocr";
+            suggestion_type?: "account_code" | "tax_category" | "reconciliation_match" | "anomaly_flag" | "ocr" | "contract_terms" | "generic_fields";
             /**
              * @description 候補データ。例(account_code):
              *     {"suggested_account_code": "5000", "candidates": [{"code":"5000","score":0.92}]}
              *     例(ocr): {"transaction_date": "2026-08-01", "amount": 3300, "vendor_name": "…",
              *     "invoice_registration_number": "T1234567890123", "suggested_account_id": "…"}
+             *     例(汎用/契約書): {"document_type": "contract", "suggested_fields": {"contract_title": {"value": "秘密保持契約書", "confidence": 0.95, "rationale": "表題より抽出"}}}
              */
             payload?: {
+                /** @description 文書種別(contract, invoice, receipt, purchase_order等) */
+                document_type?: string;
+                /** @description 汎用構造化提案フィールド辞書 */
+                suggested_fields?: {
+                    [key: string]: {
+                        /** @description 抽出された値(文字列・数値・真偽値等) */
+                        value?: unknown;
+                        /** @description 信頼度スコア (0.0〜1.0) */
+                        confidence?: number;
+                        /** @description 推論根拠・抽出元テキスト */
+                        rationale?: string;
+                    };
+                };
                 suggested_account_code?: string | null;
                 candidates?: {
                     code?: string;

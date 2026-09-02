@@ -3,12 +3,14 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAcceptAiSuggestion, useAiSuggestions, useRejectAiSuggestion } from './hooks';
 import {
+  FIELD_LABEL_MAP,
   SUGGESTION_TYPE_LABEL,
   TARGET_LINK,
   TARGET_TYPE_LABEL,
   type AiSuggestion,
   type AiSuggestionTargetType,
   type AiSuggestionType,
+  type SuggestedField,
 } from './types';
 
 type StatusTab = 'pending' | 'accepted' | 'rejected';
@@ -25,6 +27,51 @@ function confidenceColor(score: number): string {
   return 'bg-negative';
 }
 
+function formatFieldValue(val: unknown): string {
+  if (val === null || val === undefined) return '-';
+  if (typeof val === 'boolean') return val ? 'あり (該当)' : 'なし (非該当)';
+  if (typeof val === 'number') return val.toLocaleString();
+  return String(val);
+}
+
+function GenericFieldsViewer({ fields }: { fields: Record<string, SuggestedField> }) {
+  const entries = Object.entries(fields);
+  if (entries.length === 0) return null;
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs font-medium text-surface-400">AI抽出・提案項目</p>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {entries.map(([key, item]) => {
+          const label = FIELD_LABEL_MAP[key] ?? key;
+          const conf = item?.confidence ?? 0;
+          return (
+            <div
+              key={key}
+              className="rounded-lg border border-surface-800 bg-surface-900/80 p-2.5 text-xs space-y-1"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium text-surface-300">{label}</span>
+                <span
+                  className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold text-surface-950 ${
+                    conf >= 0.8 ? 'bg-emerald-400' : conf >= 0.5 ? 'bg-amber-400' : 'bg-rose-400'
+                  }`}
+                >
+                  {(conf * 100).toFixed(0)}%
+                </span>
+              </div>
+              <p className="font-semibold text-surface-100">{formatFieldValue(item?.value)}</p>
+              {item?.rationale && (
+                <p className="text-[11px] text-surface-400">{item.rationale}</p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function SuggestionCard({ suggestion }: { suggestion: AiSuggestion }) {
   const [showRejectInput, setShowRejectInput] = useState(false);
   const [reason, setReason] = useState('');
@@ -35,6 +82,7 @@ function SuggestionCard({ suggestion }: { suggestion: AiSuggestion }) {
   const suggestionType = suggestion.suggestion_type as AiSuggestionType | undefined;
   const score = suggestion.confidence_score ?? 0;
   const candidates = suggestion.payload?.candidates ?? [];
+  const suggestedFields = suggestion.payload?.suggested_fields;
   const isDecided = suggestion.accepted !== null && suggestion.accepted !== undefined;
   const linkBuilder = targetType ? TARGET_LINK[targetType] : undefined;
 
@@ -52,6 +100,11 @@ function SuggestionCard({ suggestion }: { suggestion: AiSuggestion }) {
             <span className="badge-draft">
               {suggestionType ? SUGGESTION_TYPE_LABEL[suggestionType] : suggestion.suggestion_type}
             </span>
+            {suggestion.payload?.document_type && (
+              <span className="badge-secondary text-[11px]">
+                doc: {suggestion.payload.document_type}
+              </span>
+            )}
             {isDecided && (
               <span className={suggestion.accepted ? 'badge-posted' : 'badge-rejected'}>
                 {suggestion.accepted ? '採用済み' : '不採用'}
@@ -85,6 +138,10 @@ function SuggestionCard({ suggestion }: { suggestion: AiSuggestion }) {
           />
         </div>
       </div>
+
+      {suggestedFields && Object.keys(suggestedFields).length > 0 && (
+        <GenericFieldsViewer fields={suggestedFields} />
+      )}
 
       {candidates.length > 0 && (
         <div className="space-y-2">

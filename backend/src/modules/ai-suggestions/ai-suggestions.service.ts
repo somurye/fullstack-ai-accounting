@@ -12,6 +12,7 @@ import {
   type AiSuggestionDto,
   type AiSuggestionPayload,
   type AiSuggestionRow,
+  type SuggestedField,
 } from './ai-suggestions.mapper';
 
 export interface AiSuggestionListResult {
@@ -290,6 +291,197 @@ export class AiSuggestionsService {
       },
       round3(top.score),
     );
+  }
+
+  /**
+   * 契約書テキストから主要条項を抽出して構造化提案 JSON (`suggested_fields`) を生成する。
+   * AIゲートウェイの契約書初期プロンプト/ルールエンジンに対応。
+   */
+  extractContractTerms(rawText: string): {
+    suggested_fields: Record<string, SuggestedField>;
+    confidenceScore: number;
+  } {
+    const fields: Record<string, SuggestedField> = {};
+    const text = rawText.trim();
+    let totalScore = 0;
+    let fieldCount = 0;
+
+    // 1. タイトル (例: 秘密保持契約書, 業務委託契約書)
+    const titleMatch = text.match(/(.{2,25}契約書|.{2,25}規約|覚書|合意書)/);
+    if (titleMatch) {
+      fields.contract_title = {
+        value: titleMatch[1].trim(),
+        confidence: 0.95,
+        rationale: '文書冒頭または表題パターンから契約書名を抽出',
+      };
+      totalScore += 0.95;
+      fieldCount++;
+    }
+
+    // 2. 当事者 (甲 / 乙)
+    const parties: string[] = [];
+    const kouMatch = text.match(/甲[：:\s]+([^\n,、(（]+)/);
+    const otsuMatch = text.match(/乙[：:\s]+([^\n,、(（]+)/);
+    if (kouMatch) parties.push(`甲: ${kouMatch[1].trim()}`);
+    if (otsuMatch) parties.push(`乙: ${otsuMatch[1].trim()}`);
+    if (parties.length > 0) {
+      fields.contract_parties = {
+        value: parties.join(' / '),
+        confidence: 0.85,
+        rationale: '契約当事者(甲/乙)の定義箇所から抽出',
+      };
+      totalScore += 0.85;
+      fieldCount++;
+    }
+
+    // 3. 契約期間 (開始日・終了日)
+    const dateRangeMatch = text.match(/(\d{4}[年\-/]\d{1,2}[月\-/]\d{1,2}日?)\s*(?:から|〜|～|-)\s*(\d{4}[年\-/]\d{1,2}[月\-/]\d{1,2}日?)/);
+    if (dateRangeMatch) {
+      const normalizeDate = (dStr: string): string => {
+        const cleaned = dStr.replace(/年|月/g, '-').replace(/日/g, '').trim();
+        const parts = cleaned.split(/[\/\-]/).map((p) => p.padStart(2, '0'));
+        if (parts.length === 3) return `${parts[0]}-${parts[1]}-${parts[2]}`;
+        return dStr;
+      };
+      fields.contract_start_date = {
+        value: normalizeDate(dateRangeMatch[1]),
+        confidence: 0.9,
+        rationale: '契約期間条項から開始日を抽出',
+      };
+      fields.contract_end_date = {
+        value: normalizeDate(dateRangeMatch[2]),
+        confidence: 0.9,
+        rationale: '契約期間条項から終了日を抽出',
+      };
+      totalScore += 1.8;
+      fieldCount += 2;
+    }
+
+    // 4. 契約金額 (委託料・月額等)
+    const amountMatch = text.match(/(?:金額|月額|委託料|代金|対価)[：:\s]*[¥￥]?\s*([\d,]+)\s*円?/);
+    if (amountMatch) {
+      const num = Number(amountMatch[1].replace(/,/g, ''));
+      if (!Number.isNaN(num)) {
+        fields.contract_amount = {
+          value: num,
+          confidence: 0.85,
+          rationale: '金額・委託料記載箇所から数値を抽出',
+        };
+        totalScore += 0.85;
+        fieldCount++;
+      }
+    }
+
+    // 5. 自動更新条項の有無
+    const autoRenewalMatch = text.match(/(自動(?:的)?に(?:更新|延長)|異議がないときは.*同一条件で.*更新)/);
+    if (autoRenewalMatch) {
+      fields.auto_renewal = {
+        value: true,
+        confidence: 0.9,
+        rationale: '期間満了時の自動更新条項パターンを検出',
+      };
+      totalScore += 0.9;
+      fieldCount++;
+    } else if (text.includes('自動更新は行わない') || text.includes('更新しない')) {
+      fields.auto_renewal = {
+        value: false,
+        confidence: 0.85,
+        rationale: '更新なしの明記を検出',
+      };
+      totalScore += 0.85;
+      fieldCount++;
+    }
+
+    // 6. 準拠法・管轄裁判所
+    const courtMatch = text.match(/([^\s]+(?:地方裁判所|簡易裁判所))/);
+    if (courtMatch) {
+      fields.governing_law_jurisdiction = {
+        value: `日本法 / ${courtMatch[1]}`,
+        confidence: 0.8,
+        rationale: '合意管轄条項から管轄裁判所を抽出',
+      };
+      totalScore += 0.8;
+      fieldCount++;
+    }
+
+    // 7. 解約予告通知期間
+    const noticeMatch = text.match(/(\d+)\s*(?:日|か月|ヶ月|カ月|ケ月)前までに.*(?:通知|申し出|解約)/);
+    if (noticeMatch) {
+      const unit = noticeMatch[0].includes('日') ? '日' : 'ヶ月';
+      const num = Number(noticeMatch[1]);
+      const days = unit === 'ヶ月' ? num * 30 : num;
+      fields.notice_period_days = {
+        value: days,
+        confidence: 0.85,
+        rationale: `中途解約予告期間 (${noticeMatch[0]}) より日数換算`,
+      };
+      totalScore += 0.85;
+      fieldCount++;
+    }
+
+    const avgScore = fieldCount > 0 ? round3(totalScore / fieldCount) : 0.5;
+    return {
+      suggested_fields: fields,
+      confidenceScore: avgScore,
+    };
+  }
+
+  /**
+   * 契約書PDF等の文書テキストから条項を抽出し、`ai_suggestions`へ隔離保存する
+   * (`target_type='contract'`, `suggestion_type='contract_terms'`)。
+   * 原則1(AI提案の隔離領域遵守)に従い、確定データ(contractsテーブル等)へは一切書き込まない。
+   */
+  async generateContractSuggestion(
+    client: PoolClient,
+    tenantId: string,
+    targetId: string,
+    contractText: string,
+    modelName: string = 'claude-3-5-sonnet-20241022',
+  ): Promise<AiSuggestionDto> {
+    const { suggested_fields, confidenceScore } = this.extractContractTerms(contractText);
+    const payload: AiSuggestionPayload = {
+      document_type: 'contract',
+      suggested_fields,
+    };
+
+    const result = await client.query<AiSuggestionRow>(
+      `INSERT INTO ai_suggestions
+         (tenant_id, target_type, target_id, suggestion_type, payload, confidence_score, model_name, accepted)
+       VALUES ($1, 'contract', $2, 'contract_terms', $3::jsonb, $4, $5, NULL)
+       RETURNING ${AI_SUGGESTION_COLUMNS}`,
+      [tenantId, targetId, JSON.stringify(payload), confidenceScore, modelName],
+    );
+    return mapAiSuggestionRow(result.rows[0]);
+  }
+
+  /**
+   * 任意の文書種別・対象に対する汎用構造化提案を`ai_suggestions`へ隔離保存する。
+   * ガードレール原則に従い、確定用テーブルへの直接書き込みは一切行わない。
+   */
+  async generateGenericSuggestion(
+    client: PoolClient,
+    tenantId: string,
+    targetType: string,
+    targetId: string,
+    suggestionType: string,
+    documentType: string,
+    suggestedFields: Record<string, SuggestedField>,
+    confidenceScore: number,
+    modelName: string,
+  ): Promise<AiSuggestionDto> {
+    const payload: AiSuggestionPayload = {
+      document_type: documentType,
+      suggested_fields: suggestedFields,
+    };
+
+    const result = await client.query<AiSuggestionRow>(
+      `INSERT INTO ai_suggestions
+         (tenant_id, target_type, target_id, suggestion_type, payload, confidence_score, model_name, accepted)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, NULL)
+       RETURNING ${AI_SUGGESTION_COLUMNS}`,
+      [tenantId, targetType, targetId, suggestionType, JSON.stringify(payload), confidenceScore, modelName],
+    );
+    return mapAiSuggestionRow(result.rows[0]);
   }
 
   /**
