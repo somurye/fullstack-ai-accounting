@@ -551,6 +551,12 @@ paths:
           in: query
           schema: { type: string }
           description: 部分一致検索(pg_trgm)
+        - name: document_category
+          in: query
+          schema:
+            type: string
+            enum: [receipt, invoice, contract, purchase_order, other]
+          description: 文書種別による絞り込み
       responses:
         "200":
           description: 添付ファイル一覧
@@ -561,7 +567,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
     post:
       tags: [Attachments]
-      summary: 証憑ファイルをアップロードする
+      summary: 証憑・文書ファイルをアップロードする
       parameters:
         - $ref: "#/components/parameters/TenantIdHeader"
       requestBody:
@@ -570,9 +576,14 @@ paths:
           multipart/form-data:
             schema:
               type: object
-              required: [file, transaction_date, amount, counterparty_name]
+              required: [file]
               properties:
                 file: { type: string, format: binary }
+                document_category:
+                  type: string
+                  enum: [receipt, invoice, contract, purchase_order, other]
+                  default: receipt
+                  description: "文書種別(未指定時はreceipt)"
                 transaction_date: { type: string, format: date }
                 amount: { type: number }
                 counterparty_name: { type: string }
@@ -3223,6 +3234,10 @@ components:
         storage_path: { type: string, readOnly: true }
         mime_type: { type: string }
         file_hash: { type: string, readOnly: true }
+        document_category:
+          type: string
+          enum: [receipt, invoice, contract, purchase_order, other]
+          description: 文書種別
         transaction_date: { type: string, format: date }
         amount: { type: number }
         counterparty_name: { type: string }

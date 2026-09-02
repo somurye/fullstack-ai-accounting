@@ -497,9 +497,51 @@ def run_verification(dsn: str) -> int:
                 (t1,),
             )
         r.ok("viewer_externalは許可期間内でも書き込み不可(権限レベル)", False, "例外が発生しなかった")
+    # ------------------------------------------------------------------
+    print("\n--- 6. attachments: document_category 汎用化 (Phase 0 P0-T2) ---")
+    att1_id = str(uuid.uuid4())
+    att2_id = str(uuid.uuid4())
+
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        # 1. document_category 省略時のデフォルト値 ('receipt')
+        cur.execute(
+            """INSERT INTO attachments (id, tenant_id, file_name, storage_path, mime_type, file_hash, uploaded_by)
+               VALUES (%s, %s, 'receipt_01.jpg', '/uploads/receipt_01.jpg', 'image/jpeg', 'hash1', %s)
+               RETURNING document_category""",
+            (att1_id, t1, owner),
+        )
+        row1 = cur.fetchone()
+        r.ok("attachments の document_category 省略時は既定値 'receipt'", row1["document_category"] == "receipt")
+
+        # 2. document_category = 'contract' (金額NULL) での登録
+        cur.execute(
+            """INSERT INTO attachments (id, tenant_id, file_name, storage_path, mime_type, file_hash, document_category, counterparty_name, uploaded_by)
+               VALUES (%s, %s, 'contract.pdf', '/uploads/contract.pdf', 'application/pdf', 'hash2', 'contract', 'パートナー企業', %s)
+               RETURNING document_category, amount""",
+            (att2_id, t1, owner),
+        )
+        row2 = cur.fetchone()
+        r.ok("attachments に document_category = 'contract' (金額NULL) が登録できる",
+             row2["document_category"] == "contract" and row2["amount"] is None)
+
+    # 3. 不正な document_category は CHECK 制約で拒否される
+    try:
+        with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+            cur.execute(
+                """INSERT INTO attachments (tenant_id, file_name, storage_path, mime_type, file_hash, document_category, uploaded_by)
+                   VALUES (%s, 'test.bin', '/uploads/test.bin', 'application/octet-stream', 'hash3', 'invalid_cat', %s)""",
+                (t1, owner),
+            )
+        r.ok("不正な document_category は CHECK 制約で拒否される", False, "例外が発生しなかった")
     except Exception as e:  # noqa: BLE001
-        r.ok("viewer_externalは許可期間内でも書き込み不可(権限レベル)",
-             "permission denied" in str(e).lower(), str(e))
+        r.ok("不正な document_category は CHECK 制約で拒否される",
+             "check constraint" in str(e).lower() or "violates check" in str(e).lower() or "attachments_document_category_check" in str(e),
+             str(e))
+
+    # 4. 他テナントからの RLS 分離確認
+    with tx_as(dsn, role="app_runtime", tenant_id=t2) as cur:
+        cur.execute("SELECT * FROM attachments WHERE id = %s", (att2_id,))
+        r.ok("attachments(contract) は他テナントから見えない(RLS)", len(cur.fetchall()) == 0)
 
     return r.summary()
 

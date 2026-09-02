@@ -25,9 +25,18 @@ export async function fetchAttachments(params: AttachmentListParams): Promise<At
 export async function uploadAttachment(params: AttachmentUploadParams): Promise<Attachment> {
   const formData = new FormData();
   formData.append('file', params.file);
-  formData.append('transaction_date', params.transaction_date);
-  formData.append('amount', String(params.amount));
-  formData.append('counterparty_name', params.counterparty_name);
+  if (params.document_category) {
+    formData.append('document_category', params.document_category);
+  }
+  if (params.transaction_date) {
+    formData.append('transaction_date', params.transaction_date);
+  }
+  if (params.amount !== undefined) {
+    formData.append('amount', String(params.amount));
+  }
+  if (params.counterparty_name) {
+    formData.append('counterparty_name', params.counterparty_name);
+  }
 
   const { data } = await apiClient.post<{ success: true; data: Attachment; meta?: Meta }>(
     '/attachments',
