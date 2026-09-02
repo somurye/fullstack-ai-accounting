@@ -31,32 +31,7 @@ ALTER TABLE approval_requests
     ADD CONSTRAINT approval_requests_target_type_check
     CHECK (target_type IN ('journal_entry', 'expense_report', 'vendor_bill', 'contract', 'purchase_request'));
 
--- 3. 新規 target_type 向けの承認ルール登録確認用テストデータ
--- (テナントが存在する場合にサンプルルールを挿入)
-DO $$
-DECLARE
-    v_tenant_id UUID;
-    v_owner_role_id UUID;
-    v_mgr_role_id UUID;
-BEGIN
-    SELECT id INTO v_tenant_id FROM tenants LIMIT 1;
-    SELECT id INTO v_owner_role_id FROM roles WHERE code = 'owner' LIMIT 1;
-    SELECT id INTO v_mgr_role_id FROM roles WHERE code = 'accounting_manager' LIMIT 1;
 
-    IF v_tenant_id IS NOT NULL AND v_owner_role_id IS NOT NULL THEN
-        -- contract: 1段階承認 (管理者)
-        INSERT INTO approval_rules (tenant_id, target_type, step_number, condition, approver_role_id, is_active)
-        VALUES (v_tenant_id, 'contract', 1, '{"min_amount": 0}', v_owner_role_id, TRUE)
-        ON CONFLICT (tenant_id, target_type, step_number, approver_role_id, approver_user_id) DO NOTHING;
-
-        -- purchase_request: 1段階承認 (責任者または管理者)
-        IF v_mgr_role_id IS NOT NULL THEN
-            INSERT INTO approval_rules (tenant_id, target_type, step_number, condition, approver_role_id, is_active)
-            VALUES (v_tenant_id, 'purchase_request', 1, '{"min_amount": 0}', v_mgr_role_id, TRUE)
-            ON CONFLICT (tenant_id, target_type, step_number, approver_role_id, approver_user_id) DO NOTHING;
-        END IF;
-    END IF;
-END $$;
 
 -- ============================================================================
 -- ロールバック手順 (Down Migration):

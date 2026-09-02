@@ -327,6 +327,56 @@ P0-T1の実装報告についてChatGPT(SO)からレビューを受けたが、�
 
 ---
 
+#### 【フォローアップ指示プロンプト P0-T1-FIX2】migrationからテストデータINSERTを除去
+
+ChatGPT(SO)の実コードレビュー(コミット `77eb503`)により、責務分離(承認基盤がcontract/purchase_requestの
+業務データを直接確定しない設計)は問題なしと確認された。唯一の必須修正はmigrationの純化のみ。
+
+```
+# 背景・目的
+006_generic_approval_targets.sql に、SELECT ... LIMIT 1 で任意の1テナントを選び、
+そのテナントへ実際の approval_rules（contract/purchase_request向け）をINSERTする
+DO $$ ... $$ ブロックが含まれている。これはschema migrationの範囲を超えた
+「業務データ変更」であり、本番適用時に意図しないテナントへ承認ルールが混入するリスクがある。
+これを除去し、migrationをスキーマ/制約変更のみに純化する。
+
+# 前提となる既存実装
+- 直前のコミット 77eb503 の 006_generic_approval_targets.sql
+- verify_schema.py（スキーマ検証スクリプト。テストfixtureの置き場所として利用する）
+
+# やってはいけないこと
+- CHECK制約の拡張自体（target_typeにcontract/purchase_requestを追加する部分）はそのまま維持する。
+  今回削除するのは末尾の DO $$ ... approval_rules INSERT ... END $$; ブロックのみ。
+- 既存の8件の単体テストが依存しているテストデータがあれば、migration削除によって
+  テストが壊れないよう、テストデータの生成元をテスト側（fixture/setup）に付け替える。
+
+# 実装対象
+1. 006_generic_approval_targets.sql から、実テナントへのapproval_rules INSERTブロックを完全に削除する。
+   （CHECK制約変更部分は残す）
+2. 削除したテストデータは、verify_schema.py 内、または新規の test fixture
+   （例: tests/fixtures/approval_rules.seed.sql、もしくはテストコード内でのINSERT）として
+   作成し直す。本番migrationとは明確に分離されたパスに置くこと。テナントIDはLIMIT 1のような
+   暗黙選択ではなく、テストごとに明示的に生成・指定する。
+3. 既存の8件の単体テストを実行し、fixtureの付け替えによって回帰していないことを確認する。
+4. down migrationについて、「実際のmigration frameworkでdown処理を実行する仕組みが
+   存在するか」を確認し、報告に一言記載する（このタスクのブロッカーではない、確認のみ）。
+
+# 受け入れ基準（Definition of Done）
+- [ ] 006_generic_approval_targets.sql に業務データ（実テナント向けINSERT）が一切含まれていない
+- [ ] CHECK制約の拡張（target_type = contract/purchase_request許可）は維持されている
+- [ ] テストデータはfixture/seed側に分離され、既存8件の単体テストが引き続き全てPASSする
+- [ ] down migrationの実行可否について一言確認結果を報告に含める
+- [ ] feature/p0-t1-approval-target-type ブランチに追加コミット・pushし、比較URLを報告に含める
+      （本計画書0.4節に従う）
+
+# ChatGPTレビュー時の確認観点
+- migration適用後、まっさらなDB（テストデータなし）でschemaが正しく作られることを確認できるか
+- fixture化されたテストデータが、特定の1テナントを暗黙に選ぶ（LIMIT 1のような）設計を
+  引き継いでいないか（テストではテナントIDを明示的に生成・指定するのが望ましい）
+```
+
+---
+
 ### 3.1 目的
 
 Phase 0で汎用化した承認エンジン・添付ファイル基盤・AIゲートウェイの上に、契約書管理機能そのものを構築する。1人テナント運用を想定し、**契約書アップロード→AIによる条項候補抽出→人間の確認→登録→期限アラート**までを最短導線で完結させる。
@@ -420,3 +470,4 @@ attachments（document_category='contract'）を実際に活用する契約書�
 | 1.0.0 | 初版 | 全体ロードマップ策定、Phase 0/Phase 1のタスク分解と実装指示プロンプト作成 |
 | 1.1.0 | ロール・権限の粒度方針（deny-by-default、細分化は後追い）を決定事項として記録 |
 | 1.2.0 | 完了報告ルール（0.4節: コミット・push必須、mainへの独断マージ禁止）を追加。P0-T1のSO指摘事項に対応するフォローアップ指示プロンプト（P0-T1-FIX）を追加。P0-T2〜T4, P1-T1のDoDにコミット・push要件を追記 |
+| 1.3.0 | コミット77eb503の実コードレビュー結果を反映。責務分離の懸念は解消を確認。migrationへの本番データINSERT混入という唯一の残課題に対応するP0-T1-FIX2プロンプトを追加 |

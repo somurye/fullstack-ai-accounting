@@ -405,7 +405,31 @@ def run_verification(dsn: str) -> int:
         )
     r.ok("別ユーザーによる承認は成功する", True)
 
-    # 4.1 新target_type (contract) での自己承認禁止とRLS検証 (Phase 0 P0-T1)
+    # 4.1 新target_type (contract / purchase_request) での承認ルール登録、自己承認禁止、RLS検証 (Phase 0 P0-T1)
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute("SELECT id FROM roles WHERE code = 'owner'")
+        owner_role_row = cur.fetchone()
+        owner_role_id = owner_role_row["id"] if owner_role_row else None
+
+        cur.execute("SELECT id FROM roles WHERE code = 'accounting_manager'")
+        mgr_role_row = cur.fetchone()
+        mgr_role_id = mgr_role_row["id"] if mgr_role_row else None
+
+        if owner_role_id and mgr_role_id:
+            cur.execute(
+                """INSERT INTO approval_rules (tenant_id, target_type, step_number, condition, approver_role_id, is_active)
+                   VALUES (%s, 'contract', 1, '{"min_amount": 0}', %s, TRUE)
+                   ON CONFLICT (tenant_id, target_type, step_number, approver_role_id, approver_user_id) DO NOTHING""",
+                (t1, owner_role_id),
+            )
+            cur.execute(
+                """INSERT INTO approval_rules (tenant_id, target_type, step_number, condition, approver_role_id, is_active)
+                   VALUES (%s, 'purchase_request', 1, '{"min_amount": 0}', %s, TRUE)
+                   ON CONFLICT (tenant_id, target_type, step_number, approver_role_id, approver_user_id) DO NOTHING""",
+                (t1, mgr_role_id),
+            )
+            r.ok("新target_type(contract, purchase_request)の承認ルール登録が成功する", True)
+
     with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
         contract_target_id = str(uuid.uuid4())
         cur.execute(
