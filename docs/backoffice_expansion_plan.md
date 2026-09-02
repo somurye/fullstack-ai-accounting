@@ -85,8 +85,8 @@ ChatGPT（SO）は実コードとの差分照合を前提にレビューする�
 
 | タスクID | タスク名 | 概要 | 依存 | ステータス |
 |----------|----------|------|------|-----------|
-| P0-T1 | `approval_rules`/`approval_requests`のtarget_type拡張 | `contract`, `purchase_request`等を新たなtarget_typeとして受け入れられるようENUM/CHECK制約とルールエンジンを拡張 | なし | ✅ SO正式PASS（mainマージ完了） |
-| P0-T2 | `attachments`テーブルの汎用化確認・拡張 | 現状レシート/請求書向け前提の列（`counterparty_name`等）が契約書にも自然にフィットするか検証し、必要なら`document_category`列を追加 | なし | 実装完了・SOレビュー依頼 |
+| P0-T1 | `approval_rules`/`approval_requests`のtarget_type拡張 | `contract`, `purchase_request`等を新たなtarget_typeとして受け入れられるようENUM/CHECK制約とルールエンジンを拡張 | なし | ✅ SO正式PASS（コミット96ffcf4、mainマージ指示済み） |
+| P0-T2 | `attachments`テーブルの汎用化確認・拡張 | 現状レシート/請求書向け前提の列（`counterparty_name`等）が契約書にも自然にフィットするか検証し、必要なら`document_category`列を追加 | なし | ✅ SO正式PASS（コミット6ddd3cb、DEBT-001を記録済み、mainマージ指示済み） |
 | P0-T3 | AIゲートウェイの汎用提案インターフェース定義 | OCR/科目提案に限定されている現行の提案スキーマを、「文書種別によらず`suggested_fields: JSON`を返す」形に一般化 | なし | 未着手 |
 | P0-T4 | ロール／権限マスタへの新ロール追加 | `viewer_legal`等、総務・法務向けロールをRBACに追加（既存`viewer_external`と同パターン） | なし | 未着手 |
 
@@ -195,6 +195,28 @@ SO(ChatGPT)による正式PASS判定（コミット96ffcf4時点）を得てい�
 - document_category を後からENUM化しやすい設計になっているか（文字列直書きを避けているか）
 - 既存データに対するマイグレーションのデフォルト値設定が安全か（NULL埋めによる検索漏れがないか）
 ```
+
+---
+
+---
+
+#### 【マージ指示プロンプト P0-T2-MERGE】mainへのマージ
+
+ChatGPT(SO)よりP0-T2が実質PASS（CONDITIONAL PASSだが追加修正不要、DEBT-001として記録のみ）と判定されたため、Geminiへマージを指示する。
+
+```
+# 指示
+feature/p0-t2-attachments-category を main へマージしてください。
+SO(ChatGPT)による判定（コミット6ddd3cb時点、CONDITIONAL PASSだが追加修正は不要と判断）を得ています。
+なお、ファイル保存とDBトランザクションの非原子性についてはDEBT-001として計画書側で
+追跡することとし、今回のマージ・今後のタスクをブロックするものではありません。
+マージ後、以下を確認し報告してください。
+- main上でBackend/Frontendのテストを再実行して確認
+- マージコミットハッシュ
+- 作業ブランチ feature/p0-t2-attachments-category の削除（マージ済み後）
+```
+
+これでP0-T2は完了。次はP0-T3（AIゲートウェイの汎用提案インターフェース定義）へ進む。
 
 ---
 
@@ -471,7 +493,17 @@ attachments（document_category='contract'）を実際に活用する契約書�
 
 ---
 
-## 4. 次のアクション
+## 4. 既知の技術的負債・フォローアップ事項
+
+タスク完了時にSOが「修正不要だが記録すべき」と判定した事項を追跡する。将来の関連タスク着手時に必ず参照すること。
+
+| ID | 発見タスク | 内容 | 重要度 | 対応予定 |
+|----|-----------|------|--------|----------|
+| DEBT-001 | P0-T2 | `AttachmentsService.upload()` がファイル実体をディスクへ書き込んだ後にDB transactionを実行しており、DB rollback時に孤児ファイルが残り得る（原子性がない）。MVP・ローカルディスク保存の間は許容するが、S3等のオブジェクトストレージへ移行する際は、DB transaction・object storage・補償処理(transactional outbox等)を含めた整合性設計を正式に行う。 | MEDIUM | Phase 5（統合最適化）またはストレージ本格化タイミングで再評価 |
+
+---
+
+## 5. 次のアクション
 
 1. 本計画書の内容で問題なければ、**P0-T1から順にGeminiへ指示プロンプトを渡して実装開始**。
 2. Phase 0が完了し次第、Phase 1のP1-T2以降のプロンプトを実際のコード状態を踏まえてClaudeが作成する。
@@ -479,7 +511,7 @@ attachments（document_category='contract'）を実際に活用する契約書�
 
 ---
 
-## 5. 変更履歴
+## 6. 変更履歴
 
 | バージョン | 日付 | 内容 |
 |------------|------|------|
@@ -488,3 +520,4 @@ attachments（document_category='contract'）を実際に活用する契約書�
 | 1.2.0 | 完了報告ルール（0.4節: コミット・push必須、mainへの独断マージ禁止）を追加。P0-T1のSO指摘事項に対応するフォローアップ指示プロンプト（P0-T1-FIX）を追加。P0-T2〜T4, P1-T1のDoDにコミット・push要件を追記 |
 | 1.3.0 | コミット77eb503の実コードレビュー結果を反映。責務分離の懸念は解消を確認。migrationへの本番データINSERT混入という唯一の残課題に対応するP0-T1-FIX2プロンプトを追加 |
 | 1.4.0 | P0-T1がSO正式PASS（コミット96ffcf4）。マージ指示プロンプト（P0-T1-MERGE）を追加し、タスク一覧にステータス列を追加してP0-T1を完了扱いに更新 |
+| 1.5.0 | P0-T2がSO判定CONDITIONAL PASS（コミット6ddd3cb、追加修正不要）。「既知の技術的負債・フォローアップ事項」セクション(4節)を新設しDEBT-001（ファイル保存とDBトランザクションの非原子性）を記録。マージ指示プロンプト（P0-T2-MERGE）を追加しP0-T2を完了扱いに更新 |
