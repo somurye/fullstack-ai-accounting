@@ -72,11 +72,13 @@ export class AttachmentsService {
     const storagePath = join(tenantDir, storedFileName);
     await writeFile(storagePath, file.buffer);
 
+    const documentCategory = dto.document_category ?? 'receipt';
+
     return this.db.transaction(tenantId, userId, async (client) => {
       const inserted = await client.query<AttachmentRow>(
         `INSERT INTO attachments
-           (tenant_id, file_name, storage_path, mime_type, file_hash, transaction_date, amount, counterparty_name, uploaded_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           (tenant_id, file_name, storage_path, mime_type, file_hash, document_category, transaction_date, amount, counterparty_name, uploaded_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          RETURNING ${ATTACHMENT_COLUMNS}`,
         [
           tenantId,
@@ -84,9 +86,10 @@ export class AttachmentsService {
           storagePath,
           file.mimetype,
           fileHash,
-          dto.transaction_date,
-          dto.amount,
-          dto.counterparty_name,
+          documentCategory,
+          dto.transaction_date ?? null,
+          dto.amount ?? null,
+          dto.counterparty_name ?? null,
           userId,
         ],
       );
@@ -100,6 +103,7 @@ export class AttachmentsService {
         afterData: {
           file_name: attachment.file_name,
           file_hash: attachment.file_hash,
+          document_category: attachment.document_category,
           transaction_date: attachment.transaction_date,
           amount: attachment.amount,
           counterparty_name: attachment.counterparty_name,
@@ -119,6 +123,10 @@ export class AttachmentsService {
       const conditions: string[] = ['tenant_id = $1'];
       const params: unknown[] = [tenantId];
 
+      if (query.document_category) {
+        params.push(query.document_category);
+        conditions.push(`document_category = $${params.length}`);
+      }
       if (query.transaction_date_from) {
         params.push(query.transaction_date_from);
         conditions.push(`transaction_date >= $${params.length}`);

@@ -925,6 +925,8 @@ export interface paths {
                     amount?: number;
                     /** @description 部分一致検索(pg_trgm) */
                     counterparty_name?: string;
+                    /** @description 文書種別による絞り込み */
+                    document_category?: "receipt" | "invoice" | "contract" | "purchase_order" | "other";
                 };
                 header: {
                     /** @description 操作対象テナントのUUID。JWTクレームの tenant_id と一致する必要がある。 */
@@ -948,7 +950,7 @@ export interface paths {
             };
         };
         put?: never;
-        /** 証憑ファイルをアップロードする */
+        /** 証憑・文書ファイルをアップロードする */
         post: {
             parameters: {
                 query?: never;
@@ -964,10 +966,16 @@ export interface paths {
                     "multipart/form-data": {
                         /** Format: binary */
                         file: string;
+                        /**
+                         * @description 文書種別(未指定時はreceipt)
+                         * @default receipt
+                         * @enum {string}
+                         */
+                        document_category?: "receipt" | "invoice" | "contract" | "purchase_order" | "other";
                         /** Format: date */
-                        transaction_date: string;
-                        amount: number;
-                        counterparty_name: string;
+                        transaction_date?: string;
+                        amount?: number;
+                        counterparty_name?: string;
                     };
                 };
             };
@@ -5838,6 +5846,11 @@ export interface components {
             readonly storage_path?: string;
             mime_type?: string;
             readonly file_hash?: string;
+            /**
+             * @description 文書種別
+             * @enum {string}
+             */
+            document_category?: "receipt" | "invoice" | "contract" | "purchase_order" | "other";
             /** Format: date */
             transaction_date?: string;
             amount?: number;
