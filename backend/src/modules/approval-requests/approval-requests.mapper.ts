@@ -5,7 +5,7 @@ export type ApprovalHistoryEntryDto = components['schemas']['ApprovalHistoryEntr
 
 export interface ApprovalRequestRow {
   id: string;
-  target_type: 'journal_entry' | 'expense_report' | 'vendor_bill';
+  target_type: 'journal_entry' | 'expense_report' | 'vendor_bill' | 'contract' | 'purchase_request';
   target_id: string;
   submitted_by: string;
   total_steps: number;

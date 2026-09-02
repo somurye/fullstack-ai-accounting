@@ -25,7 +25,12 @@ export interface ApprovalRequestListResult {
   pagination: PaginationMeta;
 }
 
-type TargetType = 'journal_entry' | 'expense_report' | 'vendor_bill';
+type TargetType =
+  | 'journal_entry'
+  | 'expense_report'
+  | 'vendor_bill'
+  | 'contract'
+  | 'purchase_request';
 
 /**
  * ApprovalRequestsService
@@ -39,6 +44,9 @@ type TargetType = 'journal_entry' | 'expense_report' | 'vendor_bill';
  * それを承認/却下する手段がこれまで存在しなかった(このモジュールが担う)。
  * `journal_entries` も同様に、`post()` が承認ルール該当時に`pending_approval`の
  * 承認依頼を作成するよう改修されるため、その承認/却下はこのモジュールのみが担う。
+ *
+ * 新ドメイン（`contract`, `purchase_request`等）に対しても汎用承認エンジンとして機能し、
+ * 各ドメイン固有テーブルとの状態連動は各Phaseのモジュールで連携する。
  *
  * 自己承認の禁止はDB トリガー `fn_prevent_self_approval`(`approval_history` への
  * INSERT時に発火)による最終防御に委ね、アプリケーション層での事前チェックは行わない
@@ -256,41 +264,53 @@ export class ApprovalRequestsService {
       return;
     }
 
-    const table = targetType === 'expense_report' ? 'expense_reports' : 'vendor_bills';
-    const linked = await client.query<{ journal_entry_id: string | null }>(
-      `SELECT journal_entry_id FROM ${table} WHERE tenant_id = $1 AND id = $2`,
-      [tenantId, targetId],
-    );
-    if (linked.rowCount === 0) {
-      throw AppException.notFound('承認対象のレコードが見つかりません');
-    }
-    const journalEntryId = linked.rows[0].journal_entry_id;
-
-    await client.query(`UPDATE ${table} SET status = 'approved' WHERE tenant_id = $1 AND id = $2`, [
-      tenantId,
-      targetId,
-    ]);
-    if (journalEntryId) {
-      // 申請時に先行起票していたdraft仕訳を確定する(貸借一致は明細行の1:1対応で構造上保証済み)。
-      await client.query(
-        `UPDATE journal_entries SET status = 'posted', posted_by = $3 WHERE tenant_id = $1 AND id = $2`,
-        [tenantId, journalEntryId, userId],
-      );
-    }
-    if (targetType === 'vendor_bill') {
-      await client.query(
-        `UPDATE vendor_bills SET current_approval_step = current_approval_step + 1
-         WHERE tenant_id = $1 AND id = $2`,
+    if (targetType === 'expense_report' || targetType === 'vendor_bill') {
+      const table = targetType === 'expense_report' ? 'expense_reports' : 'vendor_bills';
+      const linked = await client.query<{ journal_entry_id: string | null }>(
+        `SELECT journal_entry_id FROM ${table} WHERE tenant_id = $1 AND id = $2`,
         [tenantId, targetId],
       );
+      if (linked.rowCount === 0) {
+        throw AppException.notFound('承認対象のレコードが見つかりません');
+      }
+      const journalEntryId = linked.rows[0].journal_entry_id;
+
+      await client.query(`UPDATE ${table} SET status = 'approved' WHERE tenant_id = $1 AND id = $2`, [
+        tenantId,
+        targetId,
+      ]);
+      if (journalEntryId) {
+        // 申請時に先行起票していたdraft仕訳を確定する(貸借一致は明細行の1:1対応で構造上保証済み)。
+        await client.query(
+          `UPDATE journal_entries SET status = 'posted', posted_by = $3 WHERE tenant_id = $1 AND id = $2`,
+          [tenantId, journalEntryId, userId],
+        );
+      }
+      if (targetType === 'vendor_bill') {
+        await client.query(
+          `UPDATE vendor_bills SET current_approval_step = current_approval_step + 1
+           WHERE tenant_id = $1 AND id = $2`,
+          [tenantId, targetId],
+        );
+      }
+
+      await this.auditLogs.record(client, tenantId, {
+        actorUserId: userId,
+        action: `${targetType}.approved`,
+        targetType,
+        targetId,
+        afterData: { status: 'approved', journalEntry_id: journalEntryId },
+      });
+      return;
     }
 
+    // 新ドメイン (contract, purchase_request 等)
     await this.auditLogs.record(client, tenantId, {
       actorUserId: userId,
       action: `${targetType}.approved`,
       targetType,
       targetId,
-      afterData: { status: 'approved', journal_entry_id: journalEntryId },
+      afterData: { status: 'approved' },
     });
   }
 
@@ -313,7 +333,7 @@ export class ApprovalRequestsService {
         [tenantId, targetId, nextStep],
       );
     }
-    // journal_entryはpending_approvalのまま変化しない。
+    // journal_entry, contract, purchase_request 等は中間ステップでは承認依頼側のcurrent_stepのみ進行
   }
 
   /** 却下時、対象リソースをrejectedへ遷移させ、先行起票していたdraft仕訳を破棄する */
@@ -339,31 +359,43 @@ export class ApprovalRequestsService {
       return;
     }
 
-    const table = targetType === 'expense_report' ? 'expense_reports' : 'vendor_bills';
-    const linked = await client.query<{ journal_entry_id: string | null }>(
-      `SELECT journal_entry_id FROM ${table} WHERE tenant_id = $1 AND id = $2`,
-      [tenantId, targetId],
-    );
-    if (linked.rowCount === 0) {
-      throw AppException.notFound('却下対象のレコードが見つかりません');
-    }
-    const journalEntryId = linked.rows[0].journal_entry_id;
-
-    await client.query(`UPDATE ${table} SET status = 'rejected' WHERE tenant_id = $1 AND id = $2`, [
-      tenantId,
-      targetId,
-    ]);
-    if (journalEntryId) {
-      // journal_entriesは物理削除ができないため、draft状態からvoidedへ遷移させることで
-      // 「破棄」を表現する(draftからの遷移はガードトリガーで制限されていない)。
-      await client.query(
-        `UPDATE journal_entries
-         SET status = 'voided', voided_at = now(), voided_by = $3
-         WHERE tenant_id = $1 AND id = $2 AND status = 'draft'`,
-        [tenantId, journalEntryId, userId],
+    if (targetType === 'expense_report' || targetType === 'vendor_bill') {
+      const table = targetType === 'expense_report' ? 'expense_reports' : 'vendor_bills';
+      const linked = await client.query<{ journal_entry_id: string | null }>(
+        `SELECT journal_entry_id FROM ${table} WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, targetId],
       );
+      if (linked.rowCount === 0) {
+        throw AppException.notFound('却下対象のレコードが見つかりません');
+      }
+      const journalEntryId = linked.rows[0].journal_entry_id;
+
+      await client.query(`UPDATE ${table} SET status = 'rejected' WHERE tenant_id = $1 AND id = $2`, [
+        tenantId,
+        targetId,
+      ]);
+      if (journalEntryId) {
+        // journal_entriesは物理削除ができないため、draft状態からvoidedへ遷移させることで
+        // 「破棄」を表現する(draftからの遷移はガードトリガーで制限されていない)。
+        await client.query(
+          `UPDATE journal_entries
+           SET status = 'voided', voided_at = now(), voided_by = $3
+           WHERE tenant_id = $1 AND id = $2 AND status = 'draft'`,
+          [tenantId, journalEntryId, userId],
+        );
+      }
+
+      await this.auditLogs.record(client, tenantId, {
+        actorUserId: userId,
+        action: `${targetType}.rejected`,
+        targetType,
+        targetId,
+        afterData: { status: 'rejected' },
+      });
+      return;
     }
 
+    // 新ドメイン (contract, purchase_request 等)
     await this.auditLogs.record(client, tenantId, {
       actorUserId: userId,
       action: `${targetType}.rejected`,

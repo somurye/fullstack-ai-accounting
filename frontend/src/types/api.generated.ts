@@ -3974,7 +3974,7 @@ export interface paths {
                     page?: components["parameters"]["PageParam"];
                     page_size?: components["parameters"]["PageSizeParam"];
                     status?: components["schemas"]["ApprovalRequestStatus"];
-                    target_type?: "journal_entry" | "expense_report" | "vendor_bill";
+                    target_type?: "journal_entry" | "expense_report" | "vendor_bill" | "contract" | "purchase_request";
                     /** @description 現在のユーザーが次の承認ステップの承認者である申請のみに絞り込む */
                     pending_for_me?: boolean;
                 };
@@ -6700,7 +6700,7 @@ export interface components {
             /** Format: uuid */
             id?: string;
             /** @enum {string} */
-            target_type?: "journal_entry" | "expense_report" | "vendor_bill";
+            target_type?: "journal_entry" | "expense_report" | "vendor_bill" | "contract" | "purchase_request";
             /** Format: uuid */
             target_id?: string;
             /** Format: uuid */

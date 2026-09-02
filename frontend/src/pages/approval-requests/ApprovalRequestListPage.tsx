@@ -95,7 +95,29 @@ function TargetSummary({ request }: { request: ApprovalRequest }) {
     );
   }
 
-  return null;
+  if (targetType === 'contract') {
+    return (
+      <div className="space-y-1 text-sm">
+        <p className="text-surface-100 font-medium">契約書 申請</p>
+        <p className="text-xs text-surface-400">対象ID: {targetId}</p>
+      </div>
+    );
+  }
+
+  if (targetType === 'purchase_request') {
+    return (
+      <div className="space-y-1 text-sm">
+        <p className="text-surface-100 font-medium">購買稟議 申請</p>
+        <p className="text-xs text-surface-400">対象ID: {targetId}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1 text-sm">
+      <p className="text-xs text-surface-400">対象ID: {targetId}</p>
+    </div>
+  );
 }
 
 function DetailModal({ request, onClose }: { request: ApprovalRequest; onClose: () => void }) {

@@ -1,7 +1,13 @@
 import { z } from 'zod';
 
 export const APPROVAL_REQUEST_STATUSES = ['pending', 'approved', 'rejected'] as const;
-export const APPROVAL_TARGET_TYPES = ['journal_entry', 'expense_report', 'vendor_bill'] as const;
+export const APPROVAL_TARGET_TYPES = [
+  'journal_entry',
+  'expense_report',
+  'vendor_bill',
+  'contract',
+  'purchase_request',
+] as const;
 
 export const approvalRequestListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
