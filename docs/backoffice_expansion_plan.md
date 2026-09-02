@@ -88,7 +88,7 @@ ChatGPT（SO）は実コードとの差分照合を前提にレビューする�
 | P0-T1 | `approval_rules`/`approval_requests`のtarget_type拡張 | `contract`, `purchase_request`等を新たなtarget_typeとして受け入れられるようENUM/CHECK制約とルールエンジンを拡張 | なし | ✅ SO正式PASS（mainマージ完了） |
 | P0-T2 | `attachments`テーブルの汎用化確認・拡張 | 現状レシート/請求書向け前提の列（`counterparty_name`等）が契約書にも自然にフィットするか検証し、必要なら`document_category`列を追加 | なし | ✅ SO正式PASS（mainマージ完了） |
 | P0-T3 | AIゲートウェイの汎用提案インターフェース定義 | OCR/科目提案に限定されている現行の提案スキーマを、「文書種別によらず`suggested_fields: JSON`を返す」形に一般化 | なし | ✅ SO判定CONDITIONAL PASS（mainマージ完了） |
-| P0-T4 | ロール／権限マスタへの新ロール追加 | `legal_admin`, `legal_viewer` ロールおよび `contract.*` 権限をRBACに追加 | なし | 実装完了・SOレビュー依頼 |
+| P0-T4 | ロール／権限マスタへの新ロール追加 | `legal_admin`, `legal_viewer` ロールおよび `contract.*` 権限をRBACに追加 | なし | 修正コミット完了・SO再レビュー依頼 |
 
 ### 2.3 Phase 0 実装指示プロンプト（Gemini向け）
 
@@ -160,6 +160,8 @@ SO(ChatGPT)による正式PASS判定（コミット96ffcf4時点）を得てい�
 これでP0-T1は完了。次はP0-T2（attachmentsテーブルの汎用化）へ進む。
 
 ---
+
+#### 【指示プロンプト P0-T2】attachmentsテーブルの汎用化
 
 ```
 # 背景・目的
@@ -317,6 +319,68 @@ Phase 1で契約書管理を導入するにあたり、既存の viewer_external
 
 # ChatGPTレビュー時の確認観点
 - permissions のコード体系が既存の命名規則（例: expense:approve のような形式）と一貫しているか
+```
+
+---
+
+#### 【フォローアップ指示プロンプト P0-T4-FIX】REQUEST CHANGES対応（ENUM実行順序・権限矛盾）
+
+ChatGPT(SO)よりP0-T4が「REQUEST CHANGES」と判定されたため、以下をGeminiに指示する。
+
+```
+# SOレビュー結果：P0-T4 REQUEST CHANGES
+main...feature/p0-t4-legal-role の実差分を確認した結果、現状はマージ不可です。以下を修正してください。
+
+# BLOCKER-01: ENUM追加後の同一トランザクション使用問題
+sql/008_legal_roles.sql で、
+  ALTER TYPE role_code_enum ADD VALUE IF NOT EXISTS 'legal_admin';
+  ALTER TYPE role_code_enum ADD VALUE IF NOT EXISTS 'legal_viewer';
+  INSERT INTO roles (code, name) VALUES ('legal_admin', ...), ('legal_viewer', ...);
+という順序になっています。PostgreSQLでは ALTER TYPE ... ADD VALUE で追加した値を
+同一トランザクション内で直後に使用すると "unsafe use of new value" エラーになり得ます。
+リポジトリの既存マイグレーション実行方式（1トランザクションか、ステートメントごとか）を確認し、
+確実に安全な方式へ修正してください。具体的には、ALTER TYPE部分と roles への INSERT を
+別マイグレーションファイルに分割する（例: 008a_legal_roles_enum.sql / 008b_legal_roles_insert.sql）か、
+リポジトリのmigrationランナーがステートメントごとに自動commitする方式であることを確認した上で
+その根拠を報告に明記するか、いずれかの対応を取ってください。
+
+# MAJOR-01: 完了報告と実装内容の矛盾
+完了報告では「既存ロールの権限・アクセス範囲には一切変更なし」としていますが、実際のSQLでは
+owner / approver / accounting_manager / accountant に contract.* 系の新規権限を付与しており、
+これは明確に既存ロールのアクセス範囲変更です。以下のどちらかに揃えてください。
+  (a) 既存ロールへの契約権限付与を意図した設計として採用する場合:
+      完了報告・ドキュメントの記述を「legal_admin/legal_viewerの新設に加え、既存ロールにも
+      契約閲覧・承認権限を付与」に修正する。
+  (b) P0-T4のスコープを「新規legal roleの追加のみ、既存ロールは不変」に厳密に限定する場合:
+      owner/approver/accounting_manager/accountantへのcontract関連権限追加を削除する。
+どちらの方針を取るか判断し、報告に明記してください（本計画書のPhase 1タスクとの整合を考えると
+(a)の方が自然な可能性がありますが、最終判断はGemini実装側の状況を踏まえてください）。
+
+# MEDIUM-01: legal_adminのSoD（職務分掌）確認（今回は必須修正ではない）
+legal_admin が contract.create と contract.approve の両方を持つため、Phase 1で
+contracts / approval workflow を実装する際には、既存の自己承認禁止（fn_prevent_self_approval）が
+契約ドメインにも確実に適用されることを必須条件とする。この確認は今回のP0-T4修正では不要だが、
+報告内で「Phase 1実装時の必須確認事項」として明記すること。
+
+# 修正後に再実行すること
+1. schema migration実行確認（実際にマイグレーションを実行してエラーが出ないこと）
+2. scripts/verify_schema.py
+3. backend npm test
+4. backend/frontend npm run typecheck
+5. frontend npm run build
+6. git diff main...feature/p0-t4-legal-role
+7. feature/p0-t4-legal-role へ修正コミットをpush（本計画書0.4節に従う）
+
+# 受け入れ基準（Definition of Done）
+- [ ] ENUM追加とINSERTの実行順序が安全であることを、実際にマイグレーションを実行して確認できる
+- [ ] 完了報告と実装内容（既存ロールへの権限付与有無）が一致している
+- [ ] MEDIUM-01がPhase 1実装時の必須確認事項として報告に明記されている
+- [ ] 修正コミットがpushされ、比較URLが報告に含まれる
+
+# ChatGPTレビュー時の確認観点
+- 修正後のマイグレーションが、実際のPostgreSQL実行順序（ステートメントごとのcommit境界含む）で
+  問題なく流れることを、報告だけでなく実行ログ等で確認できるか
+- MAJOR-01でどちらの方針を選んだかが、Phase 1のcontracts設計・承認ワークフローと矛盾しないか
 ```
 
 ---
@@ -548,3 +612,4 @@ attachments（document_category='contract'）を実際に活用する契約書�
 | 1.4.0 | P0-T1がSO正式PASS（コミット96ffcf4）。マージ指示プロンプト（P0-T1-MERGE）を追加し、タスク一覧にステータス列を追加してP0-T1を完了扱いに更新 |
 | 1.5.0 | P0-T2がSO判定CONDITIONAL PASS（コミット6ddd3cb、追加修正不要）。「既知の技術的負債・フォローアップ事項」セクション(4節)を新設しDEBT-001（ファイル保存とDBトランザクションの非原子性）を記録。マージ指示プロンプト（P0-T2-MERGE）を追加しP0-T2を完了扱いに更新 |
 | 1.6.0 | P0-T3がSO判定CONDITIONAL PASS（コミットe01384d、追加修正不要）。DEBT-002（confidence値のruntime validation未実装）、DEBT-003（model_nameが実態と乖離）を記録。P1-T2にDEBT-003対応必須の注記を追加。マージ指示プロンプト（P0-T3-MERGE）を追加しP0-T3を完了扱いに更新 |
+| 1.7.0 | P0-T4がSO判定REQUEST CHANGES（ENUM追加直後の同一トランザクション使用問題、完了報告と実装の権限矛盾）。フォローアップ指示プロンプト（P0-T4-FIX）を追加し、P0-T4を「要修正・再レビュー待ち」に更新。あわせてP0-T2見出しの欠落を修正（内容自体に変更なし） |

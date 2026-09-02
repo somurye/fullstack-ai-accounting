@@ -1,25 +1,26 @@
 -- ============================================================================
--- マイグレーション 008: 法務向けロールおよび契約権限の追加 (Phase 0: P0-T4)
+-- マイグレーション 008b: 法務ロールマスタ・契約権限マスタおよび紐付け登録 (Phase 0: P0-T4)
 -- ============================================================================
 -- 目的:
 -- Phase 1 での契約書管理機能(contracts等)導入に先立ち、RBAC基盤へ
--- 法務・総務担当向けロール('legal_admin', 'legal_viewer')および
+-- 法務担当向けロール('legal_admin', 'legal_viewer')および
 -- 契約書ドメインの権限('contract.*')を追加・整備する。
--- 既存ロール(owner, accountant, viewer_external等)の権限範囲は一切変更せず、
--- fail-closed の原則を維持する。
+--
+-- 権限方針 (MAJOR-01 方針 a):
+-- - legal_admin / legal_viewer の新設に加え、Phase 1 での契約承認・経理突合業務を想定し、
+--   既存の管理者(owner)・承認者(approver)・経理担当(accounting_manager, accountant)にも
+--   業務上必要な契約閲覧・承認権限を付与する。
+-- - 一般従業員(employee)、給与担当(payroll_admin)、外部税理士(viewer_external)には
+--   契約権限を付与せず、fail-closed (未設定・不一致時はアクセス不可) を維持する。
 -- ============================================================================
 
--- 1. role_code_enum に新ロールを追加
-ALTER TYPE role_code_enum ADD VALUE IF NOT EXISTS 'legal_admin';
-ALTER TYPE role_code_enum ADD VALUE IF NOT EXISTS 'legal_viewer';
-
--- 2. roles テーブルへロールマスタ登録
+-- 1. roles テーブルへロールマスタ登録
 INSERT INTO roles (code, name) VALUES
     ('legal_admin', '法務管理者(契約書作成・承認・管理)'),
     ('legal_viewer', '法務閲覧者(契約書閲覧専用)')
 ON CONFLICT (code) DO NOTHING;
 
--- 3. permissions テーブルへ契約書関連パーミッション登録
+-- 2. permissions テーブルへ契約書関連パーミッション登録
 -- 既存の命名規則 (例: journal_entry.create, expense_report.approve, external.view) に準拠
 INSERT INTO permissions (code, description) VALUES
     ('contract.create', '契約書の作成・登録(draft)'),
@@ -29,7 +30,7 @@ INSERT INTO permissions (code, description) VALUES
     ('contract.terminate', '契約書の終了・解約処理')
 ON CONFLICT (code) DO NOTHING;
 
--- 4. role_permissions でロールと権限を紐付け
+-- 3. role_permissions でロールと権限を紐付け
 -- owner: 全契約権限
 INSERT INTO role_permissions (role_id, permission_id)
 SELECT r.id, p.id
