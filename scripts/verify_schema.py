@@ -56,7 +56,7 @@ except ImportError:
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-SCHEMA_FILE = SCRIPT_DIR.parent / "sql" / "001_initial_schema_all_in_one.sql"
+SQL_DIR = SCRIPT_DIR.parent / "sql"
 
 DOCKER_CONTAINER_NAME = "keiri_kaikei_verify_pg"
 DOCKER_IMAGE = "postgres:16"
@@ -138,16 +138,24 @@ def docker_stop() -> None:
 # ----------------------------------------------------------------------------
 
 def apply_schema(dsn: str) -> None:
-    if not SCHEMA_FILE.exists():
-        raise FileNotFoundError(f"スキーマファイルが見つかりません: {SCHEMA_FILE}")
-    sql = SCHEMA_FILE.read_text(encoding="utf-8")
-    print(f"[schema] {SCHEMA_FILE.name} を適用中 ({len(sql):,} bytes)...")
+    if not SQL_DIR.exists():
+        raise FileNotFoundError(f"SQLディレクトリが見つかりません: {SQL_DIR}")
+    sql_files = sorted(
+        [f for f in SQL_DIR.iterdir() if f.suffix == ".sql"],
+        key=lambda p: p.name,
+    )
+    if not sql_files:
+        raise FileNotFoundError(f"SQLファイルが見つかりません: {SQL_DIR}")
+
     conn = psycopg2.connect(dsn)
     conn.autocommit = True
     try:
-        with conn.cursor() as cur:
-            cur.execute(sql)
-        print("[schema] 適用完了")
+        for sql_file in sql_files:
+            sql = sql_file.read_text(encoding="utf-8")
+            print(f"[schema] {sql_file.name} を適用中 ({len(sql):,} bytes)...")
+            with conn.cursor() as cur:
+                cur.execute(sql)
+        print("[schema] 全マイグレーション適用完了")
     finally:
         conn.close()
 
@@ -396,6 +404,64 @@ def run_verification(dsn: str) -> int:
             (t1, ar_id2, approver),
         )
     r.ok("別ユーザーによる承認は成功する", True)
+
+    # 4.1 新target_type (contract / purchase_request) での承認ルール登録、自己承認禁止、RLS検証 (Phase 0 P0-T1)
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute("SELECT id FROM roles WHERE code = 'owner'")
+        owner_role_row = cur.fetchone()
+        owner_role_id = owner_role_row["id"] if owner_role_row else None
+
+        cur.execute("SELECT id FROM roles WHERE code = 'accounting_manager'")
+        mgr_role_row = cur.fetchone()
+        mgr_role_id = mgr_role_row["id"] if mgr_role_row else None
+
+        if owner_role_id and mgr_role_id:
+            cur.execute(
+                """INSERT INTO approval_rules (tenant_id, target_type, step_number, condition, approver_role_id, is_active)
+                   VALUES (%s, 'contract', 1, '{"min_amount": 0}', %s, TRUE)
+                   ON CONFLICT (tenant_id, target_type, step_number, approver_role_id, approver_user_id) DO NOTHING""",
+                (t1, owner_role_id),
+            )
+            cur.execute(
+                """INSERT INTO approval_rules (tenant_id, target_type, step_number, condition, approver_role_id, is_active)
+                   VALUES (%s, 'purchase_request', 1, '{"min_amount": 0}', %s, TRUE)
+                   ON CONFLICT (tenant_id, target_type, step_number, approver_role_id, approver_user_id) DO NOTHING""",
+                (t1, mgr_role_id),
+            )
+            r.ok("新target_type(contract, purchase_request)の承認ルール登録が成功する", True)
+
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        contract_target_id = str(uuid.uuid4())
+        cur.execute(
+            """INSERT INTO approval_requests (tenant_id, target_type, target_id, submitted_by, total_steps)
+               VALUES (%s, 'contract', %s, %s, 1) RETURNING id""",
+            (t1, contract_target_id, owner),
+        )
+        contract_ar_id = cur.fetchone()["id"]
+
+        contract_self_approval_blocked = False
+        try:
+            cur.execute(
+                """INSERT INTO approval_history (tenant_id, approval_request_id, step_number, approver_id, action)
+                   VALUES (%s, %s, 1, %s, 'approve')""",
+                (t1, contract_ar_id, owner),
+            )
+        except Exception as e:  # noqa: BLE001
+            contract_self_approval_blocked = "self-approval" in str(e)
+            cur.connection.rollback()
+        r.ok("新target_type(contract)でも自己承認は拒否される", contract_self_approval_blocked)
+
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute(
+            """INSERT INTO approval_history (tenant_id, approval_request_id, step_number, approver_id, action)
+               VALUES (%s, %s, 1, %s, 'approve')""",
+            (t1, contract_ar_id, approver),
+        )
+    r.ok("新target_type(contract)で別ユーザーによる承認は成功する", True)
+
+    with tx_as(dsn, role="app_runtime", tenant_id=t2) as cur:
+        cur.execute("SELECT * FROM approval_requests WHERE id = %s", (contract_ar_id,))
+        r.ok("新target_type(contract)の承認依頼は他テナントから見えない(RLS)", len(cur.fetchall()) == 0)
 
     # ------------------------------------------------------------------
     print("\n--- 5. viewer_external: 時限アクセス制御 ---")

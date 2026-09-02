@@ -2063,7 +2063,7 @@ paths:
           in: query
           schema:
             type: string
-            enum: [journal_entry, expense_report, vendor_bill]
+            enum: [journal_entry, expense_report, vendor_bill, contract, purchase_request]
         - name: pending_for_me
           in: query
           description: 現在のユーザーが次の承認ステップの承認者である申請のみに絞り込む
@@ -4103,7 +4103,7 @@ components:
       readOnly: true
       properties:
         id: { type: string, format: uuid }
-        target_type: { type: string, enum: [journal_entry, expense_report, vendor_bill] }
+        target_type: { type: string, enum: [journal_entry, expense_report, vendor_bill, contract, purchase_request] }
         target_id: { type: string, format: uuid }
         submitted_by: { type: string, format: uuid }
         total_steps: { type: integer }
