@@ -83,12 +83,12 @@ ChatGPT（SO）は実コードとの差分照合を前提にレビューする�
 
 ### 2.2 タスク分解
 
-| タスクID | タスク名 | 概要 | 依存 |
-|----------|----------|------|------|
-| P0-T1 | `approval_rules`/`approval_requests`のtarget_type拡張 | `contract`, `purchase_request`等を新たなtarget_typeとして受け入れられるようENUM/CHECK制約とルールエンジンを拡張 | なし |
-| P0-T2 | `attachments`テーブルの汎用化確認・拡張 | 現状レシート/請求書向け前提の列（`counterparty_name`等）が契約書にも自然にフィットするか検証し、必要なら`document_category`列を追加 | なし |
-| P0-T3 | AIゲートウェイの汎用提案インターフェース定義 | OCR/科目提案に限定されている現行の提案スキーマを、「文書種別によらず`suggested_fields: JSON`を返す」形に一般化 | なし |
-| P0-T4 | ロール／権限マスタへの新ロール追加 | `viewer_legal`等、総務・法務向けロールをRBACに追加（既存`viewer_external`と同パターン） | なし |
+| タスクID | タスク名 | 概要 | 依存 | ステータス |
+|----------|----------|------|------|-----------|
+| P0-T1 | `approval_rules`/`approval_requests`のtarget_type拡張 | `contract`, `purchase_request`等を新たなtarget_typeとして受け入れられるようENUM/CHECK制約とルールエンジンを拡張 | なし | ✅ SO正式PASS（コミット96ffcf4、mainマージ指示済み） |
+| P0-T2 | `attachments`テーブルの汎用化確認・拡張 | 現状レシート/請求書向け前提の列（`counterparty_name`等）が契約書にも自然にフィットするか検証し、必要なら`document_category`列を追加 | なし | 着手待ち |
+| P0-T3 | AIゲートウェイの汎用提案インターフェース定義 | OCR/科目提案に限定されている現行の提案スキーマを、「文書種別によらず`suggested_fields: JSON`を返す」形に一般化 | なし | 未着手 |
+| P0-T4 | ロール／権限マスタへの新ロール追加 | `viewer_legal`等、総務・法務向けロールをRBACに追加（既存`viewer_external`と同パターン） | なし | 未着手 |
 
 ### 2.3 Phase 0 実装指示プロンプト（Gemini向け）
 
@@ -143,7 +143,23 @@ journal_entry, expense_report, vendor_bill を横断的に扱っている。こ�
 
 ---
 
-#### 【指示プロンプト P0-T2】attachmentsテーブルの汎用化
+#### 【マージ指示プロンプト P0-T1-MERGE】mainへのマージ
+
+ChatGPT(SO)よりP0-T1が正式PASSと判定されたため、Geminiへマージを指示する。
+
+```
+# 指示
+feature/p0-t1-approval-target-type を main へマージしてください。
+SO(ChatGPT)による正式PASS判定（コミット96ffcf4時点）を得ています。
+マージ後、以下を確認し報告してください。
+- main上でBackend Jest 8/8 PASS、Backend/Frontend TypeScript 0 errorsを再実行して確認
+- マージコミットハッシュ
+- 作業ブランチ feature/p0-t1-approval-target-type の削除（マージ済み後）
+```
+
+これでP0-T1は完了。次はP0-T2（attachmentsテーブルの汎用化）へ進む。
+
+---
 
 ```
 # 背景・目的
@@ -471,3 +487,4 @@ attachments（document_category='contract'）を実際に活用する契約書�
 | 1.1.0 | ロール・権限の粒度方針（deny-by-default、細分化は後追い）を決定事項として記録 |
 | 1.2.0 | 完了報告ルール（0.4節: コミット・push必須、mainへの独断マージ禁止）を追加。P0-T1のSO指摘事項に対応するフォローアップ指示プロンプト（P0-T1-FIX）を追加。P0-T2〜T4, P1-T1のDoDにコミット・push要件を追記 |
 | 1.3.0 | コミット77eb503の実コードレビュー結果を反映。責務分離の懸念は解消を確認。migrationへの本番データINSERT混入という唯一の残課題に対応するP0-T1-FIX2プロンプトを追加 |
+| 1.4.0 | P0-T1がSO正式PASS（コミット96ffcf4）。マージ指示プロンプト（P0-T1-MERGE）を追加し、タスク一覧にステータス列を追加してP0-T1を完了扱いに更新 |
