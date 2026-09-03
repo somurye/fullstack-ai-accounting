@@ -20,6 +20,7 @@ export interface ContractRow {
   renewal_notice_days: number;
   status: string;
   attachment_id: string | null;
+  source_suggestion_id: string | null;
   description: string | null;
   approved_at: Date | null;
   created_by: string;
@@ -41,6 +42,7 @@ export const SQL_CONTRACT_COLUMNS = `
   c.renewal_notice_days,
   c.status,
   c.attachment_id,
+  c.source_suggestion_id,
   c.description,
   c.approved_at,
   c.created_by,
@@ -63,6 +65,7 @@ export function mapContractRow(row: ContractRow): ContractDto {
     renewal_notice_days: Number(row.renewal_notice_days),
     status: row.status as ContractStatus,
     attachment_id: row.attachment_id,
+    source_suggestion_id: row.source_suggestion_id,
     description: row.description,
     approved_at: row.approved_at ? row.approved_at.toISOString() : null,
     created_by: row.created_by,

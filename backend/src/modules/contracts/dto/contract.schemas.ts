@@ -46,6 +46,7 @@ export const contractCreateSchema = z
     auto_renewal: z.boolean().default(false),
     renewal_notice_days: z.number().int().min(0).default(30),
     attachment_id: z.string().uuid().nullable().optional(),
+    source_suggestion_id: z.string().uuid().nullable().optional(),
     description: z.string().nullable().optional(),
   })
   .refine(
@@ -72,6 +73,7 @@ export const contractUpdateSchema = z
     auto_renewal: z.boolean().optional(),
     renewal_notice_days: z.number().int().min(0).optional(),
     attachment_id: z.string().uuid().nullable().optional(),
+    source_suggestion_id: z.string().uuid().nullable().optional(),
     description: z.string().nullable().optional(),
   })
   .refine(

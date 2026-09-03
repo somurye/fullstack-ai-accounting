@@ -201,17 +201,28 @@ export class ContractsService {
         }
       }
 
+      // 起草元AI提案の存在確認(指定時)
+      if (dto.source_suggestion_id) {
+        const sugCheck = await client.query(
+          `SELECT 1 FROM ai_suggestions WHERE tenant_id = $1 AND id = $2`,
+          [tenantId, dto.source_suggestion_id],
+        );
+        if (sugCheck.rowCount === 0) {
+          throw AppException.badRequest('指定された起草元AI提案が存在しません');
+        }
+      }
+
       const contractNo = await generateContractNo(client, tenantId);
 
       const result = await client.query<ContractRow>(
-        `INSERT INTO contracts (
+        `INSERT INTO contracts AS c (
            tenant_id, contract_no, title, counterparty_name, contract_type,
            contract_amount, currency, start_date, end_date, auto_renewal,
-           renewal_notice_days, status, attachment_id, description, created_by
+           renewal_notice_days, status, attachment_id, source_suggestion_id, description, created_by
          ) VALUES (
            $1, $2, $3, $4, $5,
            $6, $7, $8, $9, $10,
-           $11, 'draft', $12, $13, $14
+           $11, 'draft', $12, $13, $14, $15
          )
          RETURNING ${SQL_CONTRACT_COLUMNS}`,
         [
@@ -227,6 +238,7 @@ export class ContractsService {
           dto.auto_renewal ?? false,
           dto.renewal_notice_days ?? 30,
           dto.attachment_id ?? null,
+          dto.source_suggestion_id ?? null,
           dto.description ?? null,
           userId,
         ],
@@ -244,6 +256,7 @@ export class ContractsService {
           title: created.title,
           counterparty_name: created.counterparty_name,
           contract_amount: created.contract_amount,
+          source_suggestion_id: created.source_suggestion_id,
         },
       });
 
@@ -498,6 +511,55 @@ export class ContractsService {
       });
 
       return pendingContract;
+    });
+  }
+
+  /**
+   * 契約書を解約(terminated)状態へ遷移させる。
+   * active 状態の契約書のみ解約可能。
+   */
+  async terminate(
+    tenantId: string,
+    userId: string,
+    id: string,
+  ): Promise<ContractDto> {
+    return this.db.transaction(tenantId, userId, async (client) => {
+      const existing = await client.query<ContractRow>(
+        `SELECT ${SQL_CONTRACT_COLUMNS} FROM contracts c WHERE c.tenant_id = $1 AND c.id = $2`,
+        [tenantId, id],
+      );
+      if (existing.rowCount === 0) {
+        throw AppException.notFound('指定された契約書が見つかりません');
+      }
+
+      const current = existing.rows[0];
+      if (current.status !== 'active') {
+        throw AppException.conflict(
+          'INVALID_STATE_TRANSITION',
+          `active状態の契約書のみ解約処理が可能です (現在: ${current.status})`,
+        );
+      }
+
+      const result = await client.query<ContractRow>(
+        `UPDATE contracts c
+         SET status = 'terminated', updated_at = now()
+         WHERE c.tenant_id = $1 AND c.id = $2
+         RETURNING ${SQL_CONTRACT_COLUMNS}`,
+        [tenantId, id],
+      );
+
+      const terminated = mapContractRow(result.rows[0]);
+
+      await this.auditLogs.record(client, tenantId, {
+        actorUserId: userId,
+        action: 'contract.terminated',
+        targetType: 'contract',
+        targetId: id,
+        beforeData: { status: current.status },
+        afterData: { status: 'terminated' },
+      });
+
+      return terminated;
     });
   }
 

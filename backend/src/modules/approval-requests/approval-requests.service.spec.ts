@@ -86,15 +86,17 @@ describe('ApprovalRequestsService', () => {
           },
         ],
       });
-      // 2. assertAssignedApprover
+      // 2. assertAssignedApprover: contract.approve 権限チェック
       mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ '?column?': 1 }] });
-      // 3. INSERT INTO approval_history
+      // 3. assertAssignedApprover: 割当承認者チェック
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ '?column?': 1 }] });
+      // 4. INSERT INTO approval_history
       mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [] });
-      // 4. UPDATE approval_requests SET status = 'approved'
+      // 5. UPDATE approval_requests SET status = 'approved'
       mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [] });
-      // 5. UPDATE contracts SET status = 'active'
+      // 6. UPDATE contracts SET status = 'active'
       mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [] });
-      // 6. fetchDetail: approval_requests
+      // 7. fetchDetail: approval_requests
       mockClient.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [
@@ -109,7 +111,7 @@ describe('ApprovalRequestsService', () => {
           },
         ],
       });
-      // 6. fetchDetail: approval_history
+      // 8. fetchDetail: approval_history
       mockClient.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [
@@ -139,6 +141,30 @@ describe('ApprovalRequestsService', () => {
           targetId: TARGET_ID,
         }),
       );
+    });
+
+    it('contract.approve 権限を持たないユーザーの承認は 403 で拒否される (DEBT-005)', async () => {
+      // 1. fetchPendingRequest
+      mockClient.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [
+          {
+            id: REQUEST_ID,
+            target_type: 'contract',
+            target_id: TARGET_ID,
+            submitted_by: SUBMITTER_USER_ID,
+            total_steps: 1,
+            current_step: 1,
+            status: 'pending',
+          },
+        ],
+      });
+      // 2. assertAssignedApprover: contract.approve 権限なし (0件)
+      mockClient.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
+
+      await expect(
+        service.approve(TENANT_ID, APPROVER_USER_ID, REQUEST_ID, { comment: '承認試行' }),
+      ).rejects.toThrow(AppException);
     });
 
     it('target_type = "purchase_request" で多段階承認の中間ステップが進行する', async () => {
@@ -208,15 +234,17 @@ describe('ApprovalRequestsService', () => {
           },
         ],
       });
-      // 2. assertAssignedApprover
+      // 2. assertAssignedApprover: contract.approve 権限チェック
       mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ '?column?': 1 }] });
-      // 3. INSERT INTO approval_history
+      // 3. assertAssignedApprover: 割当承認者チェック
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ '?column?': 1 }] });
+      // 4. INSERT INTO approval_history
       mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [] });
-      // 4. UPDATE approval_requests SET status = 'rejected'
+      // 5. UPDATE approval_requests SET status = 'rejected'
       mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [] });
-      // 5. UPDATE contracts SET status = 'rejected'
+      // 6. UPDATE contracts SET status = 'rejected'
       mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [] });
-      // 6. fetchDetail
+      // 7. fetchDetail: approval_requests
       mockClient.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [
@@ -231,7 +259,11 @@ describe('ApprovalRequestsService', () => {
           },
         ],
       });
-      mockClient.query.mockResolvedValueOnce({ rows: [] });
+      // 8. fetchDetail: approval_history
+      mockClient.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [],
+      });
 
       const res = await service.reject(TENANT_ID, APPROVER_USER_ID, REQUEST_ID, {
         comment: '条項修正が必要',
