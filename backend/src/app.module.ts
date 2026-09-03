@@ -35,7 +35,9 @@ import { PayrollImportsModule } from './modules/payroll-imports/payroll-imports.
 import { ApprovalRequestsModule } from './modules/approval-requests/approval-requests.module';
 import { SettingsModule } from './modules/settings/settings.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
+import { ScheduleModule } from '@nestjs/schedule';
 import { ContractsModule } from './modules/contracts/contracts.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
 
 /**
  * AppModule
@@ -89,6 +91,8 @@ import { ContractsModule } from './modules/contracts/contracts.module';
     SettingsModule,
     DashboardModule,
     ContractsModule,
+    ScheduleModule.forRoot(),
+    NotificationsModule,
   ],
   controllers: [],
   providers: [

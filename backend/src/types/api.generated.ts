@@ -5859,6 +5859,130 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 通知一覧を取得する */
+        get: {
+            parameters: {
+                query?: {
+                    status?: "unread" | "read";
+                    limit?: number;
+                    offset?: number;
+                };
+                header: {
+                    /** @description 操作対象テナントのUUID。JWTクレームの tenant_id と一致する必要がある。 */
+                    "X-Tenant-ID": components["parameters"]["TenantIdHeader"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 通知一覧取得成功 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["NotificationListResponse"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/notifications/{id}/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** 通知を既読にする */
+        patch: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description 操作対象テナントのUUID。JWTクレームの tenant_id と一致する必要がある。 */
+                    "X-Tenant-ID": components["parameters"]["TenantIdHeader"];
+                };
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 既読化成功 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["NotificationResponse"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                404: components["responses"]["NotFound"];
+            };
+        };
+        trace?: never;
+    };
+    "/notifications/run-expiry-batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 契約期限アラートバッチを手動実行する (テスト・運用用) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description バッチ実行結果 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BatchRunResponse"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -7573,6 +7697,48 @@ export interface components {
             success?: true;
             data?: components["schemas"]["Contract"][];
             meta?: components["schemas"]["Meta"];
+        };
+        Notification: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            tenant_id: string;
+            type: string;
+            target_type: string;
+            /** Format: uuid */
+            target_id: string;
+            title: string;
+            body: string;
+            /** @enum {string} */
+            status: "unread" | "read";
+            /** Format: date-time */
+            read_at?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        NotificationResponse: {
+            /** @constant */
+            success?: true;
+            data?: components["schemas"]["Notification"];
+        };
+        NotificationListResponse: {
+            /** @constant */
+            success?: true;
+            data?: {
+                items?: components["schemas"]["Notification"][];
+                unread_count?: number;
+            };
+        };
+        BatchRunResponse: {
+            /** @constant */
+            success?: true;
+            data?: {
+                processed_tenants?: number;
+                created_notifications?: number;
+                errors?: string[];
+            };
         };
     };
     responses: {
