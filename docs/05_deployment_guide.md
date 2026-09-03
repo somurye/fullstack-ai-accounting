@@ -15,8 +15,14 @@
 | Node.js | 20以上 | `node -v` |
 | npm | Node同梱のもの | `npm -v` |
 | Docker Desktop | PostgreSQL(pgvector)をローカルで起動するために使用 | `docker -v` |
+| PostgreSQL client (psql) | マイグレーション実行(`db:migrate`)に使用(ホストに無い場合はコンテナ経由またはnode-postgres自動フォールバック) | `psql --version` |
 | Python 3 + psycopg2-binary | スキーマ検証スクリプト(`scripts/verify_schema.py`)を使う場合のみ必須 | `python3 -V` |
 | OS | Windows / macOS / Linux いずれも可(本書のコマンド例はWindows + Git Bash想定だが、macOS/Linuxでも同一) |
+
+> **PostgreSQL クライアント (psql) の導入手順**:
+> - **Windows**: `winget install PostgreSQL.PostgreSQL.16`（環境変数PATHに `C:\Program Files\PostgreSQL\16\bin` を追加）
+> - **macOS**: `brew install libpq && brew link --force libpq`
+> - **Linux (Ubuntu/Debian)**: `sudo apt-get update && sudo apt-get install -y postgresql-client`
 
 > **Windows特有の注意**: Docker Desktopのデーモンは自動起動しないことがある。`docker ps`が `error during connect ... dockerDesktopLinuxEngine` を返す場合は、Docker Desktopアプリを起動してから10〜20秒待つ(`docker-compose.yml`の`restart: unless-stopped`が効いていれば、デーモン起動後に既存コンテナは自動的に立ち上がる)。
 
@@ -34,7 +40,7 @@ cd keiri-kaikei
 ```
 backend/        NestJS APIサーバー
 frontend/       React SPA
-sql/            DBスキーマ(全部入り1ファイル)
+sql/            DBスキーマ・マイグレーションSQL群(001〜008b)
 docs/           設計文書(本書含む)
 scripts/        DB検証・シードスクリプト
 docker-compose.yml   PostgreSQL(pgvector)のみ定義。アプリ本体は未コンテナ化
@@ -71,23 +77,24 @@ docker compose ps
 # STATUS が "Up (healthy)" になっていることを確認
 ```
 
-### 3.2 スキーマの適用
+### 3.2 スキーマとマイグレーションの適用
 
-`sql/001_initial_schema_all_in_one.sql` を、コンテナ作成時の**スーパーユーザー`postgres`**で流し込む。このSQL自身が、アプリが実際に使う`app_runtime`/`app_readonly_external`ロールをこの中で作成する。
-
-```bash
-# ホストにpsqlがある場合
-PGPASSWORD=postgres psql -h localhost -U postgres -d keiri_kaikei -f sql/001_initial_schema_all_in_one.sql
-
-# psqlが無い場合はコンテナ内のpsqlを使う(推奨・環境非依存)
-docker compose exec -T postgres psql -U postgres -d keiri_kaikei < sql/001_initial_schema_all_in_one.sql
-```
-
-あるいは `backend/package.json` のスクリプトを使う(`DATABASE_URL`環境変数が必要。3.4節参照):
+`sql/` ディレクトリ配下のマイグレーションファイル群（`001`〜`008b`）を順次適用する。
+マイグレーションランナー（`npm run db:migrate`）は、**ホストの `psql`** → **Docker コンテナ内 `psql`** → **`node-postgres (pg)`** の順で自動的に実行経路を選択するため、どの環境でもコマンド1つで安全に全マイグレーションを適用できる。
 
 ```bash
 cd backend
-npm run db:apply-schema
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/keiri_kaikei" npm run db:migrate
+```
+
+手動で適用する場合:
+
+```bash
+# ホストにpsqlがある場合
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/keiri_kaikei" node ../scripts/db-migrate.js
+
+# Dockerコンテナ内のpsqlを使う場合
+docker compose exec -T postgres psql -U postgres -d keiri_kaikei < sql/001_initial_schema_all_in_one.sql
 ```
 
 適用後、テーブル数を確認する(61テーブルが作成される):
@@ -96,18 +103,17 @@ npm run db:apply-schema
 docker compose exec postgres psql -U postgres -d keiri_kaikei -c "\dt" | wc -l
 ```
 
-### 3.3 (推奨)スキーマ検証スクリプトの実行
+### 3.3 スキーマ検証スクリプトの実行（実DB E2E検証）
 
-RLSによるテナント分離・貸借チェック・追記専用・24時間Void・自己承認禁止・外部時限アクセスが実際に機能するかを、使い捨てのDockerコンテナ上で自動検証できる。
+> **開発・運用ルール**: **マイグレーション実装後は必ず実DB E2E検証（verify_schema.py）を実行すること。**
+
+RLSによるテナント分離・貸借チェック・追記専用・24時間Void・自己承認禁止・外部時限アクセス・document_category汎用化・新ロール(legal_admin/legal_viewer)と契約権限スコープが実際に機能するかを、PostgreSQL実インスタンス上で自動検証する。
 
 ```bash
-python3 -m pip install psycopg2-binary
+# Docker利用時(使い捨てコンテナで完全自動検証)
 python3 scripts/verify_schema.py --use-docker
-```
 
-既に3.1節でコンテナを起動済みの場合は、そのDSNを直接指定してもよい:
-
-```bash
+# 起動済みコンテナ/既存DBに対して検証する場合
 python3 scripts/verify_schema.py --dsn "postgresql://postgres:postgres@localhost:5432/keiri_kaikei"
 ```
 

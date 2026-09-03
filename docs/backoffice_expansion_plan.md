@@ -89,7 +89,7 @@ ChatGPT（SO）は実コードとの差分照合を前提にレビューする�
 | P0-T2 | `attachments`テーブルの汎用化確認・拡張 | 現状レシート/請求書向け前提の列（`counterparty_name`等）が契約書にも自然にフィットするか検証し、必要なら`document_category`列を追加 | なし | ✅ SO正式PASS（コミット6ddd3cb、DEBT-001を記録済み、mainマージ指示済み） |
 | P0-T3 | AIゲートウェイの汎用提案インターフェース定義 | OCR/科目提案に限定されている現行の提案スキーマを、「文書種別によらず`suggested_fields: JSON`を返す」形に一般化 | なし | ✅ SO判定CONDITIONAL PASS（コミットe01384d、DEBT-002/003を記録済み、mainマージ指示済み） |
 | P0-T4 | ロール／権限マスタへの新ロール追加 | `viewer_legal`等、総務・法務向けロールをRBACに追加（既存`viewer_external`と同パターン） | なし | ✅ SO正式PASS（コミット470f2dc、DEBT-004を記録済み、mainマージ指示済み） |
-| P0-T5 | 開発環境へのpsql整備 ＋ 実DB migration E2E確認（DEBT-004対応） | 開発/CI環境にPostgreSQLクライアントを整備し、006〜008bまでの全migrationをクリーンDBに実行して`verify_schema.py`を実DB接続でPASSさせる | P0-T4 | 未着手（**Phase 1着手のブロッカー**） |
+| P0-T5 | 開発環境へのpsql整備 ＋ 実DB migration E2E確認（DEBT-004対応） | 開発/CI環境にPostgreSQLクライアントを整備し、006〜008bまでの全migrationをクリーンDBに実行して`verify_schema.py`を実DB接続でPASSさせる | P0-T4 | 実装完了・SOレビュー依頼 |
 
 ### 2.3 Phase 0 実装指示プロンプト（Gemini向け）
 
@@ -695,7 +695,7 @@ attachments（document_category='contract'）を実際に活用する契約書�
 | DEBT-001 | P0-T2 | `AttachmentsService.upload()` がファイル実体をディスクへ書き込んだ後にDB transactionを実行しており、DB rollback時に孤児ファイルが残り得る（原子性がない）。MVP・ローカルディスク保存の間は許容するが、S3等のオブジェクトストレージへ移行する際は、DB transaction・object storage・補償処理(transactional outbox等)を含めた整合性設計を正式に行う。 | MEDIUM | Phase 5（統合最適化）またはストレージ本格化タイミングで再評価 |
 | DEBT-002 | P0-T3 | `suggested_fields.*.confidence` および `confidenceScore` に0〜1の範囲制約がTypeScript型・Zod入力・JSONB内部のいずれでも実行時に保証されていない。DB制約はJSONB内部までは及ばないため、異常値（例: 1.5, -0.3）が保存され得る。共通スキーマに`z.number().min(0).max(1)`等のruntime validationを追加する必要がある。 | MEDIUM | AIゲートウェイ正式化（複数プロバイダ対応）タイミングで対応 |
 | DEBT-003 | P0-T3 | 契約書条項抽出（`extractContractTerms()`）は現状ルールエンジン（正規表現ベース）だが、`generateContractSuggestion()`の`model_name`デフォルト値が`claude-3-5-sonnet-20241022`になっており、実際にはLLMを呼んでいないのに監査データ上はClaudeが生成したように見える。`provider='rule_engine'`, `model_name='contract-extractor-v1'`等、実態に即した値に修正し、将来的にはAI Provider/Gateway抽象化（Claude/Gemini/OpenAI/Rule Engineを共通payloadで扱う設計）を正式化する。 | MEDIUM（会計SaaSとして監査追跡性に影響） | Phase 1でAI条項抽出を本格実装するタイミングで対応必須（それまでの暫定値として認識しておく） |
-| DEBT-004 | P0-T4 | 開発・レビュー環境に`psql`クライアントが存在せず、`npm run db:migrate` / `verify_schema.py`のDB接続を伴う実行（実DB E2E検証）が未実施のまま。SQLの静的な安全性（migration runnerの実行順序等）は確認済みだが、実DBに対する動作確認ができていない。CI環境またはローカル開発環境に`psql`（またはコンテナ経由のPostgreSQLクライアント）を整備し、今後のmigrationタスクで実DB E2E確認を標準化する。 | MEDIUM（開発環境整備） | Phase 1のP1-T1（contractsテーブル実装、実DB検証が必須）着手前に対応推奨 |
+| DEBT-004 | P0-T4 | 開発・レビュー環境に`psql`クライアントが存在せず、`npm run db:migrate` / `verify_schema.py`のDB接続を伴う実行（実DB E2E検証）が未実施のまま。SQLの静的な安全性（migration runnerの実行順序等）は確認済みだが、実DBに対する動作確認ができていない。CI環境またはローカル開発環境に`psql`（またはコンテナ経由のPostgreSQLクライアント）を整備し、今後のmigrationタスクで実DB E2E確認を標準化する。 | MEDIUM（開発環境整備） | ✅ RESOLVED（P0-T5にてdb-migrate.jsのコンテナ/node-postgresフォールバック対応、OS別psql導入手順追記、実DB E2E検証ルール明記により解消） |
 
 ---
 

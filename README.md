@@ -60,21 +60,20 @@ docker-compose up -d
 
 続けて、スーパーユーザー`postgres`でスキーマを流し込む（`001`がテーブル本体・RLS・実行ロール作成、`002`以降は追加カラム・追加機能向けの増分マイグレーション）。
 
-`sql/001_initial_schema_all_in_one.sql` 〜 `sql/005_*.sql` までを連番順に一括適用するには、`backend`ディレクトリで以下を実行する（`DATABASE_URL`は`postgres`スーパーユーザーで接続できる値を指定する。`sql/`配下に新しいマイグレーションファイルが追加されても、個別に`psql -f`を積み増す必要がなくなる）。
+`sql/001_initial_schema_all_in_one.sql` 〜 `sql/008b_*.sql` までの全マイグレーションを連番順に一括適用するには、`backend`ディレクトリで以下を実行する（ホストの `psql`、`docker compose exec`、または `node-postgres` 経由で自動適用される）。
 
 ```bash
 cd backend
 DATABASE_URL="postgresql://postgres:postgres@localhost:5432/keiri_kaikei" npm run db:migrate
 ```
 
-個別に1ファイルずつ適用する場合は従来どおり以下でも可能:
+> **開発・運用ルール**: **マイグレーション実装後は必ず実DB E2E検証（`python scripts/verify_schema.py`）を実行し、全テストケースがPASSすることを確認すること。**
 
 ```bash
-docker compose exec -T postgres psql -U postgres -d keiri_kaikei < sql/001_initial_schema_all_in_one.sql
-docker compose exec -T postgres psql -U postgres -d keiri_kaikei < sql/002_bank_integration.sql
-docker compose exec -T postgres psql -U postgres -d keiri_kaikei < sql/003_bank_connector_link_status.sql
-docker compose exec -T postgres psql -U postgres -d keiri_kaikei < sql/004_rbac_bookkeeper_role.sql
-docker compose exec -T postgres psql -U postgres -d keiri_kaikei < sql/005_audit_logs_search_upgrade.sql
+# 実DB E2E検証の実行
+python scripts/verify_schema.py --dsn "postgresql://postgres:postgres@localhost:5432/keiri_kaikei"
+# または使い捨てコンテナで完全自動検証
+python scripts/verify_schema.py --use-docker
 ```
 
 ### 2. バックエンド
