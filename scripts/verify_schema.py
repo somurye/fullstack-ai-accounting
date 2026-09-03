@@ -43,6 +43,7 @@ import argparse
 import os
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -1076,7 +1077,70 @@ def run_verification(dsn: str) -> int:
             blocked = True
         r.ok("通常ルール存在時の自動承認ルール追加は DB トリガーで拒否される (DEBT-006)", blocked)
 
-    # 5. source_suggestion_id 紐付けでの契約書作成
+    # 5. BLOCKER-01: approval_rules 自動承認ルールと通常ルールの並行INSERT耐性テスト (advisory lock検証)
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute("DELETE FROM approval_rules WHERE tenant_id = %s AND target_type = 'contract'", (t1,))
+
+    concurrent_results = []
+    barrier = threading.Barrier(2)
+
+    def insert_auto_rule():
+        conn = psycopg2.connect(dsn)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SET ROLE app_runtime")
+                cur.execute("SET app.current_tenant_id = %s", (t1,))
+                barrier.wait()
+                cur.execute(
+                    """INSERT INTO approval_rules (id, tenant_id, target_type, step_number, is_explicit_auto_approve, is_active)
+                       VALUES (%s, %s, 'contract', 0, TRUE, TRUE)""",
+                    (str(uuid.uuid4()), t1),
+                )
+                time.sleep(0.05)
+                conn.commit()
+                concurrent_results.append(("auto", True, None))
+        except Exception as e:
+            conn.rollback()
+            concurrent_results.append(("auto", False, getattr(e, "pgcode", str(e))))
+        finally:
+            conn.close()
+
+    def insert_normal_rule():
+        conn = psycopg2.connect(dsn)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SET ROLE app_runtime")
+                cur.execute("SET app.current_tenant_id = %s", (t1,))
+                barrier.wait()
+                cur.execute(
+                    """INSERT INTO approval_rules (id, tenant_id, target_type, step_number, approver_user_id, is_explicit_auto_approve, is_active)
+                       VALUES (%s, %s, 'contract', 1, %s, FALSE, TRUE)""",
+                    (str(uuid.uuid4()), t1, owner),
+                )
+                time.sleep(0.05)
+                conn.commit()
+                concurrent_results.append(("normal", True, None))
+        except Exception as e:
+            conn.rollback()
+            concurrent_results.append(("normal", False, getattr(e, "pgcode", str(e))))
+        finally:
+            conn.close()
+
+    t_auto = threading.Thread(target=insert_auto_rule)
+    t_normal = threading.Thread(target=insert_normal_rule)
+    t_auto.start()
+    t_normal.start()
+    t_auto.join()
+    t_normal.join()
+
+    successes = [r for r in concurrent_results if r[1] is True]
+    failures = [r for r in concurrent_results if r[1] is False]
+    r.ok("並行INSERT耐性: 2トランザクション同時実行時、advisory lockにより一方のみ成功する (BLOCKER-01)",
+         len(successes) == 1 and len(failures) == 1)
+    r.ok("並行INSERT耐性: 競合したトランザクションが 23514 (check_violation) で拒否される (BLOCKER-01)",
+         len(failures) == 1 and failures[0][2] == "23514")
+
+    # 6. source_suggestion_id 紐付けでの契約書作成 (正常系)
     test_sug_id = str(uuid.uuid4())
     test_att_id = str(uuid.uuid4())
     test_contract_id = str(uuid.uuid4())
@@ -1107,7 +1171,43 @@ def run_verification(dsn: str) -> int:
         r.ok("contracts に source_suggestion_id が正常に永続化される (来歴保持)",
              saved_c["source_suggestion_id"] == test_sug_id)
 
-    # 6. 【P1-T3実証】PermissionsGuard RBAC認可強制・解約遷移 E2Eテスト (DEBT-005完全証明)
+    # 7. BLOCKER-02: 他テナントの source_suggestion_id を指定した contracts INSERT は DB トリガーで拒否される
+    cross_tenant_sug_id = str(uuid.uuid4())
+    cross_tenant_att_id = str(uuid.uuid4())
+    with tx_as(dsn, role="app_runtime", tenant_id=t2) as cur:
+        cur.execute(
+            """INSERT INTO attachments (id, tenant_id, file_name, mime_type, file_hash, storage_path, document_category, uploaded_by)
+               VALUES (%s, %s, 't2_contract.pdf', 'application/pdf', 'hash_t2', '/tmp/t2.pdf', 'contract', %s)""",
+            (cross_tenant_att_id, t2, approver),
+        )
+        cur.execute(
+            """INSERT INTO ai_suggestions (id, tenant_id, target_type, target_id, suggestion_type, payload, confidence_score, model_name, provider)
+               VALUES (%s, %s, 'attachment', %s, 'contract_terms', '{}'::jsonb, 0.9, 'contract-extractor-v1', 'rule_engine')""",
+            (cross_tenant_sug_id, t2, cross_tenant_att_id),
+        )
+
+    # t1 の contract に対し、t2 の suggestion を指定して INSERT を試行
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cross_tenant_blocked = False
+        try:
+            cur.execute(
+                """INSERT INTO contracts (
+                     id, tenant_id, contract_no, title, counterparty_name, contract_type,
+                     contract_amount, start_date, auto_renewal, source_suggestion_id,
+                     status, created_by
+                   ) VALUES (
+                     %s, %s, 'CNT-CROSS-TEST', '不正越境契約書', 'テスト株式会社', 'service',
+                     100000, '2026-04-01', false, %s,
+                     'draft', %s
+                   )""",
+                (str(uuid.uuid4()), t1, cross_tenant_sug_id, owner),
+            )
+        except psycopg2.errors.ForeignKeyViolation as e:
+            cross_tenant_blocked = "does not belong to tenant" in str(e)
+        r.ok("他テナントの source_suggestion_id を指定した contracts INSERT は DB トリガーで拒否される (BLOCKER-02)",
+             cross_tenant_blocked)
+
+    # 8. 【P1-T3実証】PermissionsGuard RBAC認可強制・解約遷移 E2Eテスト (DEBT-005完全証明)
     cmd_rbac = f"npx ts-node src/scripts/verify-contract-rbac-e2e.ts \"{dsn}\""
     rbac_run = subprocess.run(cmd_rbac, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
     if rbac_run.returncode != 0:

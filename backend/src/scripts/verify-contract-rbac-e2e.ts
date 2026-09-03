@@ -195,6 +195,48 @@ async function run() {
     }
     console.log('  [PASS] 条項抽出 AI提案の target_type が attachment として保存された (監査ログと一貫)');
 
+    // 3-1. 他テナントの source_suggestion_id による INSERT 拒否 (BLOCKER-02: DBテナント整合性トリガー)
+    const otherTenantRes = await client.query('SELECT id FROM tenants WHERE id <> $1 LIMIT 1', [tenantId]);
+    if ((otherTenantRes.rowCount ?? 0) > 0) {
+      const otherTenantId = otherTenantRes.rows[0].id;
+      const otherSugId = randomUUID();
+      const otherAttId = randomUUID();
+      await client.query(
+        `INSERT INTO attachments (id, tenant_id, file_name, mime_type, file_hash, storage_path, document_category, uploaded_by)
+         VALUES ($1, $2, 'other.pdf', 'application/pdf', 'hash_other', '/tmp/other.pdf', 'contract', $3)`,
+        [otherAttId, otherTenantId, ownerUserId],
+      );
+      await client.query(
+        `INSERT INTO ai_suggestions (id, tenant_id, target_type, target_id, suggestion_type, payload, confidence_score, model_name, provider)
+         VALUES ($1, $2, 'attachment', $3, 'contract_terms', '{}'::jsonb, 0.9, 'contract-extractor-v1', 'rule_engine')`,
+        [otherSugId, otherTenantId, otherAttId],
+      );
+
+      let crossTenantBlocked = false;
+      try {
+        await client.query(
+          `INSERT INTO contracts (
+             id, tenant_id, contract_no, title, counterparty_name, contract_type,
+             contract_amount, currency, start_date, auto_renewal, renewal_notice_days,
+             status, source_suggestion_id, created_by
+           ) VALUES (
+             $1, $2, 'CNT-CROSS-TENANT-TEST', '不正テナント提案参照契約書', 'テスト社', 'service',
+             1000, 'JPY', '2026-04-01', false, 30,
+             'draft', $3, $4
+           )`,
+          [randomUUID(), tenantId, otherSugId, ownerUserId],
+        );
+      } catch (e: any) {
+        if (e.code === '23503' && e.message.includes('does not belong to tenant')) {
+          crossTenantBlocked = true;
+        }
+      }
+      if (!crossTenantBlocked) {
+        throw new Error('FAIL: 他テナントの source_suggestion_id を指定した contracts INSERT が DB トリガーで拒否されていません');
+      }
+      console.log('  [PASS] 他テナントの source_suggestion_id 指定が DB トリガー (23503) で拒否された (BLOCKER-02)');
+    }
+
     // source_suggestion_id を紐付けて契約を作成
     const linkedContract = await contractsService.create(tenantId, ownerUserId, {
       title: 'AI起草連携契約書',
@@ -225,7 +267,7 @@ async function run() {
     // =========================================================================
     // 4. DEBT-006: approval_rules の自動承認ルールと通常ルールの混在防止
     // =========================================================================
-    console.log('[RBAC E2E] 4. approval_rules 自動承認ルールと通常ルールの混在防止 (DEBT-006)...');
+    console.log('[RBAC E2E] 4. approval_rules 自動承認ルールと通常ルールの混在防止 (DEBT-006, BLOCKER-01)...');
 
     const testTargetType = 'contract';
     // 既存ルールを一旦クリーンアップ
@@ -275,6 +317,67 @@ async function run() {
     }
     if (!mixBlocked2) throw new Error('FAIL: 通常ルールが存在する状態での自動承認ルール登録が拒否されていません');
     console.log('  [PASS] 通常ルールが存在する状態での自動承認ルール追加が DB トリガー (23514) により拒否された');
+
+    // 4-4. BLOCKER-01: 並行INSERT耐性テスト (2つの独立トランザクションによる同時実行混在防止)
+    console.log('  [BLOCKER-01] 並行トランザクションによる自動承認 vs 通常ルール同時INSERT検証...');
+    await client.query(`DELETE FROM approval_rules WHERE tenant_id = $1 AND target_type = $2`, [tenantId, testTargetType]);
+
+    const client1 = await pool.connect();
+    const client2 = await pool.connect();
+
+    try {
+      // 2つのクライアントで同時にトランザクション開始しINSERT試行
+      const task1 = async () => {
+        try {
+          await client1.query('BEGIN');
+          await client1.query(
+            `INSERT INTO approval_rules (id, tenant_id, target_type, step_number, is_explicit_auto_approve, is_active)
+             VALUES ($1, $2, $3, 0, TRUE, TRUE)`,
+            [randomUUID(), tenantId, testTargetType],
+          );
+          // 少し待機してロック保持中に相手を待たせる
+          await new Promise((r) => setTimeout(r, 50));
+          await client1.query('COMMIT');
+          return { success: true };
+        } catch (e: any) {
+          await client1.query('ROLLBACK');
+          return { success: false, error: e };
+        }
+      };
+
+      const task2 = async () => {
+        try {
+          await client2.query('BEGIN');
+          await client2.query(
+            `INSERT INTO approval_rules (id, tenant_id, target_type, step_number, approver_user_id, is_explicit_auto_approve, is_active)
+             VALUES ($1, $2, $3, 1, $4, FALSE, TRUE)`,
+            [randomUUID(), tenantId, testTargetType, ownerUserId],
+          );
+          await new Promise((r) => setTimeout(r, 50));
+          await client2.query('COMMIT');
+          return { success: true };
+        } catch (e: any) {
+          await client2.query('ROLLBACK');
+          return { success: false, error: e };
+        }
+      };
+
+      const [res1, res2] = await Promise.all([task1(), task2()]);
+      const successCount = (res1.success ? 1 : 0) + (res2.success ? 1 : 0);
+      const failCount = (!res1.success ? 1 : 0) + (!res2.success ? 1 : 0);
+
+      if (successCount !== 1 || failCount !== 1) {
+        throw new Error(`FAIL: 並行INSERTで混在または全滅が発生しました (success=${successCount}, fail=${failCount})`);
+      }
+      const failedRes = res1.success ? res2 : res1;
+      if (failedRes.error?.code !== '23514') {
+        throw new Error(`FAIL: 並行INSERTの失敗エラーコードが 23514 ではありません: ${failedRes.error?.code}`);
+      }
+      console.log('  [PASS] 並行INSERTテスト成功: advisory lockにより一方のみ成功、もう一方は23514で確実に拒否された (BLOCKER-01)');
+    } finally {
+      client1.release();
+      client2.release();
+    }
 
     console.log('[RBAC E2E] 全ての検証項目に合格しました！');
   } finally {
