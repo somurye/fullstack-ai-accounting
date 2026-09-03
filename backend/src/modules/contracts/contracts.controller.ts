@@ -20,6 +20,7 @@ import {
   contractCreateSchema,
   contractListQuerySchema,
   contractUpdateSchema,
+  extractContractTermsSchema,
 } from './dto/contract.schemas';
 import { ContractsService } from './contracts.service';
 
@@ -45,6 +46,15 @@ export class ContractsController {
       parsedQuery,
     );
     return successEnvelope(contracts, pagination);
+  }
+
+  @Post('extract-terms')
+  async extractTerms(@Body() body: unknown) {
+    const tenantId = this.requireTenantId();
+    const userId = this.requireUserId();
+    const dto = parseWithZod(extractContractTermsSchema, body);
+    const suggestion = await this.contractsService.extractTerms(tenantId, userId, dto);
+    return successEnvelope(suggestion);
   }
 
   @Post()

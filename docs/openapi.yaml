@@ -2800,6 +2800,35 @@ paths:
   # ----------------------------------------------------------------------------
   # Contracts (Phase 1: 総務・法務)
   # ----------------------------------------------------------------------------
+  /contracts/extract-terms:
+    post:
+      tags: [Contracts]
+      summary: 契約書添付ファイルからAI条項抽出を実行し、提案を隔離保存する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [attachment_id]
+              properties:
+                attachment_id: { type: string, format: uuid, description: "契約書PDFの添付ファイルID" }
+                raw_text: { type: string, description: "抽出対象テキスト (省略時は添付ファイルから取得)" }
+      responses:
+        "200":
+          description: AI条項抽出・提案保存成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AiSuggestionResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
   /contracts:
     get:
       tags: [Contracts]

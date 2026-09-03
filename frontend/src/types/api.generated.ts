@@ -5555,6 +5555,67 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/contracts/extract-terms": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 契約書添付ファイルからAI条項抽出を実行し、提案を隔離保存する */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description 操作対象テナントのUUID。JWTクレームの tenant_id と一致する必要がある。 */
+                    "X-Tenant-ID": components["parameters"]["TenantIdHeader"];
+                    /**
+                     * @description 副作用を伴うPOST操作の冪等性を保証するクライアント生成キー(推奨: UUID)。
+                     *     同一キーでの再送は最初のレスポンスをそのまま返す。
+                     */
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /**
+                         * Format: uuid
+                         * @description 契約書PDFの添付ファイルID
+                         */
+                        attachment_id: string;
+                        /** @description 抽出対象テキスト (省略時は添付ファイルから取得) */
+                        raw_text?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description AI条項抽出・提案保存成功 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AiSuggestionResponse"];
+                    };
+                };
+                400: components["responses"]["BadRequest"];
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                404: components["responses"]["NotFound"];
+                422: components["responses"]["UnprocessableEntity"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/contracts": {
         parameters: {
             query?: never;

@@ -5,7 +5,11 @@ import { acquireAdvisoryLock } from '../../common/database/advisory-lock';
 import { AppException } from '../../common/exceptions/app.exception';
 import { buildPagination, type PaginationMeta } from '../../common/http/envelope';
 import { computeTextEmbedding, PSEUDO_EMBEDDING_MODEL, toVectorLiteral } from './embedding';
-import type { AiSuggestionListQuery, AiSuggestionRejectInput } from './dto/ai-suggestion.schemas';
+import {
+  validateConfidenceScores,
+  type AiSuggestionListQuery,
+  type AiSuggestionRejectInput,
+} from './dto/ai-suggestion.schemas';
 import {
   AI_SUGGESTION_COLUMNS,
   mapAiSuggestionRow,
@@ -436,9 +440,11 @@ export class AiSuggestionsService {
     tenantId: string,
     targetId: string,
     contractText: string,
-    modelName: string = 'claude-3-5-sonnet-20241022',
+    modelName: string = 'contract-extractor-v1',
   ): Promise<AiSuggestionDto> {
     const { suggested_fields, confidenceScore } = this.extractContractTerms(contractText);
+    validateConfidenceScores(confidenceScore, suggested_fields);
+
     const payload: AiSuggestionPayload = {
       document_type: 'contract',
       suggested_fields,
@@ -469,6 +475,8 @@ export class AiSuggestionsService {
     confidenceScore: number,
     modelName: string,
   ): Promise<AiSuggestionDto> {
+    validateConfidenceScores(confidenceScore, suggestedFields);
+
     const payload: AiSuggestionPayload = {
       document_type: documentType,
       suggested_fields: suggestedFields,
@@ -497,6 +505,8 @@ export class AiSuggestionsService {
     confidenceScore: number,
     modelName: string,
   ): Promise<AiSuggestionDto> {
+    validateConfidenceScores(confidenceScore, payload.suggested_fields);
+
     const result = await client.query<AiSuggestionRow>(
       `INSERT INTO ai_suggestions
          (tenant_id, target_type, target_id, suggestion_type, payload, confidence_score, model_name, accepted)

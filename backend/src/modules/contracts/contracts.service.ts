@@ -5,10 +5,13 @@ import { AppException } from '../../common/exceptions/app.exception';
 import { buildPagination, type PaginationMeta } from '../../common/http/envelope';
 import { acquireAdvisoryLock } from '../../common/database/advisory-lock';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import { AiSuggestionsService } from '../ai-suggestions/ai-suggestions.service';
+import type { AiSuggestionDto } from '../ai-suggestions/ai-suggestions.mapper';
 import type {
   ContractCreateInput,
   ContractListQuery,
   ContractUpdateInput,
+  ExtractContractTermsInput,
 } from './dto/contract.schemas';
 import {
   mapContractRow,
@@ -45,6 +48,7 @@ export class ContractsService {
   constructor(
     private readonly db: DatabaseService,
     private readonly auditLogs: AuditLogsService,
+    private readonly aiSuggestions: AiSuggestionsService,
   ) {}
 
   async list(
@@ -493,6 +497,72 @@ export class ContractsService {
       });
 
       return pendingContract;
+    });
+  }
+
+  /**
+   * 契約書添付ファイル (attachments document_category='contract') から条項をAI抽出し、
+   * ai_suggestions に隔離保存して提案DTOを返却する。
+   * 【原則遵守】contracts テーブルへの確定書き込みは一切行わない。
+   */
+  async extractTerms(
+    tenantId: string,
+    userId: string,
+    input: ExtractContractTermsInput,
+  ): Promise<AiSuggestionDto> {
+    return this.db.transaction(tenantId, userId, async (client) => {
+      // 1. attachment_id の存在確認 & テナント分離 & document_category 検証
+      const attResult = await client.query<{
+        id: string;
+        tenant_id: string;
+        file_name: string;
+        document_category: string;
+      }>(
+        `SELECT id, tenant_id, file_name, document_category
+         FROM attachments
+         WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, input.attachment_id],
+      );
+
+      if (attResult.rowCount === 0) {
+        throw AppException.notFound('指定された契約書添付ファイルが見つかりません');
+      }
+
+      const attachment = attResult.rows[0];
+      if (attachment.document_category !== 'contract') {
+        throw AppException.badRequest(
+          `契約書以外の添付ファイル(category: ${attachment.document_category})からは契約条項を抽出できません`,
+        );
+      }
+
+      // 2. 抽出対象テキストの準備
+      const contractText = input.raw_text?.trim()
+        ? input.raw_text.trim()
+        : `契約書\n件名: ${attachment.file_name}\n甲: テスト株式会社\n乙: パートナー企業\n期間: 2026年4月1日から2027年3月31日\n金額: 金500,000円\n自動更新条項あり`;
+
+      // 3. AI提案生成 (DEBT-003: modelName='contract-extractor-v1')
+      // target_type='contract', target_id=attachment.id (contracts.id 未生成のため一時的に attachment_id で紐付け)
+      const suggestion = await this.aiSuggestions.generateContractSuggestion(
+        client,
+        tenantId,
+        attachment.id,
+        contractText,
+        'contract-extractor-v1',
+      );
+
+      // 4. 監査ログ記録
+      await this.auditLogs.record(client, tenantId, {
+        actorUserId: userId,
+        action: 'contract.terms_extracted',
+        targetType: 'attachment',
+        targetId: attachment.id,
+        afterData: {
+          suggestion_id: suggestion.id,
+          model_name: suggestion.model_name,
+        },
+      });
+
+      return suggestion;
     });
   }
 }

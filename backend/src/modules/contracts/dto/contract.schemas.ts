@@ -100,3 +100,9 @@ export const contractListQuerySchema = z.object({
   end_date_to: z.string().regex(DATE_ONLY_RE).optional(),
 });
 export type ContractListQuery = z.infer<typeof contractListQuerySchema>;
+
+export const extractContractTermsSchema = z.object({
+  attachment_id: z.string().uuid('attachment_idはUUID形式で指定してください'),
+  raw_text: z.string().optional(),
+});
+export type ExtractContractTermsInput = z.infer<typeof extractContractTermsSchema>;
