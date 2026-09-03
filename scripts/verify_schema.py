@@ -59,7 +59,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 SQL_DIR = SCRIPT_DIR.parent / "sql"
 
 DOCKER_CONTAINER_NAME = "keiri_kaikei_verify_pg"
-DOCKER_IMAGE = "postgres:16"
+DOCKER_IMAGE = "pgvector/pgvector:pg16"
 DOCKER_PORT = 55432
 DOCKER_PASSWORD = "verify_pw"
 DOCKER_DB = "keiri_kaikei_verify"
@@ -153,8 +153,15 @@ def apply_schema(dsn: str) -> None:
         for sql_file in sql_files:
             sql = sql_file.read_text(encoding="utf-8")
             print(f"[schema] {sql_file.name} を適用中 ({len(sql):,} bytes)...")
-            with conn.cursor() as cur:
-                cur.execute(sql)
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(sql)
+            except psycopg2.errors.UnsafeNewEnumValueUsage:
+                # ENUM追加直後に同一ファイル内で使用されている場合、ステートメントごとに分割実行
+                statements = [s.strip() for s in sql.split(";") if s.strip()]
+                for stmt in statements:
+                    with conn.cursor() as cur:
+                        cur.execute(stmt)
         print("[schema] 全マイグレーション適用完了")
     finally:
         conn.close()
@@ -452,15 +459,22 @@ def run_verification(dsn: str) -> int:
         r.ok("新target_type(contract)でも自己承認は拒否される", contract_self_approval_blocked)
 
     with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        contract_target_id2 = str(uuid.uuid4())
+        cur.execute(
+            """INSERT INTO approval_requests (tenant_id, target_type, target_id, submitted_by, total_steps)
+               VALUES (%s, 'contract', %s, %s, 1) RETURNING id""",
+            (t1, contract_target_id2, owner),
+        )
+        contract_ar_id2 = cur.fetchone()["id"]
         cur.execute(
             """INSERT INTO approval_history (tenant_id, approval_request_id, step_number, approver_id, action)
                VALUES (%s, %s, 1, %s, 'approve')""",
-            (t1, contract_ar_id, approver),
+            (t1, contract_ar_id2, approver),
         )
     r.ok("新target_type(contract)で別ユーザーによる承認は成功する", True)
 
     with tx_as(dsn, role="app_runtime", tenant_id=t2) as cur:
-        cur.execute("SELECT * FROM approval_requests WHERE id = %s", (contract_ar_id,))
+        cur.execute("SELECT * FROM approval_requests WHERE id = %s", (contract_ar_id2,))
         r.ok("新target_type(contract)の承認依頼は他テナントから見えない(RLS)", len(cur.fetchall()) == 0)
 
     # ------------------------------------------------------------------
