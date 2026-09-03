@@ -7,6 +7,7 @@ describe('ContractsService', () => {
   let service: ContractsService;
   let mockDb: { transaction: jest.Mock };
   let mockAuditLogs: { record: jest.Mock };
+  let mockAiSuggestions: { generateContractSuggestion: jest.Mock };
   let mockClient: { query: jest.Mock };
 
   const TENANT_ID = '11111111-1111-1111-1111-111111111111';
@@ -45,10 +46,14 @@ describe('ContractsService', () => {
     mockAuditLogs = {
       record: jest.fn().mockResolvedValue(undefined),
     };
+    mockAiSuggestions = {
+      generateContractSuggestion: jest.fn(),
+    };
 
     service = new ContractsService(
       mockDb as unknown as DatabaseService,
       mockAuditLogs as unknown as AuditLogsService,
+      mockAiSuggestions as any,
     );
   });
 
@@ -303,6 +308,180 @@ describe('ContractsService', () => {
       await expect(service.submitForApproval(TENANT_ID, USER_ID, CONTRACT_ID)).rejects.toThrow(
         AppException,
       );
+    });
+  });
+
+  describe('extractTerms (P1-T2: 契約書アップロード〜AI条項抽出)', () => {
+    it('明示的なraw_textが渡された場合はそのテキストを用いて条項抽出を行う', async () => {
+      mockClient.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [
+          {
+            id: ATTACHMENT_ID,
+            tenant_id: TENANT_ID,
+            file_name: 'nda.pdf',
+            document_category: 'contract',
+            storage_path: '/dummy/path/nda.pdf',
+            mime_type: 'application/pdf',
+          },
+        ],
+      });
+
+      const mockSuggestion = {
+        id: 'sug-extract-001',
+        target_type: 'contract',
+        target_id: ATTACHMENT_ID,
+        suggestion_type: 'contract_terms',
+        payload: {
+          document_type: 'contract',
+          suggested_fields: {
+            contract_title: { value: '秘密保持契約書', confidence: 0.95 },
+          },
+        },
+        confidence_score: 0.95,
+        model_name: 'contract-extractor-v1',
+        provider: 'rule_engine',
+      };
+      mockAiSuggestions.generateContractSuggestion.mockResolvedValueOnce(mockSuggestion);
+
+      const result = await service.extractTerms(TENANT_ID, USER_ID, {
+        attachment_id: ATTACHMENT_ID,
+        raw_text: '秘密保持契約書 甲: 株式会社A 乙: 株式会社B 金額: 金500,000円',
+      });
+
+      expect(result.id).toBe('sug-extract-001');
+      expect(result.model_name).toBe('contract-extractor-v1');
+      expect(mockAiSuggestions.generateContractSuggestion).toHaveBeenCalledWith(
+        mockClient,
+        TENANT_ID,
+        ATTACHMENT_ID,
+        '秘密保持契約書 甲: 株式会社A 乙: 株式会社B 金額: 金500,000円',
+        'contract-extractor-v1',
+        'rule_engine',
+      );
+      expect(mockAuditLogs.record).toHaveBeenCalledWith(
+        mockClient,
+        TENANT_ID,
+        expect.objectContaining({
+          action: 'contract.terms_extracted',
+          targetType: 'attachment',
+          targetId: ATTACHMENT_ID,
+        }),
+      );
+    });
+
+    it('raw_text未指定時は実PDFファイルからテキストを抽出し条項抽出を行う (固定ダミーへのフォールバックなし)', async () => {
+      // 実際に一時PDFファイルを作成
+      const { PDFDocument, StandardFonts } = await import('pdf-lib');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const { writeFile, unlink } = await import('node:fs/promises');
+
+      const doc = await PDFDocument.create();
+      const page = doc.addPage([600, 400]);
+      const font = await doc.embedFont(StandardFonts.Helvetica);
+      page.drawText('Service Agreement Parties: Alpha Inc and Beta Corp Period: 2026-06-01 to 2027-05-31', {
+        x: 50,
+        y: 350,
+        size: 12,
+        font,
+      });
+      const pdfBytes = await doc.save();
+      const tempPdfPath = join(tmpdir(), `test_contract_${Date.now()}.pdf`);
+      await writeFile(tempPdfPath, Buffer.from(pdfBytes));
+
+      try {
+        mockClient.query.mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [
+            {
+              id: ATTACHMENT_ID,
+              tenant_id: TENANT_ID,
+              file_name: 'service_agreement.pdf',
+              document_category: 'contract',
+              storage_path: tempPdfPath,
+              mime_type: 'application/pdf',
+            },
+          ],
+        });
+
+        const mockSuggestion = {
+          id: 'sug-extract-real-001',
+          target_type: 'contract',
+          target_id: ATTACHMENT_ID,
+          suggestion_type: 'contract_terms',
+          payload: { document_type: 'contract', suggested_fields: {} },
+          confidence_score: 0.85,
+          model_name: 'contract-extractor-v1',
+          provider: 'rule_engine',
+        };
+        mockAiSuggestions.generateContractSuggestion.mockResolvedValueOnce(mockSuggestion);
+
+        const result = await service.extractTerms(TENANT_ID, USER_ID, {
+          attachment_id: ATTACHMENT_ID,
+        });
+
+        expect(result.id).toBe('sug-extract-real-001');
+        // 抽出されたテキストが実PDFの内容を含んでいること
+        expect(mockAiSuggestions.generateContractSuggestion).toHaveBeenCalledWith(
+          mockClient,
+          TENANT_ID,
+          ATTACHMENT_ID,
+          expect.stringContaining('Service Agreement Parties: Alpha Inc and Beta Corp'),
+          'contract-extractor-v1',
+          'rule_engine',
+        );
+      } finally {
+        await unlink(tempPdfPath).catch(() => {});
+      }
+    });
+
+    it('実PDFファイルが存在しない場合はnotFound例外を投げる', async () => {
+      mockClient.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [
+          {
+            id: ATTACHMENT_ID,
+            tenant_id: TENANT_ID,
+            file_name: 'non_existent.pdf',
+            document_category: 'contract',
+            storage_path: '/non/existent/path/non_existent.pdf',
+            mime_type: 'application/pdf',
+          },
+        ],
+      });
+
+      await expect(
+        service.extractTerms(TENANT_ID, USER_ID, { attachment_id: ATTACHMENT_ID }),
+      ).rejects.toThrow(AppException);
+    });
+
+    it('存在しない添付ファイルを指定した場合はnotFound例外を投げる', async () => {
+      mockClient.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
+
+      await expect(
+        service.extractTerms(TENANT_ID, USER_ID, { attachment_id: ATTACHMENT_ID }),
+      ).rejects.toThrow(AppException);
+    });
+
+    it('契約書以外の添付ファイル(例: receipt)を指定した場合はbadRequest例外を投げる', async () => {
+      mockClient.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [
+          {
+            id: ATTACHMENT_ID,
+            tenant_id: TENANT_ID,
+            file_name: 'receipt.jpg',
+            document_category: 'receipt',
+            storage_path: '/path/to/receipt.jpg',
+            mime_type: 'image/jpeg',
+          },
+        ],
+      });
+
+      await expect(
+        service.extractTerms(TENANT_ID, USER_ID, { attachment_id: ATTACHMENT_ID }),
+      ).rejects.toThrow(AppException);
     });
   });
 });

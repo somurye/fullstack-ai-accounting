@@ -5,10 +5,13 @@ import { AppException } from '../../common/exceptions/app.exception';
 import { buildPagination, type PaginationMeta } from '../../common/http/envelope';
 import { acquireAdvisoryLock } from '../../common/database/advisory-lock';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import { AiSuggestionsService } from '../ai-suggestions/ai-suggestions.service';
+import type { AiSuggestionDto } from '../ai-suggestions/ai-suggestions.mapper';
 import type {
   ContractCreateInput,
   ContractListQuery,
   ContractUpdateInput,
+  ExtractContractTermsInput,
 } from './dto/contract.schemas';
 import {
   mapContractRow,
@@ -19,6 +22,7 @@ import {
   type ContractDto,
   type ContractRow,
 } from './contracts.mapper';
+import { extractTextFromPdfFile } from './utils/pdf-text-extractor';
 
 export interface ContractListResult {
   contracts: ContractDto[];
@@ -45,6 +49,7 @@ export class ContractsService {
   constructor(
     private readonly db: DatabaseService,
     private readonly auditLogs: AuditLogsService,
+    private readonly aiSuggestions: AiSuggestionsService,
   ) {}
 
   async list(
@@ -493,6 +498,82 @@ export class ContractsService {
       });
 
       return pendingContract;
+    });
+  }
+
+  /**
+   * 契約書添付ファイル (attachments document_category='contract') から条項をAI抽出し、
+   * ai_suggestions に隔離保存して提案DTOを返却する。
+   * 【原則遵守】contracts テーブルへの確定書き込みは一切行わない。
+   */
+  async extractTerms(
+    tenantId: string,
+    userId: string,
+    input: ExtractContractTermsInput,
+  ): Promise<AiSuggestionDto> {
+    return this.db.transaction(tenantId, userId, async (client) => {
+      // 1. attachment_id の存在確認 & テナント分離 & document_category 検証
+      const attResult = await client.query<{
+        id: string;
+        tenant_id: string;
+        file_name: string;
+        document_category: string;
+        storage_path: string;
+        mime_type: string;
+      }>(
+        `SELECT id, tenant_id, file_name, document_category, storage_path, mime_type
+         FROM attachments
+         WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, input.attachment_id],
+      );
+
+      if (attResult.rowCount === 0) {
+        throw AppException.notFound('指定された契約書添付ファイルが見つかりません');
+      }
+
+      const attachment = attResult.rows[0];
+      if (attachment.document_category !== 'contract') {
+        throw AppException.badRequest(
+          `契約書以外の添付ファイル(category: ${attachment.document_category})からは契約条項を抽出できません`,
+        );
+      }
+
+      // 2. 抽出対象テキストの取得 (実PDFからのテキスト抽出)
+      // raw_text が明示的に指定されている場合はそれを優先し (テスト・デバッグ用)、
+      // 指定がない場合は attachments.storage_path の実PDFファイルからテキストを抽出する。
+      // 固定ダミー文章へのフォールバックは一切行わない。
+      let contractText: string;
+      if (input.raw_text?.trim()) {
+        contractText = input.raw_text.trim();
+      } else {
+        contractText = await extractTextFromPdfFile(attachment.storage_path);
+      }
+
+      // 3. AI提案生成 (DEBT-003: modelName='contract-extractor-v1', provider='rule_engine')
+      // target_type='contract', target_id=attachment.id (contracts.id 未生成のため一時的に attachment_id で紐付け)
+      const suggestion = await this.aiSuggestions.generateContractSuggestion(
+        client,
+        tenantId,
+        attachment.id,
+        contractText,
+        'contract-extractor-v1',
+        'rule_engine',
+      );
+
+      // 4. 監査ログ記録
+      await this.auditLogs.record(client, tenantId, {
+        actorUserId: userId,
+        action: 'contract.terms_extracted',
+        targetType: 'attachment',
+        targetId: attachment.id,
+        afterData: {
+          suggestion_id: suggestion.id,
+          model_name: suggestion.model_name,
+          provider: suggestion.provider,
+        },
+      });
+
+      return suggestion;
     });
   }
 }

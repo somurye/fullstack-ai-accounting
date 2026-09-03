@@ -5,7 +5,11 @@ import { acquireAdvisoryLock } from '../../common/database/advisory-lock';
 import { AppException } from '../../common/exceptions/app.exception';
 import { buildPagination, type PaginationMeta } from '../../common/http/envelope';
 import { computeTextEmbedding, PSEUDO_EMBEDDING_MODEL, toVectorLiteral } from './embedding';
-import type { AiSuggestionListQuery, AiSuggestionRejectInput } from './dto/ai-suggestion.schemas';
+import {
+  validateConfidenceScores,
+  type AiSuggestionListQuery,
+  type AiSuggestionRejectInput,
+} from './dto/ai-suggestion.schemas';
 import {
   AI_SUGGESTION_COLUMNS,
   mapAiSuggestionRow,
@@ -306,11 +310,12 @@ export class AiSuggestionsService {
     let totalScore = 0;
     let fieldCount = 0;
 
-    // 1. タイトル (例: 秘密保持契約書, 業務委託契約書)
-    const titleMatch = text.match(/(.{2,25}契約書|.{2,25}規約|覚書|合意書)/);
+    // 1. タイトル (例: 秘密保持契約書, 業務委託契約書, Service Agreement)
+    const titleMatch = text.match(/(?:(?:タイトル|Title)[：:\s]+([^\n]+)|(.{2,25}契約書|.{2,25}Agreement|.{2,25}Contract|.{2,25}規約|覚書|合意書))/i);
     if (titleMatch) {
+      const extractedTitle = (titleMatch[1] || titleMatch[2] || titleMatch[0]).trim();
       fields.contract_title = {
-        value: titleMatch[1].trim(),
+        value: extractedTitle,
         confidence: 0.95,
         rationale: '文書冒頭または表題パターンから契約書名を抽出',
       };
@@ -318,10 +323,10 @@ export class AiSuggestionsService {
       fieldCount++;
     }
 
-    // 2. 当事者 (甲 / 乙)
+    // 2. 当事者 (甲 / 乙 / Party A / Party B)
     const parties: string[] = [];
-    const kouMatch = text.match(/甲[：:\s]+([^\n,、(（]+)/);
-    const otsuMatch = text.match(/乙[：:\s]+([^\n,、(（]+)/);
+    const kouMatch = text.match(/(?:甲|Party\s*A)[：:\s]+([^\n,、(（]+)/i);
+    const otsuMatch = text.match(/(?:乙|Party\s*B)[：:\s]+([^\n,、(（]+)/i);
     if (kouMatch) parties.push(`甲: ${kouMatch[1].trim()}`);
     if (otsuMatch) parties.push(`乙: ${otsuMatch[1].trim()}`);
     if (parties.length > 0) {
@@ -335,7 +340,7 @@ export class AiSuggestionsService {
     }
 
     // 3. 契約期間 (開始日・終了日)
-    const dateRangeMatch = text.match(/(\d{4}[年\-/]\d{1,2}[月\-/]\d{1,2}日?)\s*(?:から|〜|～|-)\s*(\d{4}[年\-/]\d{1,2}[月\-/]\d{1,2}日?)/);
+    const dateRangeMatch = text.match(/(\d{4}[年\-/]\d{1,2}[月\-/]\d{1,2}日?)\s*(?:から|〜|～|-|to)\s*(\d{4}[年\-/]\d{1,2}[月\-/]\d{1,2}日?)/i);
     if (dateRangeMatch) {
       const normalizeDate = (dStr: string): string => {
         const cleaned = dStr.replace(/年|月/g, '-').replace(/日/g, '').trim();
@@ -357,8 +362,8 @@ export class AiSuggestionsService {
       fieldCount += 2;
     }
 
-    // 4. 契約金額 (委託料・月額等)
-    const amountMatch = text.match(/(?:金額|月額|委託料|代金|対価)[：:\s]*[¥￥]?\s*([\d,]+)\s*円?/);
+    // 4. 契約金額 (委託料・月額・Amount等)
+    const amountMatch = text.match(/(?:金額|月額|委託料|代金|対価|Amount|Fee|Price)[：:\s]*(?:[¥￥$]|JPY)?\s*([\d,]+)\s*(?:円|JPY)?/i);
     if (amountMatch) {
       const num = Number(amountMatch[1].replace(/,/g, ''));
       if (!Number.isNaN(num)) {
@@ -373,7 +378,7 @@ export class AiSuggestionsService {
     }
 
     // 5. 自動更新条項の有無
-    const autoRenewalMatch = text.match(/(自動(?:的)?に(?:更新|延長)|異議がないときは.*同一条件で.*更新)/);
+    const autoRenewalMatch = text.match(/(自動(?:的)?に(?:更新|延長)|異議がないときは.*同一条件で.*更新|Auto-?renewal)/i);
     if (autoRenewalMatch) {
       fields.auto_renewal = {
         value: true,
@@ -436,9 +441,12 @@ export class AiSuggestionsService {
     tenantId: string,
     targetId: string,
     contractText: string,
-    modelName: string = 'claude-3-5-sonnet-20241022',
+    modelName: string = 'contract-extractor-v1',
+    provider: string = 'rule_engine',
   ): Promise<AiSuggestionDto> {
     const { suggested_fields, confidenceScore } = this.extractContractTerms(contractText);
+    validateConfidenceScores(confidenceScore, suggested_fields);
+
     const payload: AiSuggestionPayload = {
       document_type: 'contract',
       suggested_fields,
@@ -446,10 +454,10 @@ export class AiSuggestionsService {
 
     const result = await client.query<AiSuggestionRow>(
       `INSERT INTO ai_suggestions
-         (tenant_id, target_type, target_id, suggestion_type, payload, confidence_score, model_name, accepted)
-       VALUES ($1, 'contract', $2, 'contract_terms', $3::jsonb, $4, $5, NULL)
+         (tenant_id, target_type, target_id, suggestion_type, payload, confidence_score, model_name, provider, accepted)
+       VALUES ($1, 'contract', $2, 'contract_terms', $3::jsonb, $4, $5, $6, NULL)
        RETURNING ${AI_SUGGESTION_COLUMNS}`,
-      [tenantId, targetId, JSON.stringify(payload), confidenceScore, modelName],
+      [tenantId, targetId, JSON.stringify(payload), confidenceScore, modelName, provider],
     );
     return mapAiSuggestionRow(result.rows[0]);
   }
@@ -468,7 +476,10 @@ export class AiSuggestionsService {
     suggestedFields: Record<string, SuggestedField>,
     confidenceScore: number,
     modelName: string,
+    provider: string = 'rule_engine',
   ): Promise<AiSuggestionDto> {
+    validateConfidenceScores(confidenceScore, suggestedFields);
+
     const payload: AiSuggestionPayload = {
       document_type: documentType,
       suggested_fields: suggestedFields,
@@ -476,10 +487,10 @@ export class AiSuggestionsService {
 
     const result = await client.query<AiSuggestionRow>(
       `INSERT INTO ai_suggestions
-         (tenant_id, target_type, target_id, suggestion_type, payload, confidence_score, model_name, accepted)
-       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, NULL)
+         (tenant_id, target_type, target_id, suggestion_type, payload, confidence_score, model_name, provider, accepted)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, NULL)
        RETURNING ${AI_SUGGESTION_COLUMNS}`,
-      [tenantId, targetType, targetId, suggestionType, JSON.stringify(payload), confidenceScore, modelName],
+      [tenantId, targetType, targetId, suggestionType, JSON.stringify(payload), confidenceScore, modelName, provider],
     );
     return mapAiSuggestionRow(result.rows[0]);
   }
@@ -496,13 +507,16 @@ export class AiSuggestionsService {
     payload: AiSuggestionPayload,
     confidenceScore: number,
     modelName: string,
+    provider: string = 'rule_engine',
   ): Promise<AiSuggestionDto> {
+    validateConfidenceScores(confidenceScore, payload.suggested_fields);
+
     const result = await client.query<AiSuggestionRow>(
       `INSERT INTO ai_suggestions
-         (tenant_id, target_type, target_id, suggestion_type, payload, confidence_score, model_name, accepted)
-       VALUES ($1, 'expense_report', $2, 'ocr', $3::jsonb, $4, $5, NULL)
+         (tenant_id, target_type, target_id, suggestion_type, payload, confidence_score, model_name, provider, accepted)
+       VALUES ($1, 'expense_report', $2, 'ocr', $3::jsonb, $4, $5, $6, NULL)
        RETURNING ${AI_SUGGESTION_COLUMNS}`,
-      [tenantId, expenseReportId, JSON.stringify(payload), confidenceScore, modelName],
+      [tenantId, expenseReportId, JSON.stringify(payload), confidenceScore, modelName, provider],
     );
     return mapAiSuggestionRow(result.rows[0]);
   }
@@ -662,8 +676,8 @@ export class AiSuggestionsService {
   ): Promise<void> {
     await client.query(
       `INSERT INTO ai_suggestions
-         (tenant_id, target_type, target_id, suggestion_type, payload, confidence_score, model_name, accepted)
-       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, NULL)`,
+         (tenant_id, target_type, target_id, suggestion_type, payload, confidence_score, model_name, provider, accepted)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, 'rule_engine', NULL)`,
       [
         tenantId,
         targetType,
@@ -721,8 +735,8 @@ export class AiSuggestionsService {
     };
     const result = await client.query<AiSuggestionRow>(
       `INSERT INTO ai_suggestions
-         (tenant_id, target_type, target_id, suggestion_type, payload, confidence_score, model_name, accepted)
-       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
+         (tenant_id, target_type, target_id, suggestion_type, payload, confidence_score, model_name, provider, accepted)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
        RETURNING ${AI_SUGGESTION_COLUMNS}`,
       [
         tenantId,
@@ -732,6 +746,7 @@ export class AiSuggestionsService {
         JSON.stringify(payload),
         suggestion.confidence_score,
         suggestion.model_name,
+        suggestion.provider ?? 'rule_engine',
         accepted,
       ],
     );

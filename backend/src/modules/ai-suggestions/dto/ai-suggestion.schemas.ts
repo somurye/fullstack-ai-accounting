@@ -51,3 +51,39 @@ export const aiSuggestionRejectSchema = z.object({
   reason: z.string().optional(),
 });
 export type AiSuggestionRejectInput = z.infer<typeof aiSuggestionRejectSchema>;
+
+// ---- DEBT-002: Confidence Runtime Validation ----
+export const confidenceScoreSchema = z
+  .number()
+  .min(0, '信頼度スコアは0以上である必要があります')
+  .max(1, '信頼度スコアは1以下である必要があります');
+
+export const suggestedFieldSchema = z.object({
+  value: z.unknown(),
+  confidence: confidenceScoreSchema,
+  rationale: z.string().optional(),
+});
+
+export function validateConfidenceScores(
+  confidenceScore: number | null | undefined,
+  suggestedFields?: Record<string, { confidence: number }>,
+): void {
+  if (confidenceScore !== undefined && confidenceScore !== null) {
+    const res = confidenceScoreSchema.safeParse(confidenceScore);
+    if (!res.success) {
+      throw new Error(
+        `不正な信頼度スコア(${confidenceScore})です。0から1の範囲で指定してください`,
+      );
+    }
+  }
+  if (suggestedFields) {
+    for (const [key, field] of Object.entries(suggestedFields)) {
+      const res = confidenceScoreSchema.safeParse(field.confidence);
+      if (!res.success) {
+        throw new Error(
+          `フィールド ${key} の不正な信頼度スコア(${field.confidence})です。0から1の範囲で指定してください`,
+        );
+      }
+    }
+  }
+}

@@ -40,6 +40,7 @@ sql/001_initial_schema_all_in_one.sql の検証スクリプト(Phase 3)
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -56,7 +57,8 @@ except ImportError:
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-SQL_DIR = SCRIPT_DIR.parent / "sql"
+REPO_ROOT = SCRIPT_DIR.parent
+SQL_DIR = REPO_ROOT / "sql"
 
 DOCKER_CONTAINER_NAME = "keiri_kaikei_verify_pg"
 DOCKER_IMAGE = "pgvector/pgvector:pg16"
@@ -872,6 +874,129 @@ def run_verification(dsn: str) -> int:
         cur.execute("DELETE FROM contracts WHERE id = %s", (draft_temp_id,))
         cur.execute("SELECT * FROM contracts WHERE id = %s", (draft_temp_id,))
         r.ok("draft 契約の物理削除は許可される", len(cur.fetchall()) == 0)
+
+    # ------------------------------------------------------------------
+    print("\n--- 9. AI条項抽出 (P1-T2: DEBT-002, DEBT-003, 契約書アップロード〜AI抽出〜確定) ---")
+
+    # 1. DEBT-002: confidence_score が範囲外 (1.5, -0.3) の場合は DB 制約で弾かれる
+    try:
+        with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+            cur.execute(
+                """INSERT INTO ai_suggestions (
+                     tenant_id, target_type, target_id, suggestion_type,
+                     payload, confidence_score, model_name
+                   ) VALUES (
+                     %s, 'contract', %s, 'contract_terms',
+                     '{"document_type":"contract"}'::jsonb, 1.5, 'test-model'
+                   )""",
+                (t1, str(uuid.uuid4())),
+            )
+        r.ok("confidence_score > 1.0 (1.5) の保存は拒否される (DEBT-002)", False, "例外が発生しなかった")
+    except Exception as e:
+        r.ok("confidence_score > 1.0 (1.5) の保存は拒否される (DEBT-002)",
+             "check constraint" in str(e).lower() or "ai_suggestions_confidence_score_check" in str(e).lower() or "23514" in str(e), str(e))
+
+    try:
+        with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+            cur.execute(
+                """INSERT INTO ai_suggestions (
+                     tenant_id, target_type, target_id, suggestion_type,
+                     payload, confidence_score, model_name
+                   ) VALUES (
+                     %s, 'contract', %s, 'contract_terms',
+                     '{"document_type":"contract"}'::jsonb, -0.3, 'test-model'
+                   )""",
+                (t1, str(uuid.uuid4())),
+            )
+        r.ok("confidence_score < 0.0 (-0.3) の保存は拒否される (DEBT-002)", False, "例外が発生しなかった")
+    except Exception as e:
+        r.ok("confidence_score < 0.0 (-0.3) の保存は拒否される (DEBT-002)",
+             "check constraint" in str(e).lower() or "ai_suggestions_confidence_score_check" in str(e).lower() or "23514" in str(e), str(e))
+
+    # 2. DEBT-003: 契約書提案の model_name='contract-extractor-v1' で正常保存できる
+    att_contract_id = str(uuid.uuid4())
+    sug_contract_id = str(uuid.uuid4())
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        # 契約書添付ファイル登録 (document_category='contract')
+        cur.execute(
+            """INSERT INTO attachments (
+                 id, tenant_id, file_name, mime_type, file_hash, storage_path, document_category, uploaded_by
+               ) VALUES (
+                 %s, %s, 'nda_sample.pdf', 'application/pdf', 'dummy_hash_nda', '/contracts/nda.pdf', 'contract', %s
+               )""",
+            (att_contract_id, t1, owner),
+        )
+        # AI条項抽出提案の隔離保存 (target_id=attachment_id, target_type='contract', model_name='contract-extractor-v1', provider='rule_engine')
+        cur.execute(
+            """INSERT INTO ai_suggestions (
+                 id, tenant_id, target_type, target_id, suggestion_type,
+                 payload, confidence_score, model_name, provider
+               ) VALUES (
+                 %s, %s, 'contract', %s, 'contract_terms',
+                 %s::jsonb, 0.92, 'contract-extractor-v1', 'rule_engine'
+               ) RETURNING id, model_name, provider, confidence_score""",
+            (
+                sug_contract_id,
+                t1,
+                att_contract_id,
+                '{"document_type":"contract","suggested_fields":{"contract_title":{"value":"秘密保持契約書","confidence":0.95}}}',
+            ),
+        )
+        saved_sug = cur.fetchone()
+        r.ok("契約書提案の model_name が contract-extractor-v1 として保存される (DEBT-003)",
+             saved_sug["model_name"] == "contract-extractor-v1")
+        r.ok("契約書提案の provider が rule_engine として保存される (MINOR-01)",
+             saved_sug["provider"] == "rule_engine")
+        r.ok("契約書提案の confidence_score が 0〜1 範囲内で保存される",
+             float(saved_sug["confidence_score"]) == 0.92)
+
+    # 3. AI提案の隔離遵守: ai_suggestions に保存された段階では contracts テーブルに何も書かれていない
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute("SELECT * FROM contracts WHERE attachment_id = %s", (att_contract_id,))
+        r.ok("AI提案隔離原則: contracts テーブルへの自動書き込みは行われない", len(cur.fetchall()) == 0)
+
+    # 4. 人間確認後の確定操作: Core API / INSERT 経由で contracts(draft) が作成される
+    e2e_contract_id = str(uuid.uuid4())
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute(
+            """INSERT INTO contracts (
+                 id, tenant_id, contract_no, title, counterparty_name, contract_type,
+                 contract_amount, start_date, end_date, auto_renewal, attachment_id,
+                 status, created_by
+               ) VALUES (
+                 %s, %s, 'CNT-2026-E2E1', '秘密保持契約書', 'テスト株式会社', 'nda',
+                 0, '2026-04-01', '2027-03-31', true, %s,
+                 'draft', %s
+               ) RETURNING id, contract_no, status, title""",
+            (e2e_contract_id, t1, att_contract_id, owner),
+        )
+        created_contract = cur.fetchone()
+        r.ok("人間確認後に contracts(draft) が attachment_id 紐付けで正常作成される",
+             created_contract["status"] == "draft" and created_contract["title"] == "秘密保持契約書")
+
+    # 5. 後方互換性: 既存のレシートOCR AI提案 (suggestion_type='ocr') が正常に動作すること
+    ocr_sug_id = str(uuid.uuid4())
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute(
+            """INSERT INTO ai_suggestions (
+                 id, tenant_id, target_type, target_id, suggestion_type,
+                 payload, confidence_score, model_name, provider
+               ) VALUES (
+                 %s, %s, 'expense_report', %s, 'ocr',
+                 '{"suggested_account_code":"5000"}'::jsonb, 0.88, 'receipt-ocr-v1', 'rule_engine'
+               ) RETURNING id""",
+            (ocr_sug_id, t1, str(uuid.uuid4())),
+        )
+        r.ok("既存のレシートOCR提案フローに回帰がないこと", cur.fetchone() is not None)
+
+    # 6. 【P1-T2-FIX実証】実PDF本文読込〜内容依存条項抽出 E2Eテスト (BLOCKER-01解消の完全証明)
+    backend_dir = os.path.join(REPO_ROOT, "backend")
+    cmd = f"npx ts-node src/scripts/verify-contract-pdf-e2e.ts \"{dsn}\""
+    e2e_run = subprocess.run(cmd, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
+    if e2e_run.returncode != 0:
+        print(f"\n[E2E ERROR STDOUT]:\n{e2e_run.stdout}\n[E2E ERROR STDERR]:\n{e2e_run.stderr}")
+    r.ok("実PDFアップロード〜AI条項抽出E2E: PDF内容依存性(金額別抽出)と白紙PDFエラーハンドリングが動作する (BLOCKER-01)",
+         e2e_run.returncode == 0)
 
     return r.summary()
 

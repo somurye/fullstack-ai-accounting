@@ -57,8 +57,8 @@ describe('AiSuggestionsService (Phase 0 P0-T3)', () => {
     });
   });
 
-  describe('generateContractSuggestion', () => {
-    it('契約書テキストから条項を抽出し ai_suggestions に隔離保存する (確定テーブルへは書き込まない)', async () => {
+  describe('generateContractSuggestion (DEBT-003)', () => {
+    it('契約書テキストから条項を抽出し ai_suggestions に隔離保存する (デフォルト model_name は contract-extractor-v1)', async () => {
       const targetId = '11111111-1111-1111-1111-111111111111';
       const sampleText = '秘密保持契約書 甲： 株式会社A 乙： 株式会社B 2026-04-01から2027-03-31';
 
@@ -75,7 +75,8 @@ describe('AiSuggestionsService (Phase 0 P0-T3)', () => {
           },
         },
         confidence_score: '0.90',
-        model_name: 'claude-3-5-sonnet-20241022',
+        model_name: 'contract-extractor-v1',
+        provider: 'rule_engine',
         accepted: null,
         created_at: new Date('2026-09-02T10:00:00Z'),
       };
@@ -90,13 +91,76 @@ describe('AiSuggestionsService (Phase 0 P0-T3)', () => {
 
       expect(mockClient.query).toHaveBeenCalledWith(
         expect.stringContaining('INSERT INTO ai_suggestions'),
-        expect.arrayContaining([tenantId, targetId, expect.stringContaining('"document_type":"contract"')]),
+        expect.arrayContaining([
+          tenantId,
+          targetId,
+          expect.stringContaining('"document_type":"contract"'),
+          expect.any(Number),
+          'contract-extractor-v1',
+          'rule_engine',
+        ]),
       );
       expect(result.id).toBe('sug-contract-001');
-      expect(result.target_type).toBe('contract');
-      expect(result.suggestion_type).toBe('contract_terms');
-      expect(result.payload?.document_type).toBe('contract');
-      expect(result.payload?.suggested_fields?.contract_title?.value).toBe('秘密保持契約書');
+      expect(result.model_name).toBe('contract-extractor-v1');
+      expect(result.provider).toBe('rule_engine');
+    });
+  });
+
+  describe('confidence runtime validation (DEBT-002)', () => {
+    it('confidenceScore が 1 を超える (例: 1.5) 場合は保存前に例外を投げる', async () => {
+      const targetId = '22222222-2222-2222-2222-222222222222';
+      await expect(
+        service.generateGenericSuggestion(
+          mockClient as any,
+          tenantId,
+          'contract',
+          targetId,
+          'generic_fields',
+          'contract',
+          {},
+          1.5,
+          'test-model',
+        ),
+      ).rejects.toThrow('不正な信頼度スコア(1.5)です');
+      expect(mockClient.query).not.toHaveBeenCalled();
+    });
+
+    it('confidenceScore が 0 未満 (例: -0.3) 場合は保存前に例外を投げる', async () => {
+      const targetId = '22222222-2222-2222-2222-222222222222';
+      await expect(
+        service.generateGenericSuggestion(
+          mockClient as any,
+          tenantId,
+          'contract',
+          targetId,
+          'generic_fields',
+          'contract',
+          {},
+          -0.3,
+          'test-model',
+        ),
+      ).rejects.toThrow('不正な信頼度スコア(-0.3)です');
+      expect(mockClient.query).not.toHaveBeenCalled();
+    });
+
+    it('suggested_fields 内の confidence が範囲外の場合は保存前に例外を投げる', async () => {
+      const targetId = '22222222-2222-2222-2222-222222222222';
+      await expect(
+        service.generateGenericSuggestion(
+          mockClient as any,
+          tenantId,
+          'contract',
+          targetId,
+          'generic_fields',
+          'contract',
+          {
+            invalid_field: { value: 'テスト', confidence: 1.2 },
+          },
+          0.8,
+          'test-model',
+        ),
+      ).rejects.toThrow('フィールド invalid_field の不正な信頼度スコア(1.2)です');
+      expect(mockClient.query).not.toHaveBeenCalled();
     });
   });
 
