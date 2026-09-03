@@ -8,12 +8,14 @@
  *
  * 実行方式 (フォールバック順):
  *   1. ホストの `psql` コマンド (PATHにある場合)
- *   2. `docker compose exec -T postgres psql` (Dockerコンテナ稼働中の場合)
+ *   2. `docker compose exec -T postgres psql` (Dockerコンテナ稼働中 かつ DATABASE_URLがローカルDockerと一致する場合)
  *   3. `node-postgres` (pgパッケージ経由での直接SQL実行)
  *
- * 各ファイルは独立したトランザクション/接続で実行され、
- * 008a (ALTER TYPE) -> 008b (INSERT) のようなENUM追加直後の同一Tx使用制約を
- * 確実に回避する。
+ * ※注意 (MAJOR-01対応):
+ *   DATABASE_URLがリモートDB等を指している場合に意図せずローカルDockerコンテナへマイグレーションを
+ *   流し込まないよう、DATABASE_URLをパースし、host/port/databaseがローカルDocker composeの
+ *   設定 (localhost:5432/keiri_kaikei) と一致する場合のみDocker fallbackを使用する。
+ *   一致しない場合はDocker fallbackをスキップし、node-postgresによる直接接続へ進む。
  *
  * 使い方: DATABASE_URL="postgresql://..." node scripts/db-migrate.js
  *         (backend/package.jsonの`npm run db:migrate`から呼び出される)
@@ -25,6 +27,46 @@ const path = require('node:path');
 const SQL_DIR = path.resolve(__dirname, '..', 'sql');
 const ROOT_DIR = path.resolve(__dirname, '..');
 const SQL_FILE_RE = /^\d+.*\.sql$/;
+
+/**
+ * DATABASE_URL をパースしてオブジェクトを返す
+ * パスワードや特殊文字（@, %, # 等）が含まれる場合もURL標準仕様に従って正しくデコードする
+ */
+function parseDatabaseUrl(databaseUrl) {
+  if (!databaseUrl || typeof databaseUrl !== 'string') return null;
+  try {
+    const parsed = new URL(databaseUrl);
+    if (parsed.protocol !== 'postgresql:' && parsed.protocol !== 'postgres:') {
+      return null;
+    }
+    const hostname = parsed.hostname.toLowerCase();
+    const port = parsed.port ? String(parsed.port) : '5432';
+    const database = parsed.pathname ? parsed.pathname.replace(/^\//, '') : '';
+    const user = decodeURIComponent(parsed.username || '');
+    const password = decodeURIComponent(parsed.password || '');
+    return {
+      hostname,
+      port,
+      database,
+      user,
+      password,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * DATABASE_URL の接続先がローカルの Docker Compose (postgres サービス) と一致するか判定する
+ */
+function matchesDockerCompose(parsedUrl) {
+  if (!parsedUrl) return false;
+  const localHosts = ['localhost', '127.0.0.1', '::1'];
+  const isLocalHost = localHosts.includes(parsedUrl.hostname);
+  const isDefaultPort = parsedUrl.port === '5432';
+  const isTargetDb = parsedUrl.database === 'keiri_kaikei';
+  return isLocalHost && isDefaultPort && isTargetDb;
+}
 
 /**
  * コマンドがPATHに存在するかチェックする
@@ -54,6 +96,32 @@ function isDockerPostgresRunning() {
   } catch {
     return false;
   }
+}
+
+/**
+ * 実行ランナーを判定する
+ * @returns {'host-psql' | 'docker' | 'node-postgres' | 'none'}
+ */
+function determineRunner({ hasPsql, isDockerRunning, parsedUrl, hasNodePg }) {
+  if (hasPsql) {
+    return 'host-psql';
+  }
+
+  if (isDockerRunning) {
+    if (matchesDockerCompose(parsedUrl)) {
+      return 'docker';
+    } else {
+      console.log(
+        `[runner] Skipping docker fallback: DATABASE_URL (${parsedUrl ? `${parsedUrl.hostname}:${parsedUrl.port}/${parsedUrl.database}` : 'invalid'}) does not match local docker compose settings (localhost:5432/keiri_kaikei). Proceeding to node-postgres fallback.`
+      );
+    }
+  }
+
+  if (hasNodePg) {
+    return 'node-postgres';
+  }
+
+  return 'none';
 }
 
 /**
@@ -99,6 +167,11 @@ async function main() {
     process.exit(1);
   }
 
+  const parsedUrl = parseDatabaseUrl(databaseUrl);
+  if (!parsedUrl) {
+    console.warn(`[runner] Warning: Could not fully parse DATABASE_URL. Please verify format.`);
+  }
+
   const files = readdirSync(SQL_DIR)
     .filter((name) => SQL_FILE_RE.test(name))
     .sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
@@ -108,8 +181,29 @@ async function main() {
     process.exit(1);
   }
 
-  // 1. ホストの psql コマンドを試す
-  if (hasCommand('psql')) {
+  const psqlAvailable = hasCommand('psql');
+  const dockerRunning = isDockerPostgresRunning();
+  let nodePgAvailable = false;
+  try {
+    require('pg');
+    nodePgAvailable = true;
+  } catch {
+    try {
+      require(path.resolve(__dirname, '../backend/node_modules/pg'));
+      nodePgAvailable = true;
+    } catch {
+      nodePgAvailable = false;
+    }
+  }
+
+  const runner = determineRunner({
+    hasPsql: psqlAvailable,
+    isDockerRunning: dockerRunning,
+    parsedUrl,
+    hasNodePg: nodePgAvailable,
+  });
+
+  if (runner === 'host-psql') {
     console.log('[runner] Using host psql command...');
     for (const file of files) {
       const fullPath = path.join(SQL_DIR, file);
@@ -127,9 +221,10 @@ async function main() {
     return;
   }
 
-  // 2. Docker compose の postgres コンテナを試す
-  if (isDockerPostgresRunning()) {
+  if (runner === 'docker') {
     console.log('[runner] Using docker compose exec postgres psql fallback...');
+    const dbUser = parsedUrl?.user || 'postgres';
+    const dbName = parsedUrl?.database || 'keiri_kaikei';
     for (const file of files) {
       const fullPath = path.join(SQL_DIR, file);
       const sqlContent = readFileSync(fullPath);
@@ -137,7 +232,7 @@ async function main() {
       try {
         execFileSync(
           'docker',
-          ['compose', 'exec', '-T', 'postgres', 'psql', '-U', 'postgres', '-d', 'keiri_kaikei', '-v', 'ON_ERROR_STOP=1'],
+          ['compose', 'exec', '-T', 'postgres', 'psql', '-U', dbUser, '-d', dbName, '-v', 'ON_ERROR_STOP=1'],
           {
             cwd: ROOT_DIR,
             input: sqlContent,
@@ -153,11 +248,12 @@ async function main() {
     return;
   }
 
-  // 3. node-postgres (pg) を試す
-  const pgSuccess = await runWithNodePostgres(databaseUrl, files);
-  if (pgSuccess) {
-    console.log(`\nAll ${files.length} migration file(s) applied successfully.`);
-    return;
+  if (runner === 'node-postgres') {
+    const pgSuccess = await runWithNodePostgres(databaseUrl, files);
+    if (pgSuccess) {
+      console.log(`\nAll ${files.length} migration file(s) applied successfully.`);
+      return;
+    }
   }
 
   // どのランナーも利用できない場合
@@ -172,7 +268,18 @@ async function main() {
   process.exit(1);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  parseDatabaseUrl,
+  matchesDockerCompose,
+  determineRunner,
+  hasCommand,
+  isDockerPostgresRunning,
+  runWithNodePostgres,
+};
