@@ -758,11 +758,12 @@ def run_verification(dsn: str) -> int:
         r.ok("承認ルール未設定のテナントでは contract ルール件数が 0 件 (未設定検出可能)", t2_rule_cnt == 0)
 
     # 6.2 t1 において明示的0-step自動承認ルール (is_explicit_auto_approve=TRUE) が登録できる
+    # (DEBT-006: 混在防止のため、既存通常ルールを一旦削除して登録)
     with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute("DELETE FROM approval_rules WHERE tenant_id = %s AND target_type = 'contract'", (t1,))
         cur.execute(
             """INSERT INTO approval_rules (tenant_id, target_type, step_number, is_explicit_auto_approve, condition)
                VALUES (%s, 'contract', 0, TRUE, '{}')
-               ON CONFLICT (tenant_id, target_type, step_number, approver_role_id, approver_user_id) DO NOTHING
                RETURNING is_explicit_auto_approve, step_number""",
             (t1,),
         )
@@ -787,7 +788,14 @@ def run_verification(dsn: str) -> int:
              c_nda_active["status"] == "active" and c_nda_active["approved_at"] is not None)
 
     # 7. 多段階承認フロー: draft → pending_approval → 別ユーザー承認で active
+    # (DEBT-006: 自動承認ルールを通常ルールへ切り替え)
     with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute("DELETE FROM approval_rules WHERE tenant_id = %s AND target_type = 'contract'", (t1,))
+        cur.execute(
+            """INSERT INTO approval_rules (tenant_id, target_type, step_number, approver_user_id, is_active)
+               VALUES (%s, 'contract', 1, %s, TRUE)""",
+            (t1, approver),
+        )
         # draft → pending_approval
         cur.execute("UPDATE contracts SET status = 'pending_approval' WHERE id = %s RETURNING status", (c1_id,))
         c1_pending = cur.fetchone()
@@ -926,13 +934,13 @@ def run_verification(dsn: str) -> int:
                )""",
             (att_contract_id, t1, owner),
         )
-        # AI条項抽出提案の隔離保存 (target_id=attachment_id, target_type='contract', model_name='contract-extractor-v1', provider='rule_engine')
+        # AI条項抽出提案の隔離保存 (target_id=attachment_id, target_type='attachment', model_name='contract-extractor-v1', provider='rule_engine')
         cur.execute(
             """INSERT INTO ai_suggestions (
                  id, tenant_id, target_type, target_id, suggestion_type,
                  payload, confidence_score, model_name, provider
                ) VALUES (
-                 %s, %s, 'contract', %s, 'contract_terms',
+                 %s, %s, 'attachment', %s, 'contract_terms',
                  %s::jsonb, 0.92, 'contract-extractor-v1', 'rule_engine'
                ) RETURNING id, model_name, provider, confidence_score""",
             (
@@ -994,9 +1002,119 @@ def run_verification(dsn: str) -> int:
     cmd = f"npx ts-node src/scripts/verify-contract-pdf-e2e.ts \"{dsn}\""
     e2e_run = subprocess.run(cmd, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
     if e2e_run.returncode != 0:
-        print(f"\n[E2E ERROR STDOUT]:\n{e2e_run.stdout}\n[E2E ERROR STDERR]:\n{e2e_run.stderr}")
+        err_msg = f"\n[E2E ERROR STDOUT]:\n{e2e_run.stdout}\n[E2E ERROR STDERR]:\n{e2e_run.stderr}"
+        print(err_msg.encode("cp932", errors="replace").decode("cp932"))
     r.ok("実PDFアップロード〜AI条項抽出E2E: PDF内容依存性(金額別抽出)と白紙PDFエラーハンドリングが動作する (BLOCKER-01)",
          e2e_run.returncode == 0)
+
+    # ------------------------------------------------------------------------
+    # 10. 契約RBAC強制・AI提案ライフサイクル正式化 (Phase 1: P1-T3, DEBT-005, DEBT-006)
+    # ------------------------------------------------------------------------
+    print("\n--- 10. 契約RBAC強制・AI提案ライフサイクル正式化 (P1-T3: DEBT-005, DEBT-006) ---")
+
+    # 1. contracts.source_suggestion_id 列の確認
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute(
+            """SELECT column_name, data_type
+               FROM information_schema.columns
+               WHERE table_name = 'contracts' AND column_name = 'source_suggestion_id'"""
+        )
+        col = cur.fetchone()
+        r.ok("contracts テーブルに source_suggestion_id 列が存在する", col is not None)
+
+    # 2. ai_suggestions の既存データマイグレーション確認 (target_type='attachment')
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute(
+            """SELECT COUNT(*) AS cnt
+               FROM ai_suggestions
+               WHERE suggestion_type = 'contract_terms' AND target_type = 'contract'"""
+        )
+        cnt = cur.fetchone()["cnt"]
+        r.ok("契約書提案の target_type が 'attachment' に統一されている (0件の旧データ残存)", cnt == 0)
+
+    # 3. DEBT-006: approval_rules 自動承認混在防止トリガー (自動承認存在時の通常追加拒否)
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute("DELETE FROM approval_rules WHERE tenant_id = %s AND target_type = 'contract'", (t1,))
+        auto_rule_id = str(uuid.uuid4())
+        cur.execute(
+            """INSERT INTO approval_rules (id, tenant_id, target_type, step_number, is_explicit_auto_approve, is_active)
+               VALUES (%s, %s, 'contract', 0, TRUE, TRUE)""",
+            (auto_rule_id, t1),
+        )
+        # 通常ルール (step 1) の追加を試行
+        normal_rule_id = str(uuid.uuid4())
+        blocked = False
+        try:
+            cur.execute(
+                """INSERT INTO approval_rules (id, tenant_id, target_type, step_number, approver_user_id, is_explicit_auto_approve, is_active)
+                   VALUES (%s, %s, 'contract', 1, %s, FALSE, TRUE)""",
+                (normal_rule_id, t1, owner),
+            )
+        except psycopg2.errors.CheckViolation:
+            blocked = True
+        r.ok("自動承認ルール存在時の通常ルール追加は DB トリガーで拒否される (DEBT-006)", blocked)
+
+    # 4. DEBT-006: approval_rules 自動承認混在防止トリガー (通常ルール存在時の自動承認追加拒否)
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute("DELETE FROM approval_rules WHERE tenant_id = %s AND target_type = 'contract'", (t1,))
+        normal_rule_id = str(uuid.uuid4())
+        cur.execute(
+            """INSERT INTO approval_rules (id, tenant_id, target_type, step_number, approver_user_id, is_explicit_auto_approve, is_active)
+               VALUES (%s, %s, 'contract', 1, %s, FALSE, TRUE)""",
+            (normal_rule_id, t1, owner),
+        )
+        # 自動承認ルール (step 0) の追加を試行
+        auto_rule_id = str(uuid.uuid4())
+        blocked = False
+        try:
+            cur.execute(
+                """INSERT INTO approval_rules (id, tenant_id, target_type, step_number, is_explicit_auto_approve, is_active)
+                   VALUES (%s, %s, 'contract', 0, TRUE, TRUE)""",
+                (auto_rule_id, t1),
+            )
+        except psycopg2.errors.CheckViolation:
+            blocked = True
+        r.ok("通常ルール存在時の自動承認ルール追加は DB トリガーで拒否される (DEBT-006)", blocked)
+
+    # 5. source_suggestion_id 紐付けでの契約書作成
+    test_sug_id = str(uuid.uuid4())
+    test_att_id = str(uuid.uuid4())
+    test_contract_id = str(uuid.uuid4())
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute(
+            """INSERT INTO attachments (id, tenant_id, file_name, mime_type, file_hash, storage_path, document_category, uploaded_by)
+               VALUES (%s, %s, 'test.pdf', 'application/pdf', 'hash1', '/tmp/test.pdf', 'contract', %s)""",
+            (test_att_id, t1, owner),
+        )
+        cur.execute(
+            """INSERT INTO ai_suggestions (id, tenant_id, target_type, target_id, suggestion_type, payload, confidence_score, model_name, provider)
+               VALUES (%s, %s, 'attachment', %s, 'contract_terms', '{}'::jsonb, 0.9, 'contract-extractor-v1', 'rule_engine')""",
+            (test_sug_id, t1, test_att_id),
+        )
+        cur.execute(
+            """INSERT INTO contracts (
+                 id, tenant_id, contract_no, title, counterparty_name, contract_type,
+                 contract_amount, start_date, auto_renewal, attachment_id, source_suggestion_id,
+                 status, created_by
+               ) VALUES (
+                 %s, %s, 'CNT-2026-T3E2E', 'ライフサイクル連携契約書', 'テスト株式会社', 'service',
+                 500000, '2026-04-01', false, %s, %s,
+                 'draft', %s
+               ) RETURNING source_suggestion_id""",
+            (test_contract_id, t1, test_att_id, test_sug_id, owner),
+        )
+        saved_c = cur.fetchone()
+        r.ok("contracts に source_suggestion_id が正常に永続化される (来歴保持)",
+             saved_c["source_suggestion_id"] == test_sug_id)
+
+    # 6. 【P1-T3実証】PermissionsGuard RBAC認可強制・解約遷移 E2Eテスト (DEBT-005完全証明)
+    cmd_rbac = f"npx ts-node src/scripts/verify-contract-rbac-e2e.ts \"{dsn}\""
+    rbac_run = subprocess.run(cmd_rbac, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
+    if rbac_run.returncode != 0:
+        err_msg = f"\n[RBAC E2E ERROR STDOUT]:\n{rbac_run.stdout}\n[RBAC E2E ERROR STDERR]:\n{rbac_run.stderr}"
+        print(err_msg.encode("cp932", errors="replace").decode("cp932"))
+    r.ok("契約RBAC強制E2E: legal_viewer書込拒否(403)・閲覧許可・承認権限検証・解約遷移が動作する (DEBT-005)",
+         rbac_run.returncode == 0)
 
     return r.summary()
 

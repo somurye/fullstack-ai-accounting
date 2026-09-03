@@ -4785,6 +4785,7 @@ components:
         renewal_notice_days: { type: integer, default: 30, description: "更新拒絶/解約申入期限(日前)" }
         status: { $ref: "#/components/schemas/ContractStatus" }
         attachment_id: { type: string, format: uuid, nullable: true, description: "添付された契約書PDFのID" }
+        source_suggestion_id: { type: string, format: uuid, nullable: true, description: "起草元となったAI条項抽出提案のID" }
         description: { type: string, nullable: true, description: "契約概要・特記事項" }
         approved_at: { type: string, format: date-time, nullable: true }
         created_by: { type: string, format: uuid, readOnly: true }
@@ -4827,6 +4828,7 @@ components:
         auto_renewal: { type: boolean, default: false }
         renewal_notice_days: { type: integer, default: 30 }
         attachment_id: { type: string, format: uuid, nullable: true }
+        source_suggestion_id: { type: string, format: uuid, nullable: true }
         description: { type: string, nullable: true }
 
     ContractUpdate:
@@ -4842,6 +4844,7 @@ components:
         auto_renewal: { type: boolean }
         renewal_notice_days: { type: integer }
         attachment_id: { type: string, format: uuid, nullable: true }
+        source_suggestion_id: { type: string, format: uuid, nullable: true }
         description: { type: string, nullable: true }
 
     ContractResponse:

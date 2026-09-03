@@ -43,6 +43,7 @@ export function ContractCreatePage() {
     auto_renewal: false,
     renewal_notice_days: 30,
     attachment_id: null,
+    source_suggestion_id: null as string | null,
     description: '',
   });
 
@@ -101,9 +102,9 @@ export function ContractCreatePage() {
       const fields = (suggestion.payload as { suggested_fields?: Record<string, { value: unknown }> })
         ?.suggested_fields;
 
-      if (fields) {
-        setFormData((prev) => {
-          const updated = { ...prev };
+      setFormData((prev) => {
+        const updated = { ...prev, source_suggestion_id: suggestion.id };
+        if (fields) {
           if (typeof fields.contract_title?.value === 'string' && fields.contract_title.value) {
             updated.title = fields.contract_title.value;
           }
@@ -131,9 +132,9 @@ export function ContractCreatePage() {
           if (typeof fields.notice_period_days?.value === 'number') {
             updated.renewal_notice_days = fields.notice_period_days.value;
           }
-          return updated;
-        });
-      }
+        }
+        return updated;
+      });
       toast.success('AIによる条項の抽出が完了しました。内容を確認してください。');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'AI条項抽出に失敗しました';

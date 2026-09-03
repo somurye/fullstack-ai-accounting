@@ -7491,6 +7491,11 @@ export interface components {
              * @description 添付された契約書PDFのID
              */
             attachment_id?: string | null;
+            /**
+             * Format: uuid
+             * @description 起草元となったAI条項抽出提案のID
+             */
+            source_suggestion_id?: string | null;
             /** @description 契約概要・特記事項 */
             description?: string | null;
             /** Format: date-time */
@@ -7529,6 +7534,8 @@ export interface components {
             renewal_notice_days: number;
             /** Format: uuid */
             attachment_id?: string | null;
+            /** Format: uuid */
+            source_suggestion_id?: string | null;
             description?: string | null;
         };
         ContractUpdate: {
@@ -7545,6 +7552,8 @@ export interface components {
             renewal_notice_days?: number;
             /** Format: uuid */
             attachment_id?: string | null;
+            /** Format: uuid */
+            source_suggestion_id?: string | null;
             description?: string | null;
         };
         ContractResponse: {

@@ -12,7 +12,9 @@ import {
 } from '@nestjs/common';
 import { z } from 'zod';
 import { RequestContext } from '../../common/context/request-context';
+import { RequirePermissions } from '../../common/decorators/permissions.decorator';
 import { AppException } from '../../common/exceptions/app.exception';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
 import { TenantAuthGuard } from '../../common/guards/tenant-auth.guard';
 import { successEnvelope } from '../../common/http/envelope';
 import { parseWithZod } from '../../common/validation/zod-parse';
@@ -30,13 +32,15 @@ const idParamSchema = z.string().uuid('idはUUID形式で指定してくださ�
  * ContractsController
  * ===================
  * 契約書管理 API (`/contracts`) のコントローラー。
+ * DEBT-005: PermissionsGuard により細粒度RBAC (contract.*) を明示的に認可強制。
  */
 @Controller('contracts')
-@UseGuards(TenantAuthGuard)
+@UseGuards(TenantAuthGuard, PermissionsGuard)
 export class ContractsController {
   constructor(private readonly contractsService: ContractsService) {}
 
   @Get()
+  @RequirePermissions('contract.view')
   async list(@Query() query: unknown) {
     const tenantId = this.requireTenantId();
     const parsedQuery = parseWithZod(contractListQuerySchema, query);
@@ -49,6 +53,7 @@ export class ContractsController {
   }
 
   @Post('extract-terms')
+  @RequirePermissions('contract.create')
   async extractTerms(@Body() body: unknown) {
     const tenantId = this.requireTenantId();
     const userId = this.requireUserId();
@@ -58,6 +63,7 @@ export class ContractsController {
   }
 
   @Post()
+  @RequirePermissions('contract.create')
   async create(@Body() body: unknown) {
     const tenantId = this.requireTenantId();
     const userId = this.requireUserId();
@@ -67,6 +73,7 @@ export class ContractsController {
   }
 
   @Get(':id')
+  @RequirePermissions('contract.view')
   async getById(@Param('id') id: string) {
     const tenantId = this.requireTenantId();
     const parsedId = parseWithZod(idParamSchema, id);
@@ -79,6 +86,7 @@ export class ContractsController {
   }
 
   @Put(':id')
+  @RequirePermissions('contract.edit')
   async update(@Param('id') id: string, @Body() body: unknown) {
     const tenantId = this.requireTenantId();
     const userId = this.requireUserId();
@@ -90,6 +98,7 @@ export class ContractsController {
 
   @Delete(':id')
   @HttpCode(204)
+  @RequirePermissions('contract.edit')
   async delete(@Param('id') id: string) {
     const tenantId = this.requireTenantId();
     const userId = this.requireUserId();
@@ -99,11 +108,27 @@ export class ContractsController {
 
   @Post(':id/submit-approval')
   @HttpCode(200)
+  @RequirePermissions('contract.create', 'contract.edit')
   async submitForApproval(@Param('id') id: string) {
     const tenantId = this.requireTenantId();
     const userId = this.requireUserId();
     const parsedId = parseWithZod(idParamSchema, id);
     const contract = await this.contractsService.submitForApproval(
+      tenantId,
+      userId,
+      parsedId,
+    );
+    return successEnvelope(contract);
+  }
+
+  @Post(':id/terminate')
+  @HttpCode(200)
+  @RequirePermissions('contract.terminate')
+  async terminate(@Param('id') id: string) {
+    const tenantId = this.requireTenantId();
+    const userId = this.requireUserId();
+    const parsedId = parseWithZod(idParamSchema, id);
+    const contract = await this.contractsService.terminate(
       tenantId,
       userId,
       parsedId,

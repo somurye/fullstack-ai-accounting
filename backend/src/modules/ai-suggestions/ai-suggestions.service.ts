@@ -433,7 +433,7 @@ export class AiSuggestionsService {
 
   /**
    * 契約書PDF等の文書テキストから条項を抽出し、`ai_suggestions`へ隔離保存する
-   * (`target_type='contract'`, `suggestion_type='contract_terms'`)。
+   * (抽出段階の実体は添付ファイルであるため `target_type='attachment'`, `suggestion_type='contract_terms'`)。
    * 原則1(AI提案の隔離領域遵守)に従い、確定データ(contractsテーブル等)へは一切書き込まない。
    */
   async generateContractSuggestion(
@@ -443,6 +443,7 @@ export class AiSuggestionsService {
     contractText: string,
     modelName: string = 'contract-extractor-v1',
     provider: string = 'rule_engine',
+    targetType: string = 'attachment',
   ): Promise<AiSuggestionDto> {
     const { suggested_fields, confidenceScore } = this.extractContractTerms(contractText);
     validateConfidenceScores(confidenceScore, suggested_fields);
@@ -455,9 +456,9 @@ export class AiSuggestionsService {
     const result = await client.query<AiSuggestionRow>(
       `INSERT INTO ai_suggestions
          (tenant_id, target_type, target_id, suggestion_type, payload, confidence_score, model_name, provider, accepted)
-       VALUES ($1, 'contract', $2, 'contract_terms', $3::jsonb, $4, $5, $6, NULL)
+       VALUES ($1, $7, $2, 'contract_terms', $3::jsonb, $4, $5, $6, NULL)
        RETURNING ${AI_SUGGESTION_COLUMNS}`,
-      [tenantId, targetId, JSON.stringify(payload), confidenceScore, modelName, provider],
+      [tenantId, targetId, JSON.stringify(payload), confidenceScore, modelName, provider, targetType],
     );
     return mapAiSuggestionRow(result.rows[0]);
   }
