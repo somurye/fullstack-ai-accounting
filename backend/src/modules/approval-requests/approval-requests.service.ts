@@ -304,7 +304,22 @@ export class ApprovalRequestsService {
       return;
     }
 
-    // 新ドメイン (contract, purchase_request 等)
+    if (targetType === 'contract') {
+      await client.query(
+        `UPDATE contracts SET status = 'active', approved_at = now(), updated_at = now() WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, targetId],
+      );
+      await this.auditLogs.record(client, tenantId, {
+        actorUserId: userId,
+        action: 'contract.approved',
+        targetType: 'contract',
+        targetId,
+        afterData: { status: 'active' },
+      });
+      return;
+    }
+
+    // 新ドメイン (purchase_request 等)
     await this.auditLogs.record(client, tenantId, {
       actorUserId: userId,
       action: `${targetType}.approved`,
@@ -395,7 +410,22 @@ export class ApprovalRequestsService {
       return;
     }
 
-    // 新ドメイン (contract, purchase_request 等)
+    if (targetType === 'contract') {
+      await client.query(
+        `UPDATE contracts SET status = 'rejected', updated_at = now() WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, targetId],
+      );
+      await this.auditLogs.record(client, tenantId, {
+        actorUserId: userId,
+        action: 'contract.rejected',
+        targetType: 'contract',
+        targetId,
+        afterData: { status: 'rejected' },
+      });
+      return;
+    }
+
+    // 新ドメイン (purchase_request 等)
     await this.auditLogs.record(client, tenantId, {
       actorUserId: userId,
       action: `${targetType}.rejected`,

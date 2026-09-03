@@ -89,7 +89,7 @@ ChatGPT（SO）は実コードとの差分照合を前提にレビューする�
 | P0-T2 | `attachments`テーブルの汎用化確認・拡張 | 現状レシート/請求書向け前提の列（`counterparty_name`等）が契約書にも自然にフィットするか検証し、必要なら`document_category`列を追加 | なし | ✅ SO正式PASS（コミット6ddd3cb、DEBT-001を記録済み、mainマージ指示済み） |
 | P0-T3 | AIゲートウェイの汎用提案インターフェース定義 | OCR/科目提案に限定されている現行の提案スキーマを、「文書種別によらず`suggested_fields: JSON`を返す」形に一般化 | なし | ✅ SO判定CONDITIONAL PASS（コミットe01384d、DEBT-002/003を記録済み、mainマージ指示済み） |
 | P0-T4 | ロール／権限マスタへの新ロール追加 | `viewer_legal`等、総務・法務向けロールをRBACに追加（既存`viewer_external`と同パターン） | なし | ✅ SO正式PASS（コミット470f2dc、DEBT-004を記録済み、mainマージ指示済み） |
-| P0-T5 | 開発環境へのpsql整備 ＋ 実DB migration E2E確認（DEBT-004対応） | 開発/CI環境にPostgreSQLクライアントを整備し、006〜008bまでの全migrationをクリーンDBに実行して`verify_schema.py`を実DB接続でPASSさせる | P0-T4 | ✅ SO正式PASS（実DB E2E 34/34 PASS確認、mainマージ指示済み）— **Phase 0完了** |
+| P0-T5 | 開発環境へのpsql整備 ＋ 実DB migration E2E確認（DEBT-004対応） | 開発/CI環境にPostgreSQLクライアントを整備し、006〜008bまでの全migrationをクリーンDBに実行して`verify_schema.py`を実DB接続でPASSさせる | P0-T4 | ✅ SO正式PASS・mainマージ完了（マージコミット`b57968a`、main上でJest 33/33・typecheck 0 errors・build成功を再確認済み）— **Phase 0完了** |
 
 ### 2.3 Phase 0 実装指示プロンプト（Gemini向け）
 
@@ -698,14 +698,14 @@ Phase 0で汎用化した承認エンジン・添付ファイル基盤・AIゲ�
 
 ### 3.2 タスク分解
 
-| タスクID | タスク名 | 概要 | 依存 |
-|----------|----------|------|------|
-| P1-T1 | `contracts`テーブル設計・実装 | 契約書メタデータ本体（相手先、種別、金額、期間、自動更新有無、ステータス） | P0-T1, P0-T2, **P0-T5** |
-| P1-T2 | 契約書アップロード〜AI条項抽出フロー | PDFアップロード→AIゲートウェイでの条項抽出提案→人間確認画面（**要対応: DEBT-003** — model_name/providerを実態に即した値に修正、正式なAI抽出への切替判断を含める） | P0-T3, P1-T1 |
-| P1-T3 | 契約承認ワークフロー統合 | `approval_requests`(target_type='contract')と`contracts`の連携、承認完了で`status`を`active`へ | P0-T1, P1-T1 |
-| P1-T4 | 契約期限アラート・バッチ | 満了/自動更新の一定日数前に通知を生成するバッチワーカー | P1-T1 |
-| P1-T5 | 稟議申請（汎用ワークフロー起票UI） | 契約以外の一般的な稟議（购買以外の申請）もこの画面から起票できる汎用フォーム | P0-T1 |
-| P1-T6 | 契約書全文検索（pgvector活用） | 既存のjournal_entry_embeddingsと同様のパターンで契約書本文をベクトル化し類似契約検索を提供 | P1-T1 |
+| タスクID | タスク名 | 概要 | 依存 | ステータス |
+|----------|----------|------|------|-----------|
+| P1-T1 | `contracts`テーブル設計・実装 | 契約書メタデータ本体（相手先、種別、金額、期間、自動更新有無、ステータス） | P0-T1, P0-T2, P0-T5 | ✅ SO判定CONDITIONAL PASS（コミット48c8f56、DEBT-006を記録済み、mainマージ指示済み） |
+| P1-T2 | 契約書アップロード〜AI条項抽出フロー | PDFアップロード→AIゲートウェイでの条項抽出提案→人間確認画面（DEBT-002/DEBT-003をあわせて解消） | P0-T3, P1-T1 | プロンプト発行済み・着手待ち |
+| P1-T3 | 契約承認ワークフロー統合 | `approval_requests`(target_type='contract')と`contracts`の連携、承認完了で`status`を`active`へ（**要対応: DEBT-005** — contract permissionのAPI認可強制） | P0-T1, P1-T1 | 未着手 |
+| P1-T4 | 契約期限アラート・バッチ | 満了/自動更新の一定日数前に通知を生成するバッチワーカー | P1-T1 | 未着手 |
+| P1-T5 | 稟議申請（汎用ワークフロー起票UI） | 契約以外の一般的な稟議（購買以外の申請）もこの画面から起票できる汎用フォーム | P0-T1 | 未着手 |
+| P1-T6 | 契約書全文検索（pgvector活用） | 既存のjournal_entry_embeddingsと同様のパターンで契約書本文をベクトル化し類似契約検索を提供 | P1-T1 | 未着手 |
 
 ### 3.3 Phase 1 実装指示プロンプト（Gemini向け）
 
@@ -765,6 +765,162 @@ attachments（document_category='contract'）を実際に活用する契約書�
 
 ---
 
+#### 【フォローアップ指示プロンプト P1-T1-FIX】REQUEST CHANGES対応（自動承認の暗黙適用・tenant整合性）
+
+ChatGPT(SO)よりP1-T1が「REQUEST CHANGES」と判定されたため、以下をGeminiに指示する。
+
+```
+# SOレビュー結果：P1-T1 REQUEST CHANGES
+main...feature/p1-t1-contracts-table の実差分（コミットdcfe6f0）を確認した結果、
+現状はマージ不可です。以下2点を修正してください。
+
+# MAJOR-01: 「承認ルールがない」＝「自動承認」になってしまっている
+現状の実装は、contract向けの有効な承認ルールのステップ数が0（totalSteps === 0）の場合に
+即座にactiveとする設計ですが、これは「承認ルールが明示的に0-stepで設定されている」場合と
+「そもそも承認ルールが未設定（テナント管理者が設定を忘れている等）」の場合を区別できていません。
+複数人テナントで承認ルール未設定のまま契約が自動的にactive化されてしまうと、
+意図せずSoDを無効化する経路になります。
+
+## 修正方針
+1. approval_rules（またはcontract向けの承認設定）に、「明示的な自動承認（0-step auto-approve）」
+   であることを表すフラグ（例: is_explicit_auto_approve BOOLEAN）を追加する。
+2. 承認申請（submit-approval）時のロジックを以下のように変更する。
+   - 該当テナント・target_type='contract'の承認ルールが1件も存在しない場合 →
+     エラーを返す（「承認ルールが設定されていません。設定を行ってください」等）。
+     自動的にactiveへ遷移させない。
+   - 承認ルールが存在し、is_explicit_auto_approve=true（0-step）の場合 → 即座にactive
+     （1人テナント運用のユースケースはこちらで担保される）。
+   - 承認ルールが存在し、1ステップ以上の場合 → 従来通りの承認フロー。
+3. 実DB E2Eテストに以下を追加する。
+   - 承認ルール未設定のテナントでcontract承認申請をするとエラーになり、activeにならないこと
+   - 明示的に0-stepルールを設定したテナントでは従来通り即座にactiveになること
+
+# MAJOR-02: tenant_idとFK先（attachment_id / created_by）のtenant整合性がDB未保証
+現状、contracts.tenant_id と attachments.tenant_id（attachment_id経由）、
+contracts.tenant_id と created_byユーザーの所属tenantの整合性は、アプリケーション層の
+SELECTクエリでのみ担保されており、DB制約としては保証されていません。
+このプロジェクトの原則「DB制約/RLSを最終防衛線にする」に沿って、DBレベルでも保証してください。
+
+## 修正方針
+1. CHECK制約では別テーブルを参照できないため、トリガー関数（例:
+   fn_validate_contract_tenant_consistency()）を作成し、contracts への
+   INSERT/UPDATE時に以下を検証してエラーにする。
+   - attachment_id が設定されている場合、参照先attachmentsのtenant_idがcontracts.tenant_idと
+     一致すること
+   - created_byユーザーの所属tenant（既存のuser-tenant関連テーブルを参照）が
+     contracts.tenant_idと一致すること
+2. 実DB E2Eテストに、他テナントのattachment_id / created_byを指定してcontractsへINSERTしようと
+   すると拒否されるケースを追加する。
+
+# 修正不要（今回は仕様確認のみで対応可）
+- draft→terminatedの状態遷移が本当に必要か、報告内で一言、意図した仕様かどうかを確認・明記して
+  ください（不要と判断すれば削除、必要な仕様であれば理由を一言添えてください）。修正は必須ではありません。
+- RBAC API enforcement（contract.*パーミッションのAPI側チェック）は今回のP1-T1では対応不要です。
+  DEBT-005として計画書側で追跡し、P1-T3で対応します。
+
+# 受け入れ基準（Definition of Done）
+- [ ] 承認ルール未設定のテナントでcontract申請時にエラーとなり、自動activeにならないことをテストで確認
+- [ ] 明示的0-step自動承認は引き続き機能する（1人テナント運用を壊さない）
+- [ ] 他テナントのattachment_id / created_byを指定したcontracts INSERTがDBトリガーで拒否される
+- [ ] draft→terminated遷移について意図した仕様か報告に一言明記する
+- [ ] 修正後、クリーンDBで001〜009+今回の追加migrationを実行し、verify_schema.pyで
+      追加テストを含めて全件PASSすることを確認する
+- [ ] feature/p1-t1-contracts-table ブランチに追加コミット・pushし、比較URLを報告に含める
+
+# ChatGPTレビュー時の確認観点
+- 「承認ルール未設定→エラー」への変更が、既存のvendor_bill/expense_report等、Phase 0以前からの
+  承認フローに影響を与えていないか（target_type='contract'に限定した変更になっているか）
+- tenant整合性トリガーが、attachment_idがNULL（契約書PDF未添付）のケースを正しくスキップしているか
+```
+
+---
+
+#### 【マージ指示プロンプト P1-T1-MERGE】mainへのマージ
+
+ChatGPT(SO)よりP1-T1-FIXが「CONDITIONAL PASS（マージを止める問題なし）」と判定されたため、Geminiへマージを指示する。
+
+```
+# 指示
+feature/p1-t1-contracts-table を main へマージしてください。
+SO(ChatGPT)による判定（コミット48c8f56時点、CONDITIONAL PASSだがマージを止める問題はないと判断）
+を得ています。
+DEBT-005（RBAC API未強制）はP1-T3で、DEBT-006（自動承認ルールと通常ルールの混在防止）は
+承認ルール管理API/UI実装時に対応することとし、今回のマージをブロックするものではありません。
+マージ後、以下を確認し報告してください。
+- main上でBackend/Frontendのテストを再実行して確認
+- マージコミットハッシュ
+- 作業ブランチ feature/p1-t1-contracts-table の削除（マージ済み後）
+```
+
+これでP1-T1は完了。次はP1-T2（契約書アップロード〜AI条項抽出フロー）へ進む。
+
+---
+
+#### 【指示プロンプト P1-T2】契約書アップロード〜AI条項抽出フロー
+
+```
+# 背景・目的
+P0-T3で「汎用AI提案インターフェース」と契約書向けの下書き抽出（extractContractTerms() /
+generateContractSuggestion()、ルールエンジンによるPoC実装）を用意し、P1-T1で実際の
+contractsテーブルとステータス遷移・承認統合を実装した。本タスクでは、これらを実際に
+つなぎ込み、「PDFアップロード → AI提案 → 人間確認 → contracts確定」という一連のフローを
+完成させる。同時に、Phase 0から持ち越している DEBT-002 / DEBT-003 をこのタイミングで解消する。
+
+# 前提となる既存実装（必ず先に読むこと）
+- P0-T3の成果物: ai_suggestions テーブル、generateGenericSuggestion() / generateContractSuggestion()
+  / extractContractTerms()
+- P0-T2の成果物: attachments.document_category（'contract'を含む）
+- P1-T1の成果物: contracts テーブル、ステータス遷移トリガー、tenant整合性トリガー
+- 本計画書 DEBT-002（confidence runtime validation未実装）、DEBT-003（model_nameが実態と乖離）
+
+# やってはいけないこと
+- AI提案（ai_suggestions）から contracts テーブルへの書き込みを、人間の確認・確定操作を経ずに
+  自動で行わない。既存原則「AI提案 → 人間承認 → Core API → DB制約」を厳守する。
+- 既存のOCR（レシート等）のAI提案フローに回帰を起こさない。
+
+# 実装対象
+1. **DEBT-003の解消**: generateContractSuggestion()のmodel_nameデフォルト値を
+   'claude-3-5-sonnet-20241022'から、実態に即した値（例: provider='rule_engine',
+   model_name='contract-extractor-v1'）に修正する。将来LLMベースの抽出に切り替える際に
+   provider='anthropic'等へ変更できる構造は維持する。
+2. **DEBT-002の解消**: suggested_fields.*.confidence および confidenceScore に対し、
+   共通スキーマ（Zod等）で0〜1の範囲をruntime validationする。範囲外の値が渡された場合は
+   保存前にエラーとする。
+3. 契約書アップロードAPI: document_category='contract'でattachmentsに登録された文書に対し、
+   AIゲートウェイでcontract term抽出を実行し、ai_suggestionsに
+   target_type='contract'（対象のcontracts.idがまだ存在しない場合は一時的にattachment_id等で
+   紐付ける設計とする）として保存するエンドポイントを実装する。
+4. 人間確認UI: 抽出された suggested_fields（契約期間・金額・自動更新条項・相手先名等）を
+   フィールドごとにconfidenceとともに表示し、人間が値を確認・修正した上で「確定」操作を行うと、
+   その内容でcontracts（P1-T1のCRUD API）にdraftレコードを作成/更新するフローを実装する。
+   この「確定」操作は既存のcontracts CRUD APIを呼び出す形とし、AIゲートウェイ側に
+   確定処理の権限を持たせない。
+5. 実DB E2Eテストに、契約書PDFアップロード→AI提案生成→人間確認→contracts確定までの
+   一連のフローを追加する。
+
+# 受け入れ基準（Definition of Done）
+- [ ] DEBT-002: 範囲外のconfidence値（例: 1.5, -0.3）を渡すとAI提案保存時にエラーになることを確認
+- [ ] DEBT-003: 契約書提案のmodel_name/providerが実態（ルールエンジン）を正しく表している
+- [ ] 契約書PDFアップロードからAI提案生成までのフローが動作する
+- [ ] AI提案は人間の確認・確定操作を経ずにcontractsへ書き込まれない
+      （ai_suggestionsサービスがcontractsテーブルを直接更新していないことをコードで確認）
+- [ ] 人間確認画面で修正した値がcontractsのdraftレコードへ正しく反映される
+- [ ] 既存のレシートOCR→科目提案フローに回帰がないことを確認
+- [ ] Phase 0で確立した実DB E2E検証基盤（クリーンDB×verify_schema.py）で、本タスクの
+      新規テストケースを含めて全件PASSすることを確認し、結果を報告に添付する
+- [ ] feature/p1-t2-contract-ai-extraction ブランチにコミット・pushし、比較URLを報告に含める
+      （本計画書0.4節に従う）
+
+# ChatGPTレビュー時の確認観点
+- AIゲートウェイ側のコードが、確認・確定前のcontractsテーブルへの書き込み権限を一切持っていないか
+  （P0-T3で確立した境界がP1-T2でも維持されているか）
+- confidence validationがJSONB保存経路の全箇所（既存OCR経路含む）に一貫して適用されているか
+- model_name/providerの修正が、既存のOCR提案（実際にLLMを呼んでいる場合）の値まで
+  誤って書き換えていないか（契約書向けのルールエンジン経路にのみ適用されているか）
+```
+
+---
+
 ## 3.4 決定事項: ロール・権限の粒度方針
 
 - **方針**: 権限を細分化し、権限外の領域は閲覧も含めて不可とする（deny-by-default）。既存のRLSが「fail-closed（未設定・不一致時は0件返却）」の原則を採っているため、この方針とも整合的。
@@ -783,6 +939,8 @@ attachments（document_category='contract'）を実際に活用する契約書�
 | DEBT-002 | P0-T3 | `suggested_fields.*.confidence` および `confidenceScore` に0〜1の範囲制約がTypeScript型・Zod入力・JSONB内部のいずれでも実行時に保証されていない。DB制約はJSONB内部までは及ばないため、異常値（例: 1.5, -0.3）が保存され得る。共通スキーマに`z.number().min(0).max(1)`等のruntime validationを追加する必要がある。 | MEDIUM | AIゲートウェイ正式化（複数プロバイダ対応）タイミングで対応 | 🔴 未対応 |
 | DEBT-003 | P0-T3 | 契約書条項抽出（`extractContractTerms()`）は現状ルールエンジン（正規表現ベース）だが、`generateContractSuggestion()`の`model_name`デフォルト値が`claude-3-5-sonnet-20241022`になっており、実際にはLLMを呼んでいないのに監査データ上はClaudeが生成したように見える。`provider='rule_engine'`, `model_name='contract-extractor-v1'`等、実態に即した値に修正し、将来的にはAI Provider/Gateway抽象化（Claude/Gemini/OpenAI/Rule Engineを共通payloadで扱う設計）を正式化する。 | MEDIUM（会計SaaSとして監査追跡性に影響） | Phase 1でAI条項抽出を本格実装するタイミングで対応必須（それまでの暫定値として認識しておく） | 🔴 未対応（**P1-T2で必須対応**） |
 | DEBT-004 | P0-T4 | 開発・レビュー環境に`psql`クライアントが存在せず、`npm run db:migrate` / `verify_schema.py`のDB接続を伴う実行（実DB E2E検証）が未実施のまま。SQLの静的な安全性（migration runnerの実行順序等）は確認済みだが、実DBに対する動作確認ができていない。CI環境またはローカル開発環境に`psql`（またはコンテナ経由のPostgreSQLクライアント）を整備し、今後のmigrationタスクで実DB E2E確認を標準化する。 | MEDIUM（開発環境整備） | Phase 1のP1-T1（contractsテーブル実装、実DB検証が必須）着手前に対応推奨 | ✅ 解消（P0-T5、実DB E2E 34/34 PASS確認済み） |
+| DEBT-005 | P1-T1 | ContractsControllerのCRUD/承認申請APIが`TenantAuthGuard`は通しているが、P0-T4で整備した`contract.create/view/edit/approve/terminate`のpermission（RBAC）を明示的にチェックしていない（既存vendor-bills等と同じパターンを踏襲した結果）。`legal_viewer`が閲覧専用のはずが、現状のAPI実装だけでは書き込み系エンドポイントを呼べてしまう可能性がある。 | MEDIUM〜HIGH（権限外操作の防止に直結） | **P1-T3（契約承認ワークフロー統合）着手時に対応必須** | 🔴 未対応 |
+| DEBT-006 | P1-T1-FIX | `is_explicit_auto_approve=true`の0-stepルールと、1ステップ以上の通常承認ルールが同一ルールセット内に混在していても、現状のロジックは自動承認ルールを優先して選択してしまう（この組み合わせ自体を防ぐ制約がない）。承認ルール管理API/UIを実装する際に、「0-step自動承認ルールは他のstepと同一ルールセットに共存させない」という制約を追加する必要がある。 | LOW〜MEDIUM | 承認ルール管理API/UIの実装タイミング（Phase 1後半、または P1-T3の一部として） | 🔴 未対応 |
 
 ---
 
@@ -811,3 +969,6 @@ attachments（document_category='contract'）を実際に活用する契約書�
 | 2.0.0 | DEBT-004解消の方針決定を受け、**P0-T5（開発環境へのpsql整備＋実DB migration E2E確認）を新設**。P1-T1の依存にP0-T5を追加し、Phase 1着手前の必須タスクとして位置付け |
 | 2.1.0 | P0-T5がSO判定REQUEST CHANGES（Docker fallbackがDATABASE_URLを無視し、意図しないDBへ接続するリスク）。フォローアップ指示プロンプト（P0-T5-FIX）を追加し、P0-T5を「要修正・再レビュー待ち」に更新 |
 | 2.2.0 | P0-T5がSO正式PASS（Docker fallback修正確認、実DB E2E 34/34 PASS）。DEBT-004を解消済みに更新、DEBTログにステータス列を追加。マージ指示プロンプト（P0-T5-MERGE）とPhase 0完全クローズのサマリを追加。**Phase 0が全5タスク完了**。P1-T1のDoDに実DB E2E検証（Phase 0で確立した基盤を前提）を必須として追記 |
+| 2.3.0 | P0-T5のmainマージ完了報告を反映（マージコミットb57968a、main上での再検証結果全PASS）。**Phase 0が正式にクローズ**。Phase 1（P1-T1）着手可能な状態に |
+| 2.4.0 | P1-T1がSO判定REQUEST CHANGES（承認ルール未設定時の暗黙自動承認、tenant整合性のDB未保証）。フォローアップ指示プロンプト（P1-T1-FIX）を追加。DEBT-005（RBAC API未強制、P1-T3で対応必須）を記録。Phase 1タスク一覧にステータス列を追加しP1-T1を「要修正・再レビュー待ち」に更新 |
+| 2.5.0 | P1-T1-FIX（コミット48c8f56）がSO判定CONDITIONAL PASS（マージを止める問題なしと判断）。DEBT-006（自動承認ルールと通常ルールの混在防止）を記録。マージ指示プロンプト（P1-T1-MERGE）を追加しP1-T1を完了扱いに更新。**P1-T2（契約書アップロード〜AI条項抽出フロー）の実装指示プロンプトを新規作成**。DEBT-002/DEBT-003の解消をP1-T2のDoDに組み込み |

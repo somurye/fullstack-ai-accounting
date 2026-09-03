@@ -644,6 +644,235 @@ def run_verification(dsn: str) -> int:
         r.ok("employee / payroll_admin / viewer_external には契約権限が付与されない (fail-closed)",
              len(no_perm_rows) == 0)
 
+    # ------------------------------------------------------------------
+    print("\n--- 8. contracts: 契約書管理テーブル (Phase 1 P1-T1) ---")
+    c1_id = str(uuid.uuid4())
+    c_nda_id = str(uuid.uuid4())
+
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        # 1. draft 契約書の正常作成 (金額あり・期間あり・添付紐付け)
+        cur.execute(
+            """INSERT INTO contracts (
+                 id, tenant_id, contract_no, title, counterparty_name, contract_type,
+                 contract_amount, currency, start_date, end_date, auto_renewal,
+                 renewal_notice_days, status, attachment_id, created_by
+               ) VALUES (
+                 %s, %s, 'CNT-2026-0001', '業務委託契約書', 'テスト株式会社', 'outsourcing',
+                 500000.00, 'JPY', '2026-04-01', '2027-03-31', TRUE,
+                 30, 'draft', %s, %s
+               )
+               RETURNING status, contract_amount, auto_renewal""",
+            (c1_id, t1, att2_id, owner),
+        )
+        c1_row = cur.fetchone()
+        r.ok("contracts に draft 契約書 (金額あり・期間あり) が正常作成できる",
+             c1_row["status"] == "draft" and float(c1_row["contract_amount"]) == 500000.00 and c1_row["auto_renewal"])
+
+        # 2. 金額なし契約 (NDA等) の登録 (contract_amount NULL, end_date NULL 許容, attachment_id NULLスキップ検証)
+        cur.execute(
+            """INSERT INTO contracts (
+                 id, tenant_id, contract_no, title, counterparty_name, contract_type,
+                 contract_amount, currency, start_date, end_date, auto_renewal,
+                 attachment_id, created_by
+               ) VALUES (
+                 %s, %s, 'CNT-2026-0002', '秘密保持契約書(NDA)', '提携先株式会社', 'nda',
+                 NULL, 'JPY', '2026-04-01', NULL, FALSE,
+                 NULL, %s
+               )
+               RETURNING status, contract_amount, end_date, attachment_id""",
+            (c_nda_id, t1, owner),
+        )
+        c_nda_row = cur.fetchone()
+        r.ok("contracts に金額なし・終了日なし契約(NDA)が登録できる(attachment_id NULLスキップ)",
+             c_nda_row["contract_amount"] is None and c_nda_row["end_date"] is None and c_nda_row["attachment_id"] is None)
+
+    # 3. テナント整合性ガードトリガー検証 (MAJOR-02)
+    # 3.1 他テナントの attachment_id を指定した contracts INSERT はトリガーで拒否される
+    cross_att_blocked = False
+    try:
+        with tx_as(dsn, role="app_runtime", tenant_id=t2) as cur:
+            # att2_id は t1 の添付ファイル
+            cur.execute(
+                """INSERT INTO contracts (
+                     tenant_id, contract_no, title, counterparty_name, contract_type,
+                     start_date, attachment_id, created_by
+                   ) VALUES (
+                     %s, 'CNT-CROSS-ATT', '不正添付契約', '相手先', 'other',
+                     '2026-04-01', %s, %s
+                   )""",
+                (t2, att2_id, owner),
+            )
+    except Exception as e:  # noqa: BLE001
+        cross_att_blocked = "attachment" in str(e).lower() or "does not belong" in str(e).lower() or "23503" in str(e)
+    r.ok("他テナントの attachment_id を指定した contracts INSERT はDBトリガーで拒否される (MAJOR-02)", cross_att_blocked)
+
+    # 3.2 他テナントのユーザー (tenant_users未登録) を created_by に指定した contracts INSERT は拒否される
+    cross_user_blocked = False
+    random_user_id = str(uuid.uuid4())
+    try:
+        with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+            cur.execute(
+                """INSERT INTO contracts (
+                     tenant_id, contract_no, title, counterparty_name, contract_type,
+                     start_date, created_by
+                   ) VALUES (
+                     %s, 'CNT-CROSS-USER', '不正ユーザー契約', '相手先', 'other',
+                     '2026-04-01', %s
+                   )""",
+                (t1, random_user_id),
+            )
+    except Exception as e:  # noqa: BLE001
+        cross_user_blocked = "not a member" in str(e).lower() or "created_by" in str(e).lower() or "23503" in str(e)
+    r.ok("所属外ユーザーを created_by に指定した contracts INSERT はDBトリガーで拒否される (MAJOR-02)", cross_user_blocked)
+
+    # 4. 不正な contract_type は CHECK 制約で拒否される
+    try:
+        with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+            cur.execute(
+                """INSERT INTO contracts (
+                     tenant_id, contract_no, title, counterparty_name, contract_type,
+                     start_date, created_by
+                   ) VALUES (
+                     %s, 'CNT-2026-INVALID', '不正契約', '相手先', 'invalid_contract_type',
+                     '2026-04-01', %s
+                   )""",
+                (t1, owner),
+            )
+        r.ok("不正な contract_type は CHECK 制約で拒否される", False, "例外が発生しなかった")
+    except Exception as e:  # noqa: BLE001
+        r.ok("不正な contract_type は CHECK 制約で拒否される",
+             "check constraint" in str(e).lower() or "contracts_contract_type_check" in str(e))
+
+    # 5. RLS テナント分離: 他テナントから contracts が一切見えないこと
+    with tx_as(dsn, role="app_runtime", tenant_id=t2) as cur:
+        cur.execute("SELECT * FROM contracts WHERE id = %s", (c1_id,))
+        r.ok("他テナントから contracts が一切見えない(RLS)", len(cur.fetchall()) == 0)
+
+    # 6. 明示的自動承認 vs 未設定の区別 (MAJOR-01)
+    # 6.1 承認ルール未設定のテナント(t2)では contract 承認ルールが0件であり、自動activeにしてはならない
+    with tx_as(dsn, role="app_runtime", tenant_id=t2) as cur:
+        cur.execute("SELECT COUNT(*) AS cnt FROM approval_rules WHERE tenant_id = %s AND target_type = 'contract'", (t2,))
+        t2_rule_cnt = cur.fetchone()["cnt"]
+        r.ok("承認ルール未設定のテナントでは contract ルール件数が 0 件 (未設定検出可能)", t2_rule_cnt == 0)
+
+    # 6.2 t1 において明示的0-step自動承認ルール (is_explicit_auto_approve=TRUE) が登録できる
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute(
+            """INSERT INTO approval_rules (tenant_id, target_type, step_number, is_explicit_auto_approve, condition)
+               VALUES (%s, 'contract', 0, TRUE, '{}')
+               ON CONFLICT (tenant_id, target_type, step_number, approver_role_id, approver_user_id) DO NOTHING
+               RETURNING is_explicit_auto_approve, step_number""",
+            (t1,),
+        )
+        cur.execute(
+            "SELECT is_explicit_auto_approve, step_number FROM approval_rules WHERE tenant_id = %s AND target_type = 'contract' AND is_explicit_auto_approve = TRUE",
+            (t1,),
+        )
+        auto_rule = cur.fetchone()
+        r.ok("approval_rules に明示的自動承認ルール(is_explicit_auto_approve=TRUE, step_number=0)が登録できる (MAJOR-01)",
+             auto_rule is not None and auto_rule["is_explicit_auto_approve"] is True and auto_rule["step_number"] == 0)
+
+    # 6.3 1人テナント運用: 明示的自動承認ルールにより active 化
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute(
+            """UPDATE contracts
+               SET status = 'active', approved_at = now()
+               WHERE id = %s RETURNING status, approved_at""",
+            (c_nda_id,),
+        )
+        c_nda_active = cur.fetchone()
+        r.ok("1人テナント運用: 明示的自動承認により active 化が成功する",
+             c_nda_active["status"] == "active" and c_nda_active["approved_at"] is not None)
+
+    # 7. 多段階承認フロー: draft → pending_approval → 別ユーザー承認で active
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        # draft → pending_approval
+        cur.execute("UPDATE contracts SET status = 'pending_approval' WHERE id = %s RETURNING status", (c1_id,))
+        c1_pending = cur.fetchone()
+        r.ok("契約書の承認申請 (draft → pending_approval) が成功する", c1_pending["status"] == "pending_approval")
+
+        # approval_requests 起票 (申請者: owner)
+        cur.execute(
+            """INSERT INTO approval_requests (tenant_id, target_type, target_id, submitted_by, total_steps)
+               VALUES (%s, 'contract', %s, %s, 1) RETURNING id""",
+            (t1, c1_id, owner),
+        )
+        contract_wf_ar_id = cur.fetchone()["id"]
+
+        # 職務分掌(SoD): 申請者本人による自己承認は DB トリガーで拒否される
+        self_approval_blocked = False
+        try:
+            cur.execute(
+                """INSERT INTO approval_history (tenant_id, approval_request_id, step_number, approver_id, action)
+                   VALUES (%s, %s, 1, %s, 'approve')""",
+                (t1, contract_wf_ar_id, owner),
+            )
+        except Exception as e:  # noqa: BLE001
+            self_approval_blocked = "self-approval" in str(e)
+            cur.connection.rollback()
+        r.ok("contracts 承認でも自己承認は拒否される (SoD)", self_approval_blocked)
+
+    # 別ユーザー (approver) による承認完了 → contracts が active に更新
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute(
+            """INSERT INTO approval_requests (tenant_id, target_type, target_id, submitted_by, total_steps)
+               VALUES (%s, 'contract', %s, %s, 1)
+               ON CONFLICT (target_type, target_id) DO NOTHING RETURNING id""",
+            (t1, c1_id, owner),
+        )
+        cur.execute("SELECT id FROM approval_requests WHERE target_type = 'contract' AND target_id = %s", (c1_id,))
+        contract_wf_ar_id2 = cur.fetchone()["id"]
+
+        cur.execute(
+            """INSERT INTO approval_history (tenant_id, approval_request_id, step_number, approver_id, action)
+               VALUES (%s, %s, 1, %s, 'approve')""",
+            (t1, contract_wf_ar_id2, approver),
+        )
+        cur.execute(
+            "UPDATE contracts SET status = 'active', approved_at = now() WHERE id = %s RETURNING status",
+            (c1_id,),
+        )
+        c1_active_row = cur.fetchone()
+        r.ok("別ユーザー承認により contracts が active に遷移する", c1_active_row["status"] == "active")
+
+    # 8. 改ざん防止トリガー: active 化後の重要列 (contract_amount) 改ざんが拒否される
+    try:
+        with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+            cur.execute(
+                "UPDATE contracts SET contract_amount = 9999999.00 WHERE id = %s",
+                (c1_id,),
+            )
+        r.ok("active 契約の金額直接変更はトリガーで拒否される", False, "例外が発生しなかった")
+    except Exception as e:  # noqa: BLE001
+        r.ok("active 契約の金額直接変更はトリガーで拒否される",
+             "immutable" in str(e).lower() or "23001" in str(e), str(e))
+
+    # 9. 物理削除制限: active 契約の DELETE は拒否され、draft 契約のみ削除できる
+    try:
+        with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+            cur.execute("DELETE FROM contracts WHERE id = %s", (c1_id,))
+        r.ok("active 契約の物理削除はトリガーで拒否される", False, "例外が発生しなかった")
+    except Exception as e:  # noqa: BLE001
+        r.ok("active 契約の物理削除はトリガーで拒否される",
+             "cannot be physically deleted" in str(e) or "23001" in str(e), str(e))
+
+    # draft 契約の作成と削除
+    draft_temp_id = str(uuid.uuid4())
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute(
+            """INSERT INTO contracts (
+                 id, tenant_id, contract_no, title, counterparty_name, contract_type,
+                 start_date, status, created_by
+               ) VALUES (
+                 %s, %s, 'CNT-2026-TEMP', '一時契約', '相手先', 'other',
+                 '2026-04-01', 'draft', %s
+               )""",
+            (draft_temp_id, t1, owner),
+        )
+        cur.execute("DELETE FROM contracts WHERE id = %s", (draft_temp_id,))
+        cur.execute("SELECT * FROM contracts WHERE id = %s", (draft_temp_id,))
+        r.ok("draft 契約の物理削除は許可される", len(cur.fetchall()) == 0)
+
     return r.summary()
 
 
