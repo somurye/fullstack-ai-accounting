@@ -81,6 +81,8 @@ tags:
     description: AI提案の隔離領域
   - name: Dashboard
     description: ダッシュボード集計(KPIサマリー・月次推移・承認待ち・直近アクティビティ)
+  - name: Contracts
+    description: "契約書管理 (Phase 1: 総務・法務)"
 
 security:
   - BearerAuth: []
@@ -2795,6 +2797,143 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AiSuggestionResponse" }
 
+  # ----------------------------------------------------------------------------
+  # Contracts (Phase 1: 総務・法務)
+  # ----------------------------------------------------------------------------
+  /contracts:
+    get:
+      tags: [Contracts]
+      summary: 契約書一覧を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/ContractStatus" }
+        - name: contract_type
+          in: query
+          schema: { $ref: "#/components/schemas/ContractType" }
+        - name: counterparty_name
+          in: query
+          schema: { type: string }
+        - name: start_date_from
+          in: query
+          schema: { type: string, format: date }
+        - name: start_date_to
+          in: query
+          schema: { type: string, format: date }
+        - name: end_date_from
+          in: query
+          schema: { type: string, format: date }
+        - name: end_date_to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: 契約書一覧取得成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContractListResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+    post:
+      tags: [Contracts]
+      summary: 契約書をドラフト作成する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContractCreate" }
+      responses:
+        "201":
+          description: 契約書作成成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContractResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /contracts/{id}:
+    get:
+      tags: [Contracts]
+      summary: 契約書詳細を取得する (添付ファイル・承認履歴含む)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 契約書詳細取得成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContractDetailResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+    put:
+      tags: [Contracts]
+      summary: ドラフト契約書を更新する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ContractUpdate" }
+      responses:
+        "200":
+          description: 契約書更新成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContractResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+    delete:
+      tags: [Contracts]
+      summary: ドラフト契約書を削除する (active後は削除不可)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "204":
+          description: 削除成功
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /contracts/{id}/submit-approval:
+    post:
+      tags: [Contracts]
+      summary: 契約書の承認申請を起票する (1人テナント時は自動承認でactive化)
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      responses:
+        "200":
+          description: 申請成功 (または自動承認成功)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContractResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
 # ==============================================================================
 # COMPONENTS
 # ==============================================================================
@@ -2958,6 +3097,12 @@ components:
     TaxType:
       type: string
       enum: [taxable, non_taxable, exempt, out_of_scope]
+    ContractType:
+      type: string
+      enum: [nda, service, lease, sales, outsourcing, license, employment, other]
+    ContractStatus:
+      type: string
+      enum: [draft, pending_approval, active, rejected, expired, terminated]
 
     # ---- Auth (signup / invite) ----
     SignupRequest:
@@ -4577,4 +4722,117 @@ components:
         data:
           type: array
           items: { $ref: "#/components/schemas/AiSuggestion" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    # ---- Contracts (Phase 1: 総務・法務) ----
+    Contract:
+      type: object
+      required:
+        - id
+        - contract_no
+        - title
+        - counterparty_name
+        - contract_type
+        - currency
+        - start_date
+        - auto_renewal
+        - renewal_notice_days
+        - status
+        - created_by
+        - created_at
+        - updated_at
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        contract_no: { type: string, description: "契約書管理番号 (CNT-YYYY-NNNN)" }
+        title: { type: string, description: "契約書件名・タイトル" }
+        counterparty_name: { type: string, description: "相手先企業/個人名" }
+        contract_type: { $ref: "#/components/schemas/ContractType" }
+        contract_amount: { type: number, nullable: true, description: "契約金額 (NDA等の場合はnull)" }
+        currency: { type: string, minLength: 3, maxLength: 3, default: "JPY" }
+        start_date: { type: string, format: date, description: "契約開始日" }
+        end_date: { type: string, format: date, nullable: true, description: "契約満了日 (定めのない場合はnull)" }
+        auto_renewal: { type: boolean, default: false, description: "自動更新条項の有無" }
+        renewal_notice_days: { type: integer, default: 30, description: "更新拒絶/解約申入期限(日前)" }
+        status: { $ref: "#/components/schemas/ContractStatus" }
+        attachment_id: { type: string, format: uuid, nullable: true, description: "添付された契約書PDFのID" }
+        description: { type: string, nullable: true, description: "契約概要・特記事項" }
+        approved_at: { type: string, format: date-time, nullable: true }
+        created_by: { type: string, format: uuid, readOnly: true }
+        created_at: { type: string, format: date-time, readOnly: true }
+        updated_at: { type: string, format: date-time, readOnly: true }
+
+    ContractDetail:
+      allOf:
+        - $ref: "#/components/schemas/Contract"
+        - type: object
+          required: [approval_history]
+          properties:
+            attachment:
+              type: object
+              nullable: true
+              properties:
+                id: { type: string, format: uuid }
+                file_name: { type: string }
+                mime_type: { type: string }
+                document_category: { type: string }
+            approval_history:
+              type: array
+              items: { $ref: "#/components/schemas/ApprovalHistoryEntry" }
+
+    ContractCreate:
+      type: object
+      required:
+        - title
+        - counterparty_name
+        - contract_type
+        - start_date
+      properties:
+        title: { type: string }
+        counterparty_name: { type: string }
+        contract_type: { $ref: "#/components/schemas/ContractType" }
+        contract_amount: { type: number, nullable: true }
+        currency: { type: string, minLength: 3, maxLength: 3, default: "JPY" }
+        start_date: { type: string, format: date }
+        end_date: { type: string, format: date, nullable: true }
+        auto_renewal: { type: boolean, default: false }
+        renewal_notice_days: { type: integer, default: 30 }
+        attachment_id: { type: string, format: uuid, nullable: true }
+        description: { type: string, nullable: true }
+
+    ContractUpdate:
+      type: object
+      properties:
+        title: { type: string }
+        counterparty_name: { type: string }
+        contract_type: { $ref: "#/components/schemas/ContractType" }
+        contract_amount: { type: number, nullable: true }
+        currency: { type: string, minLength: 3, maxLength: 3 }
+        start_date: { type: string, format: date }
+        end_date: { type: string, format: date, nullable: true }
+        auto_renewal: { type: boolean }
+        renewal_notice_days: { type: integer }
+        attachment_id: { type: string, format: uuid, nullable: true }
+        description: { type: string, nullable: true }
+
+    ContractResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/Contract" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    ContractDetailResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/ContractDetail" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
+    ContractListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Contract" }
         meta: { $ref: "#/components/schemas/Meta" }

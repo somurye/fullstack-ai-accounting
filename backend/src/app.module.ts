@@ -35,6 +35,7 @@ import { PayrollImportsModule } from './modules/payroll-imports/payroll-imports.
 import { ApprovalRequestsModule } from './modules/approval-requests/approval-requests.module';
 import { SettingsModule } from './modules/settings/settings.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
+import { ContractsModule } from './modules/contracts/contracts.module';
 
 /**
  * AppModule
@@ -87,6 +88,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
     ApprovalRequestsModule,
     SettingsModule,
     DashboardModule,
+    ContractsModule,
   ],
   controllers: [],
   providers: [

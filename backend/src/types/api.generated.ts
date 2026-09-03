@@ -5555,6 +5555,249 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/contracts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 契約書一覧を取得する */
+        get: {
+            parameters: {
+                query?: {
+                    page?: components["parameters"]["PageParam"];
+                    page_size?: components["parameters"]["PageSizeParam"];
+                    status?: components["schemas"]["ContractStatus"];
+                    contract_type?: components["schemas"]["ContractType"];
+                    counterparty_name?: string;
+                    start_date_from?: string;
+                    start_date_to?: string;
+                    end_date_from?: string;
+                    end_date_to?: string;
+                };
+                header: {
+                    /** @description 操作対象テナントのUUID。JWTクレームの tenant_id と一致する必要がある。 */
+                    "X-Tenant-ID": components["parameters"]["TenantIdHeader"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 契約書一覧取得成功 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ContractListResponse"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+            };
+        };
+        put?: never;
+        /** 契約書をドラフト作成する */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description 操作対象テナントのUUID。JWTクレームの tenant_id と一致する必要がある。 */
+                    "X-Tenant-ID": components["parameters"]["TenantIdHeader"];
+                    /**
+                     * @description 副作用を伴うPOST操作の冪等性を保証するクライアント生成キー(推奨: UUID)。
+                     *     同一キーでの再送は最初のレスポンスをそのまま返す。
+                     */
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ContractCreate"];
+                };
+            };
+            responses: {
+                /** @description 契約書作成成功 */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ContractResponse"];
+                    };
+                };
+                400: components["responses"]["BadRequest"];
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                422: components["responses"]["UnprocessableEntity"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/contracts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 契約書詳細を取得する (添付ファイル・承認履歴含む) */
+        get: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description 操作対象テナントのUUID。JWTクレームの tenant_id と一致する必要がある。 */
+                    "X-Tenant-ID": components["parameters"]["TenantIdHeader"];
+                };
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 契約書詳細取得成功 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ContractDetailResponse"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                404: components["responses"]["NotFound"];
+            };
+        };
+        /** ドラフト契約書を更新する */
+        put: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description 操作対象テナントのUUID。JWTクレームの tenant_id と一致する必要がある。 */
+                    "X-Tenant-ID": components["parameters"]["TenantIdHeader"];
+                };
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ContractUpdate"];
+                };
+            };
+            responses: {
+                /** @description 契約書更新成功 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ContractResponse"];
+                    };
+                };
+                400: components["responses"]["BadRequest"];
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                404: components["responses"]["NotFound"];
+                409: components["responses"]["Conflict"];
+                422: components["responses"]["UnprocessableEntity"];
+            };
+        };
+        post?: never;
+        /** ドラフト契約書を削除する (active後は削除不可) */
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description 操作対象テナントのUUID。JWTクレームの tenant_id と一致する必要がある。 */
+                    "X-Tenant-ID": components["parameters"]["TenantIdHeader"];
+                };
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 削除成功 */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                404: components["responses"]["NotFound"];
+                409: components["responses"]["Conflict"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/contracts/{id}/submit-approval": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 契約書の承認申請を起票する (1人テナント時は自動承認でactive化) */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description 操作対象テナントのUUID。JWTクレームの tenant_id と一致する必要がある。 */
+                    "X-Tenant-ID": components["parameters"]["TenantIdHeader"];
+                    /**
+                     * @description 副作用を伴うPOST操作の冪等性を保証するクライアント生成キー(推奨: UUID)。
+                     *     同一キーでの再送は最初のレスポンスをそのまま返す。
+                     */
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKeyHeader"];
+                };
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 申請成功 (または自動承認成功) */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ContractResponse"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                404: components["responses"]["NotFound"];
+                409: components["responses"]["Conflict"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -5615,6 +5858,10 @@ export interface components {
         TaxFilingMethod: "general" | "simplified" | "twenty_percent_special";
         /** @enum {string} */
         TaxType: "taxable" | "non_taxable" | "exempt" | "out_of_scope";
+        /** @enum {string} */
+        ContractType: "nda" | "service" | "lease" | "sales" | "outsourcing" | "license" | "employment" | "other";
+        /** @enum {string} */
+        ContractStatus: "draft" | "pending_approval" | "active" | "rejected" | "expired" | "terminated";
         SignupRequest: {
             /** Format: email */
             email: string;
@@ -7139,6 +7386,120 @@ export interface components {
             /** @constant */
             success?: true;
             data?: components["schemas"]["AiSuggestion"][];
+            meta?: components["schemas"]["Meta"];
+        };
+        Contract: {
+            /** Format: uuid */
+            readonly id: string;
+            /** @description 契約書管理番号 (CNT-YYYY-NNNN) */
+            contract_no: string;
+            /** @description 契約書件名・タイトル */
+            title: string;
+            /** @description 相手先企業/個人名 */
+            counterparty_name: string;
+            contract_type: components["schemas"]["ContractType"];
+            /** @description 契約金額 (NDA等の場合はnull) */
+            contract_amount?: number | null;
+            /** @default JPY */
+            currency: string;
+            /**
+             * Format: date
+             * @description 契約開始日
+             */
+            start_date: string;
+            /**
+             * Format: date
+             * @description 契約満了日 (定めのない場合はnull)
+             */
+            end_date?: string | null;
+            /**
+             * @description 自動更新条項の有無
+             * @default false
+             */
+            auto_renewal: boolean;
+            /**
+             * @description 更新拒絶/解約申入期限(日前)
+             * @default 30
+             */
+            renewal_notice_days: number;
+            status: components["schemas"]["ContractStatus"];
+            /**
+             * Format: uuid
+             * @description 添付された契約書PDFのID
+             */
+            attachment_id?: string | null;
+            /** @description 契約概要・特記事項 */
+            description?: string | null;
+            /** Format: date-time */
+            approved_at?: string | null;
+            /** Format: uuid */
+            readonly created_by: string;
+            /** Format: date-time */
+            readonly created_at: string;
+            /** Format: date-time */
+            readonly updated_at: string;
+        };
+        ContractDetail: components["schemas"]["Contract"] & {
+            attachment?: {
+                /** Format: uuid */
+                id?: string;
+                file_name?: string;
+                mime_type?: string;
+                document_category?: string;
+            } | null;
+            approval_history: components["schemas"]["ApprovalHistoryEntry"][];
+        };
+        ContractCreate: {
+            title: string;
+            counterparty_name: string;
+            contract_type: components["schemas"]["ContractType"];
+            contract_amount?: number | null;
+            /** @default JPY */
+            currency: string;
+            /** Format: date */
+            start_date: string;
+            /** Format: date */
+            end_date?: string | null;
+            /** @default false */
+            auto_renewal: boolean;
+            /** @default 30 */
+            renewal_notice_days: number;
+            /** Format: uuid */
+            attachment_id?: string | null;
+            description?: string | null;
+        };
+        ContractUpdate: {
+            title?: string;
+            counterparty_name?: string;
+            contract_type?: components["schemas"]["ContractType"];
+            contract_amount?: number | null;
+            currency?: string;
+            /** Format: date */
+            start_date?: string;
+            /** Format: date */
+            end_date?: string | null;
+            auto_renewal?: boolean;
+            renewal_notice_days?: number;
+            /** Format: uuid */
+            attachment_id?: string | null;
+            description?: string | null;
+        };
+        ContractResponse: {
+            /** @constant */
+            success?: true;
+            data?: components["schemas"]["Contract"];
+            meta?: components["schemas"]["Meta"];
+        };
+        ContractDetailResponse: {
+            /** @constant */
+            success?: true;
+            data?: components["schemas"]["ContractDetail"];
+            meta?: components["schemas"]["Meta"];
+        };
+        ContractListResponse: {
+            /** @constant */
+            success?: true;
+            data?: components["schemas"]["Contract"][];
             meta?: components["schemas"]["Meta"];
         };
     };

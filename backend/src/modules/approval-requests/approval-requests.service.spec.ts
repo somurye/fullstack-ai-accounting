@@ -92,7 +92,9 @@ describe('ApprovalRequestsService', () => {
       mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [] });
       // 4. UPDATE approval_requests SET status = 'approved'
       mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [] });
-      // 5. fetchDetail: approval_requests
+      // 5. UPDATE contracts SET status = 'active'
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [] });
+      // 6. fetchDetail: approval_requests
       mockClient.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [
@@ -212,7 +214,9 @@ describe('ApprovalRequestsService', () => {
       mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [] });
       // 4. UPDATE approval_requests SET status = 'rejected'
       mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [] });
-      // 5. fetchDetail
+      // 5. UPDATE contracts SET status = 'rejected'
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [] });
+      // 6. fetchDetail
       mockClient.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [
