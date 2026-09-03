@@ -497,6 +497,9 @@ def run_verification(dsn: str) -> int:
                 (t1,),
             )
         r.ok("viewer_externalは許可期間内でも書き込み不可(権限レベル)", False, "例外が発生しなかった")
+    except Exception:
+        r.ok("viewer_externalは許可期間内でも書き込み不可(権限レベル)", True)
+
     # ------------------------------------------------------------------
     print("\n--- 6. attachments: document_category 汎用化 (Phase 0 P0-T2) ---")
     att1_id = str(uuid.uuid4())
@@ -542,6 +545,90 @@ def run_verification(dsn: str) -> int:
     with tx_as(dsn, role="app_runtime", tenant_id=t2) as cur:
         cur.execute("SELECT * FROM attachments WHERE id = %s", (att2_id,))
         r.ok("attachments(contract) は他テナントから見えない(RLS)", len(cur.fetchall()) == 0)
+
+    # ------------------------------------------------------------------
+    print("\n--- 7. RBAC: 法務向けロールと契約権限 (Phase 0 P0-T4) ---")
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        # 1. roles テーブルに legal_admin / legal_viewer が登録されている
+        cur.execute("SELECT code, name FROM roles WHERE code IN ('legal_admin', 'legal_viewer')")
+        roles_rows = {r["code"]: r["name"] for r in cur.fetchall()}
+        r.ok("roles テーブルに legal_admin, legal_viewer が登録されている",
+             "legal_admin" in roles_rows and "legal_viewer" in roles_rows)
+
+        # 2. permissions テーブルに contract.* の5権限が登録されている
+        cur.execute("SELECT code FROM permissions WHERE code LIKE 'contract.%'")
+        perm_codes = {r["code"] for r in cur.fetchall()}
+        expected_perms = {'contract.create', 'contract.view', 'contract.edit', 'contract.approve', 'contract.terminate'}
+        r.ok("permissions テーブルに contract.* の全5権限が登録されている",
+             expected_perms.issubset(perm_codes),
+             f"差分: {expected_perms - perm_codes}")
+
+        # 3. legal_admin に contract.* の5権限がすべて紐付いている
+        cur.execute(
+            """SELECT p.code FROM role_permissions rp
+               JOIN roles r ON r.id = rp.role_id
+               JOIN permissions p ON p.id = rp.permission_id
+               WHERE r.code = 'legal_admin'"""
+        )
+        legal_admin_perms = {r["code"] for r in cur.fetchall()}
+        r.ok("legal_admin に contract.* の5権限がすべて紐付いている",
+             expected_perms.issubset(legal_admin_perms))
+
+        # 4. legal_viewer は contract.view のみを持ち、作成・承認権限を持たない
+        cur.execute(
+            """SELECT p.code FROM role_permissions rp
+               JOIN roles r ON r.id = rp.role_id
+               JOIN permissions p ON p.id = rp.permission_id
+               WHERE r.code = 'legal_viewer'"""
+        )
+        legal_viewer_perms = {r["code"] for r in cur.fetchall()}
+        r.ok("legal_viewer は contract.view のみを持ち作成・承認権限を持たない",
+             legal_viewer_perms == {'contract.view'})
+
+        # 5. 既存ロールへの契約権限付与スコープ検証 (MAJOR-01 方針a)
+        # owner: 全契約権限
+        cur.execute(
+            """SELECT p.code FROM role_permissions rp
+               JOIN roles r ON r.id = rp.role_id
+               JOIN permissions p ON p.id = rp.permission_id
+               WHERE r.code = 'owner' AND p.code LIKE 'contract.%'"""
+        )
+        owner_contract_perms = {r["code"] for r in cur.fetchall()}
+        r.ok("owner に契約権限がすべて付与されている",
+             expected_perms.issubset(owner_contract_perms))
+
+        # approver: 閲覧・承認権限 (作成・編集・解約は不可)
+        cur.execute(
+            """SELECT p.code FROM role_permissions rp
+               JOIN roles r ON r.id = rp.role_id
+               JOIN permissions p ON p.id = rp.permission_id
+               WHERE r.code = 'approver' AND p.code LIKE 'contract.%'"""
+        )
+        approver_contract_perms = {r["code"] for r in cur.fetchall()}
+        r.ok("approver は contract.view, contract.approve のみ保持する",
+             approver_contract_perms == {'contract.view', 'contract.approve'})
+
+        # accountant / accounting_manager: 閲覧のみ
+        cur.execute(
+            """SELECT p.code FROM role_permissions rp
+               JOIN roles r ON r.id = rp.role_id
+               JOIN permissions p ON p.id = rp.permission_id
+               WHERE r.code IN ('accountant', 'accounting_manager') AND p.code LIKE 'contract.%'"""
+        )
+        acct_contract_perms = {r["code"] for r in cur.fetchall()}
+        r.ok("accountant / accounting_manager は contract.view のみ保持する",
+             acct_contract_perms == {'contract.view'})
+
+        # employee / payroll_admin / viewer_external: 契約権限なし (fail-closed)
+        cur.execute(
+            """SELECT p.code FROM role_permissions rp
+               JOIN roles r ON r.id = rp.role_id
+               JOIN permissions p ON p.id = rp.permission_id
+               WHERE r.code IN ('employee', 'payroll_admin', 'viewer_external') AND p.code LIKE 'contract.%'"""
+        )
+        no_perm_rows = cur.fetchall()
+        r.ok("employee / payroll_admin / viewer_external には契約権限が付与されない (fail-closed)",
+             len(no_perm_rows) == 0)
 
     return r.summary()
 

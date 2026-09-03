@@ -16,6 +16,8 @@ export const ROLE_CODES = [
   'payroll_admin',
   'viewer_external',
   'system_service',
+  'legal_admin',
+  'legal_viewer',
 ] as const;
 
 export const ROUNDING_RULES = ['floor', 'ceil', 'round'] as const;

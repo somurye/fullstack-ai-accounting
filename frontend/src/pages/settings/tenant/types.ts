@@ -52,4 +52,6 @@ export const ROLE_LABEL: Record<RoleCode, string> = {
   payroll_admin: '給与担当',
   viewer_external: '外部閲覧者(税理士等)',
   system_service: 'システム連携',
+  legal_admin: '法務管理者(契約書管理)',
+  legal_viewer: '法務閲覧者(契約書閲覧)',
 };
