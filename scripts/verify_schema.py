@@ -40,6 +40,7 @@ sql/001_initial_schema_all_in_one.sql の検証スクリプト(Phase 3)
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -56,7 +57,8 @@ except ImportError:
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-SQL_DIR = SCRIPT_DIR.parent / "sql"
+REPO_ROOT = SCRIPT_DIR.parent
+SQL_DIR = REPO_ROOT / "sql"
 
 DOCKER_CONTAINER_NAME = "keiri_kaikei_verify_pg"
 DOCKER_IMAGE = "pgvector/pgvector:pg16"
@@ -924,15 +926,15 @@ def run_verification(dsn: str) -> int:
                )""",
             (att_contract_id, t1, owner),
         )
-        # AI条項抽出提案の隔離保存 (target_id=attachment_id, target_type='contract', model_name='contract-extractor-v1')
+        # AI条項抽出提案の隔離保存 (target_id=attachment_id, target_type='contract', model_name='contract-extractor-v1', provider='rule_engine')
         cur.execute(
             """INSERT INTO ai_suggestions (
                  id, tenant_id, target_type, target_id, suggestion_type,
-                 payload, confidence_score, model_name
+                 payload, confidence_score, model_name, provider
                ) VALUES (
                  %s, %s, 'contract', %s, 'contract_terms',
-                 %s::jsonb, 0.92, 'contract-extractor-v1'
-               ) RETURNING id, model_name, confidence_score""",
+                 %s::jsonb, 0.92, 'contract-extractor-v1', 'rule_engine'
+               ) RETURNING id, model_name, provider, confidence_score""",
             (
                 sug_contract_id,
                 t1,
@@ -943,6 +945,8 @@ def run_verification(dsn: str) -> int:
         saved_sug = cur.fetchone()
         r.ok("契約書提案の model_name が contract-extractor-v1 として保存される (DEBT-003)",
              saved_sug["model_name"] == "contract-extractor-v1")
+        r.ok("契約書提案の provider が rule_engine として保存される (MINOR-01)",
+             saved_sug["provider"] == "rule_engine")
         r.ok("契約書提案の confidence_score が 0〜1 範囲内で保存される",
              float(saved_sug["confidence_score"]) == 0.92)
 
@@ -976,14 +980,23 @@ def run_verification(dsn: str) -> int:
         cur.execute(
             """INSERT INTO ai_suggestions (
                  id, tenant_id, target_type, target_id, suggestion_type,
-                 payload, confidence_score, model_name
+                 payload, confidence_score, model_name, provider
                ) VALUES (
                  %s, %s, 'expense_report', %s, 'ocr',
-                 '{"suggested_account_code":"5000"}'::jsonb, 0.88, 'receipt-ocr-v1'
+                 '{"suggested_account_code":"5000"}'::jsonb, 0.88, 'receipt-ocr-v1', 'rule_engine'
                ) RETURNING id""",
             (ocr_sug_id, t1, str(uuid.uuid4())),
         )
         r.ok("既存のレシートOCR提案フローに回帰がないこと", cur.fetchone() is not None)
+
+    # 6. 【P1-T2-FIX実証】実PDF本文読込〜内容依存条項抽出 E2Eテスト (BLOCKER-01解消の完全証明)
+    backend_dir = os.path.join(REPO_ROOT, "backend")
+    cmd = f"npx ts-node src/scripts/verify-contract-pdf-e2e.ts \"{dsn}\""
+    e2e_run = subprocess.run(cmd, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
+    if e2e_run.returncode != 0:
+        print(f"\n[E2E ERROR STDOUT]:\n{e2e_run.stdout}\n[E2E ERROR STDERR]:\n{e2e_run.stderr}")
+    r.ok("実PDFアップロード〜AI条項抽出E2E: PDF内容依存性(金額別抽出)と白紙PDFエラーハンドリングが動作する (BLOCKER-01)",
+         e2e_run.returncode == 0)
 
     return r.summary()
 

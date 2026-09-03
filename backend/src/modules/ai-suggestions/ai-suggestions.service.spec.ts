@@ -76,6 +76,7 @@ describe('AiSuggestionsService (Phase 0 P0-T3)', () => {
         },
         confidence_score: '0.90',
         model_name: 'contract-extractor-v1',
+        provider: 'rule_engine',
         accepted: null,
         created_at: new Date('2026-09-02T10:00:00Z'),
       };
@@ -90,10 +91,18 @@ describe('AiSuggestionsService (Phase 0 P0-T3)', () => {
 
       expect(mockClient.query).toHaveBeenCalledWith(
         expect.stringContaining('INSERT INTO ai_suggestions'),
-        expect.arrayContaining([tenantId, targetId, expect.stringContaining('"document_type":"contract"'), expect.any(Number), 'contract-extractor-v1']),
+        expect.arrayContaining([
+          tenantId,
+          targetId,
+          expect.stringContaining('"document_type":"contract"'),
+          expect.any(Number),
+          'contract-extractor-v1',
+          'rule_engine',
+        ]),
       );
       expect(result.id).toBe('sug-contract-001');
       expect(result.model_name).toBe('contract-extractor-v1');
+      expect(result.provider).toBe('rule_engine');
     });
   });
 

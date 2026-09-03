@@ -41,3 +41,8 @@ ALTER TABLE ai_suggestions
         'contract_terms',
         'generic_fields'
     ));
+
+-- 3. provider 列の追加 (将来のマルチプロバイダ対応を見据えた明示的保存)
+ALTER TABLE ai_suggestions
+    ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'rule_engine';
+

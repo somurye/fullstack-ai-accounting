@@ -41,6 +41,7 @@ export interface AiSuggestionRow {
   payload: AiSuggestionPayload;
   confidence_score: string | null;
   model_name: string;
+  provider?: string | null;
   accepted: boolean | null;
   created_at: Date;
 }
@@ -54,6 +55,7 @@ export function mapAiSuggestionRow(row: AiSuggestionRow): AiSuggestionDto {
     payload: row.payload,
     confidence_score: row.confidence_score !== null ? Number(row.confidence_score) : null,
     model_name: row.model_name,
+    provider: row.provider ?? 'rule_engine',
     accepted: row.accepted,
     created_at: row.created_at.toISOString(),
   };
@@ -68,6 +70,7 @@ export const AI_SUGGESTION_COLUMNS = `
   payload,
   confidence_score,
   model_name,
+  provider,
   accepted,
   created_at
 `;

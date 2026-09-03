@@ -7432,6 +7432,8 @@ export interface components {
             };
             confidence_score?: number | null;
             model_name?: string;
+            /** @description AIプロバイダ名 (rule_engine, anthropic, openai等) */
+            provider?: string;
             /** @description NULL=未判定 */
             accepted?: boolean | null;
             /** Format: date-time */

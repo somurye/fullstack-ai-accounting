@@ -4736,6 +4736,7 @@ components:
             suggested_account_id: { type: string, format: uuid, nullable: true }
         confidence_score: { type: number, minimum: 0, maximum: 1, nullable: true }
         model_name: { type: string }
+        provider: { type: string, description: "AIプロバイダ名 (rule_engine, anthropic, openai等)" }
         accepted: { type: boolean, nullable: true, description: "NULL=未判定" }
         created_at: { type: string, format: date-time }
     AiSuggestionResponse:
