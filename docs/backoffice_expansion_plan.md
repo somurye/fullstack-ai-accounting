@@ -85,10 +85,11 @@ ChatGPT（SO）は実コードとの差分照合を前提にレビューする�
 
 | タスクID | タスク名 | 概要 | 依存 | ステータス |
 |----------|----------|------|------|-----------|
-| P0-T1 | `approval_rules`/`approval_requests`のtarget_type拡張 | `contract`, `purchase_request`等を新たなtarget_typeとして受け入れられるようENUM/CHECK制約とルールエンジンを拡張 | なし | ✅ SO正式PASS（mainマージ完了） |
-| P0-T2 | `attachments`テーブルの汎用化確認・拡張 | 現状レシート/請求書向け前提の列（`counterparty_name`等）が契約書にも自然にフィットするか検証し、必要なら`document_category`列を追加 | なし | ✅ SO正式PASS（mainマージ完了） |
-| P0-T3 | AIゲートウェイの汎用提案インターフェース定義 | OCR/科目提案に限定されている現行の提案スキーマを、「文書種別によらず`suggested_fields: JSON`を返す」形に一般化 | なし | ✅ SO判定CONDITIONAL PASS（mainマージ完了） |
-| P0-T4 | ロール／権限マスタへの新ロール追加 | `legal_admin`, `legal_viewer` ロールおよび `contract.*` 権限をRBACに追加 | なし | 修正コミット完了・SO再レビュー依頼 |
+| P0-T1 | `approval_rules`/`approval_requests`のtarget_type拡張 | `contract`, `purchase_request`等を新たなtarget_typeとして受け入れられるようENUM/CHECK制約とルールエンジンを拡張 | なし | ✅ SO正式PASS（コミット96ffcf4、mainマージ指示済み） |
+| P0-T2 | `attachments`テーブルの汎用化確認・拡張 | 現状レシート/請求書向け前提の列（`counterparty_name`等）が契約書にも自然にフィットするか検証し、必要なら`document_category`列を追加 | なし | ✅ SO正式PASS（コミット6ddd3cb、DEBT-001を記録済み、mainマージ指示済み） |
+| P0-T3 | AIゲートウェイの汎用提案インターフェース定義 | OCR/科目提案に限定されている現行の提案スキーマを、「文書種別によらず`suggested_fields: JSON`を返す」形に一般化 | なし | ✅ SO判定CONDITIONAL PASS（コミットe01384d、DEBT-002/003を記録済み、mainマージ指示済み） |
+| P0-T4 | ロール／権限マスタへの新ロール追加 | `viewer_legal`等、総務・法務向けロールをRBACに追加（既存`viewer_external`と同パターン） | なし | ✅ SO正式PASS（コミット470f2dc、DEBT-004を記録済み、mainマージ指示済み） |
+| P0-T5 | 開発環境へのpsql整備 ＋ 実DB migration E2E確認（DEBT-004対応） | 開発/CI環境にPostgreSQLクライアントを整備し、006〜008bまでの全migrationをクリーンDBに実行して`verify_schema.py`を実DB接続でPASSさせる | P0-T4 | 未着手（**Phase 1着手のブロッカー**） |
 
 ### 2.3 Phase 0 実装指示プロンプト（Gemini向け）
 
@@ -385,6 +386,110 @@ contracts / approval workflow を実装する際には、既存の自己承認�
 
 ---
 
+#### 【フォローアップ指示プロンプト P0-T4-VERIFY】実DB migration実行確認（コード変更なし）
+
+ChatGPT(SO)よりP0-T4-FIXの修正内容自体はCONDITIONAL PASS。残る確認事項は実DB migration実行のみ。
+
+```
+P0-T4-FIXの修正内容そのものはSOとして承認可能です。
+残る確認事項は実DB migrationの実行確認のみです。コード変更は不要です。
+
+以下を実行してください。
+1. npm run db:migrate
+2. npm run db:verify-schema
+
+特に、008a_legal_roles_enum.sql → 008b_legal_roles_setup.sql の順序で正常適用されること、
+そして verify_schema.py のP0-T4検証がPASSすることを確認してください。
+既に適用済みDBの場合は、可能であればクリーンな検証DBでも確認してください。
+
+実行結果と終了ステータスを報告してください。
+SO判定は現在 CONDITIONAL PASS。上記実DB確認がPASSすれば正式PASSとします。
+```
+
+---
+
+#### 【マージ指示プロンプト P0-T4-MERGE】mainへのマージ ＋ Phase 0クローズ
+
+ChatGPT(SO)よりP0-T4が正式PASS（コミット470f2dc）と判定された。実DB E2E未実施はDEBT-004として記録し、Geminiへマージを指示する。
+
+```
+# 指示
+feature/p0-t4-legal-role を main へマージしてください。
+SO(ChatGPT)による正式PASS判定（コミット470f2dc時点）を得ています。
+実DB migration実行（db:migrate / verify_schema.pyのDB接続確認）は開発環境にpsqlクライアントが
+存在しないため未実施ですが、これはDEBT-004として計画書側で追跡することとし、
+今回のマージをブロックするものではありません。
+マージ後、以下を確認し報告してください。
+- main上でBackend/Frontendのテストを再実行して確認
+- マージコミットハッシュ
+- 作業ブランチ feature/p0-t4-legal-role の削除（マージ済み後）
+```
+
+**Phase 0の基盤タスク(P0-T1〜T4)は完了。** ただしPhase 1着手前にDEBT-004（実DB E2E未検証）を解消する方針としたため、**P0-T5（開発環境へのpsql整備）を挟んでからPhase 1へ移行する。**
+
+### Phase 0 → Phase 1 引継ぎ事項
+
+Phase 1着手にあたり、以下を必須確認事項として持ち越す。
+
+1. **SoD/自己承認**: `fn_prevent_self_approval()` が契約承認（`target_type='contract'`）にも確実に適用されることを、P1-T1のcontractsテーブル実装時に検証する（P1-T1プロンプトのDoDに既に反映済み）。
+2. **DEBT-001**（P0-T2）: ファイル保存とDBトランザクションの非原子性。ストレージ本格化まで対応不要。
+3. **DEBT-002 / DEBT-003**（P0-T3）: confidence値のruntime validation未実装、model_nameが実態(ルールエンジン)と乖離。**DEBT-003はP1-T2（契約書AI条項抽出）着手時に対応必須**。
+4. **DEBT-004**（P0-T4）: 開発環境にpsqlクライアントが未整備で実DB E2E検証ができていない。**P0-T5として対応する（下記プロンプト参照）。**
+
+---
+
+#### 【指示プロンプト P0-T5】開発環境へのpsql整備 ＋ 実DB migration E2E確認
+
+```
+# 背景・目的
+これまでのPhase 0タスク（P0-T1〜T4）は、開発/レビュー環境にPostgreSQLクライアント(psql)が
+存在しないため、SQL migrationの実DB接続を伴う実行確認（実DB E2E）ができていなかった
+（DEBT-004）。Phase 1のP1-T1（contractsテーブル新規作成）はステータス遷移トリガー・
+改ざん防止トリガー等、実DBでの動作確認が本質的に重要になるため、着手前にこれを解消する。
+
+# 前提となる既存実装
+- backend/scripts/db-migrate.js（migration runner。ファイルごとに独立psqlプロセスを起動する方式）
+- scripts/verify_schema.py（DB接続を伴うスキーマ検証スクリプト）
+- sql/ 配下の 001〜008b までの全migrationファイル
+
+# やってはいけないこと
+- 本番/共有の環境変数・DB接続情報を変更しない。あくまでローカル/CI向けの検証環境整備に限定する。
+- 既存のCI設定ファイル（あれば）を、他のジョブに影響する形で不用意に書き換えない。
+
+# 実装対象
+1. psqlクライアントの導入方法を整備する。個人開発（Docker前提と推測）であることを踏まえ、
+   以下のいずれかを状況に応じて選択・実装する。
+   a. 既存のdocker-compose（PostgreSQLコンテナ）に対し、ホスト側からも
+      `docker exec -it <postgres_container> psql ...` で接続できることを確認し、
+      db-migrate.js / verify_schema.py がこの経路で実行できるようスクリプトまたは
+      READMEを整備する。
+   b. もしホスト環境に直接psqlクライアントを入れる方が既存ワークフローに合うなら、
+      README（docs/05_deployment_guide.md 等、既存の該当ドキュメント）に
+      OS別のインストール手順を追記する。
+   どちらを選んだかを報告に明記すること。
+2. クリーンな検証用DB（新規docker volumeまたは新規DB）に対し、001から008bまでの
+   全migrationを順に実行し、途中でエラーが出ないことを確認する。
+3. `python scripts/verify_schema.py` をDB接続ありで実行し、これまでのPhase 0タスク
+   （target_type拡張、attachments.document_category、AI suggestion汎用化、legal role）
+   の検証項目が全てPASSすることを確認する。
+4. 今後同様の状況が起きないよう、README等に「migration実装後は必ず実DB E2Eを実行すること」を
+   一文で明記する。
+
+# 受け入れ基準（Definition of Done）
+- [ ] クリーンなDBに対し001〜008bの全migrationが順にエラーなく適用できる
+- [ ] verify_schema.pyがDB接続ありで実行でき、Phase 0の検証項目が全てPASSする
+- [ ] psql実行手順（docker exec経由 or 直接インストール）がREADME等に記録されている
+- [ ] DEBT-004が解消済みとして扱えることを報告に明記する
+- [ ] feature/p0-t5-psql-env-setup ブランチにコミット・pushし、比較URLを報告に含める
+      （本計画書0.4節に従う）
+
+# ChatGPTレビュー時の確認観点
+- 検証手順が再現可能か（他の開発者やCI環境でも同じ手順で実DB E2Eができるか）
+- クリーンDBでの検証が、既存の開発用DBを汚染していないか（別DB/別volumeを使っているか）
+```
+
+---
+
 #### 【フォローアップ指示プロンプト P0-T1-FIX】コミット・プッシュ ＋ SO指摘事項対応
 
 ChatGPT(SO)のP0-T1レビューが「CONDITIONAL PASS」で返ってきたため、以下をGeminiに追加指示する。
@@ -511,7 +616,7 @@ Phase 0で汎用化した承認エンジン・添付ファイル基盤・AIゲ�
 
 | タスクID | タスク名 | 概要 | 依存 |
 |----------|----------|------|------|
-| P1-T1 | `contracts`テーブル設計・実装 | 契約書メタデータ本体（相手先、種別、金額、期間、自動更新有無、ステータス） | P0-T1, P0-T2 |
+| P1-T1 | `contracts`テーブル設計・実装 | 契約書メタデータ本体（相手先、種別、金額、期間、自動更新有無、ステータス） | P0-T1, P0-T2, **P0-T5** |
 | P1-T2 | 契約書アップロード〜AI条項抽出フロー | PDFアップロード→AIゲートウェイでの条項抽出提案→人間確認画面（**要対応: DEBT-003** — model_name/providerを実態に即した値に修正、正式なAI抽出への切替判断を含める） | P0-T3, P1-T1 |
 | P1-T3 | 契約承認ワークフロー統合 | `approval_requests`(target_type='contract')と`contracts`の連携、承認完了で`status`を`active`へ | P0-T1, P1-T1 |
 | P1-T4 | 契約期限アラート・バッチ | 満了/自動更新の一定日数前に通知を生成するバッチワーカー | P1-T1 |
@@ -590,6 +695,7 @@ attachments（document_category='contract'）を実際に活用する契約書�
 | DEBT-001 | P0-T2 | `AttachmentsService.upload()` がファイル実体をディスクへ書き込んだ後にDB transactionを実行しており、DB rollback時に孤児ファイルが残り得る（原子性がない）。MVP・ローカルディスク保存の間は許容するが、S3等のオブジェクトストレージへ移行する際は、DB transaction・object storage・補償処理(transactional outbox等)を含めた整合性設計を正式に行う。 | MEDIUM | Phase 5（統合最適化）またはストレージ本格化タイミングで再評価 |
 | DEBT-002 | P0-T3 | `suggested_fields.*.confidence` および `confidenceScore` に0〜1の範囲制約がTypeScript型・Zod入力・JSONB内部のいずれでも実行時に保証されていない。DB制約はJSONB内部までは及ばないため、異常値（例: 1.5, -0.3）が保存され得る。共通スキーマに`z.number().min(0).max(1)`等のruntime validationを追加する必要がある。 | MEDIUM | AIゲートウェイ正式化（複数プロバイダ対応）タイミングで対応 |
 | DEBT-003 | P0-T3 | 契約書条項抽出（`extractContractTerms()`）は現状ルールエンジン（正規表現ベース）だが、`generateContractSuggestion()`の`model_name`デフォルト値が`claude-3-5-sonnet-20241022`になっており、実際にはLLMを呼んでいないのに監査データ上はClaudeが生成したように見える。`provider='rule_engine'`, `model_name='contract-extractor-v1'`等、実態に即した値に修正し、将来的にはAI Provider/Gateway抽象化（Claude/Gemini/OpenAI/Rule Engineを共通payloadで扱う設計）を正式化する。 | MEDIUM（会計SaaSとして監査追跡性に影響） | Phase 1でAI条項抽出を本格実装するタイミングで対応必須（それまでの暫定値として認識しておく） |
+| DEBT-004 | P0-T4 | 開発・レビュー環境に`psql`クライアントが存在せず、`npm run db:migrate` / `verify_schema.py`のDB接続を伴う実行（実DB E2E検証）が未実施のまま。SQLの静的な安全性（migration runnerの実行順序等）は確認済みだが、実DBに対する動作確認ができていない。CI環境またはローカル開発環境に`psql`（またはコンテナ経由のPostgreSQLクライアント）を整備し、今後のmigrationタスクで実DB E2E確認を標準化する。 | MEDIUM（開発環境整備） | Phase 1のP1-T1（contractsテーブル実装、実DB検証が必須）着手前に対応推奨 |
 
 ---
 
@@ -613,3 +719,6 @@ attachments（document_category='contract'）を実際に活用する契約書�
 | 1.5.0 | P0-T2がSO判定CONDITIONAL PASS（コミット6ddd3cb、追加修正不要）。「既知の技術的負債・フォローアップ事項」セクション(4節)を新設しDEBT-001（ファイル保存とDBトランザクションの非原子性）を記録。マージ指示プロンプト（P0-T2-MERGE）を追加しP0-T2を完了扱いに更新 |
 | 1.6.0 | P0-T3がSO判定CONDITIONAL PASS（コミットe01384d、追加修正不要）。DEBT-002（confidence値のruntime validation未実装）、DEBT-003（model_nameが実態と乖離）を記録。P1-T2にDEBT-003対応必須の注記を追加。マージ指示プロンプト（P0-T3-MERGE）を追加しP0-T3を完了扱いに更新 |
 | 1.7.0 | P0-T4がSO判定REQUEST CHANGES（ENUM追加直後の同一トランザクション使用問題、完了報告と実装の権限矛盾）。フォローアップ指示プロンプト（P0-T4-FIX）を追加し、P0-T4を「要修正・再レビュー待ち」に更新。あわせてP0-T2見出しの欠落を修正（内容自体に変更なし） |
+| 1.8.0 | P0-T4-FIX（コミット1ef636e）がSO判定CONDITIONAL PASS。ENUM分割・既存ロール権限整合の2指摘は解消を確認。残る確認事項（実DB migration実行）に対応するP0-T4-VERIFYプロンプトを追加 |
+| 1.9.0 | P0-T4がSO正式PASS（コミット470f2dc）。実DB E2E未実施をDEBT-004として記録。マージ指示プロンプト（P0-T4-MERGE）とPhase 0→Phase 1の引継ぎ事項サマリを追加し、**Phase 0を全タスク完了**として更新 |
+| 2.0.0 | DEBT-004解消の方針決定を受け、**P0-T5（開発環境へのpsql整備＋実DB migration E2E確認）を新設**。P1-T1の依存にP0-T5を追加し、Phase 1着手前の必須タスクとして位置付け |
