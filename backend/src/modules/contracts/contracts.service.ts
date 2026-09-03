@@ -414,17 +414,29 @@ export class ContractsService {
         );
       }
 
-      // 契約書向けの有効な承認ルールの有無とステップ数を確認
-      const rulesResult = await client.query<{ total_steps: number }>(
-        `SELECT COUNT(*)::int AS total_steps
+      // 契約書向けの有効な承認ルールの取得
+      const rulesResult = await client.query<{
+        step_number: number;
+        is_explicit_auto_approve: boolean;
+      }>(
+        `SELECT step_number, is_explicit_auto_approve
          FROM approval_rules
-         WHERE tenant_id = $1 AND target_type = 'contract' AND is_active = TRUE`,
+         WHERE tenant_id = $1 AND target_type = 'contract' AND is_active = TRUE
+         ORDER BY step_number ASC`,
         [tenantId],
       );
-      const totalSteps = Number(rulesResult.rows[0]?.total_steps ?? 0);
 
-      if (totalSteps === 0) {
-        // 1人テナント / 承認ルール未設定: 自動承認で active 化
+      if (!rulesResult.rowCount || rulesResult.rowCount === 0) {
+        // 承認ルールが未設定の場合はエラー (SoDの偶発的無効化を防止)
+        throw AppException.badRequest(
+          '契約書の承認ルールが設定されていません。承認ルールの設定を行ってください',
+        );
+      }
+
+      // 明示的な0-step自動承認ルール (is_explicit_auto_approve = TRUE) の確認 (1人テナント運用)
+      const autoApproveRule = rulesResult.rows.find((r) => r.is_explicit_auto_approve);
+      if (autoApproveRule) {
+        // 1人テナント向け明示的自動承認: 即座に active 化
         const updateResult = await client.query<ContractRow>(
           `UPDATE contracts c
            SET status = 'active', approved_at = now(), updated_at = now()
@@ -445,7 +457,8 @@ export class ContractsService {
         return activeContract;
       }
 
-      // 承認ステップ >= 1: pending_approval へ遷移し、approval_requests を起票
+      // 承認ステップ >= 1: 最大ステップ数を total_steps として pending_approval へ遷移し起票
+      const totalSteps = Math.max(...rulesResult.rows.map((r) => r.step_number));
       const updateResult = await client.query<ContractRow>(
         `UPDATE contracts c
          SET status = 'pending_approval', updated_at = now()

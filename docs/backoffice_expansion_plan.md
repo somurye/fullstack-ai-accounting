@@ -700,11 +700,11 @@ Phase 0で汎用化した承認エンジン・添付ファイル基盤・AIゲ�
 
 | タスクID | タスク名 | 概要 | 依存 | ステータス |
 |----------|----------|------|------|-----------|
-| P1-T1 | `contracts`テーブル設計・実装 | 契約書メタデータ本体（相手先、種別、金額、期間、自動更新有無、ステータス） | P0-T1, P0-T2, **P0-T5** | 🟡 実装完了・SOレビュー依頼中 |
+| P1-T1 | `contracts`テーブル設計・実装 | 契約書メタデータ本体（相手先、種別、金額、期間、自動更新有無、ステータス） | P0-T1, P0-T2, P0-T5 | ⚠️ SO判定REQUEST CHANGES（ブランチ、修正指示済み・再レビュー待ち） |
 | P1-T2 | 契約書アップロード〜AI条項抽出フロー | PDFアップロード→AIゲートウェイでの条項抽出提案→人間確認画面（**要対応: DEBT-003** — model_name/providerを実態に即した値に修正、正式なAI抽出への切替判断を含める） | P0-T3, P1-T1 | 未着手 |
-| P1-T3 | 契約承認ワークフロー統合 | `approval_requests`(target_type='contract')と`contracts`の連携、承認完了で`status`を`active`へ | P0-T1, P1-T1 | 未着手 |
+| P1-T3 | 契約承認ワークフロー統合 | `approval_requests`(target_type='contract')と`contracts`の連携、承認完了で`status`を`active`へ（**要対応: DEBT-005** — contract permissionのAPI認可強制） | P0-T1, P1-T1 | 未着手 |
 | P1-T4 | 契約期限アラート・バッチ | 満了/自動更新の一定日数前に通知を生成するバッチワーカー | P1-T1 | 未着手 |
-| P1-T5 | 稟議申請（汎用ワークフロー起票UI） | 契約以外の一般的な稟議（购買以外の申請）もこの画面から起票できる汎用フォーム | P0-T1 | 未着手 |
+| P1-T5 | 稟議申請（汎用ワークフロー起票UI） | 契約以外の一般的な稟議（購買以外の申請）もこの画面から起票できる汎用フォーム | P0-T1 | 未着手 |
 | P1-T6 | 契約書全文検索（pgvector活用） | 既存のjournal_entry_embeddingsと同様のパターンで契約書本文をベクトル化し類似契約検索を提供 | P1-T1 | 未着手 |
 
 ### 3.3 Phase 1 実装指示プロンプト（Gemini向け）
@@ -765,6 +765,76 @@ attachments（document_category='contract'）を実際に活用する契約書�
 
 ---
 
+#### 【フォローアップ指示プロンプト P1-T1-FIX】REQUEST CHANGES対応（自動承認の暗黙適用・tenant整合性）
+
+ChatGPT(SO)よりP1-T1が「REQUEST CHANGES」と判定されたため、以下をGeminiに指示する。
+
+```
+# SOレビュー結果：P1-T1 REQUEST CHANGES
+main...feature/p1-t1-contracts-table の実差分（コミットdcfe6f0）を確認した結果、
+現状はマージ不可です。以下2点を修正してください。
+
+# MAJOR-01: 「承認ルールがない」＝「自動承認」になってしまっている
+現状の実装は、contract向けの有効な承認ルールのステップ数が0（totalSteps === 0）の場合に
+即座にactiveとする設計ですが、これは「承認ルールが明示的に0-stepで設定されている」場合と
+「そもそも承認ルールが未設定（テナント管理者が設定を忘れている等）」の場合を区別できていません。
+複数人テナントで承認ルール未設定のまま契約が自動的にactive化されてしまうと、
+意図せずSoDを無効化する経路になります。
+
+## 修正方針
+1. approval_rules（またはcontract向けの承認設定）に、「明示的な自動承認（0-step auto-approve）」
+   であることを表すフラグ（例: is_explicit_auto_approve BOOLEAN）を追加する。
+2. 承認申請（submit-approval）時のロジックを以下のように変更する。
+   - 該当テナント・target_type='contract'の承認ルールが1件も存在しない場合 →
+     エラーを返す（「承認ルールが設定されていません。設定を行ってください」等）。
+     自動的にactiveへ遷移させない。
+   - 承認ルールが存在し、is_explicit_auto_approve=true（0-step）の場合 → 即座にactive
+     （1人テナント運用のユースケースはこちらで担保される）。
+   - 承認ルールが存在し、1ステップ以上の場合 → 従来通りの承認フロー。
+3. 実DB E2Eテストに以下を追加する。
+   - 承認ルール未設定のテナントでcontract承認申請をするとエラーになり、activeにならないこと
+   - 明示的に0-stepルールを設定したテナントでは従来通り即座にactiveになること
+
+# MAJOR-02: tenant_idとFK先（attachment_id / created_by）のtenant整合性がDB未保証
+現状、contracts.tenant_id と attachments.tenant_id（attachment_id経由）、
+contracts.tenant_id と created_byユーザーの所属tenantの整合性は、アプリケーション層の
+SELECTクエリでのみ担保されており、DB制約としては保証されていません。
+このプロジェクトの原則「DB制約/RLSを最終防衛線にする」に沿って、DBレベルでも保証してください。
+
+## 修正方針
+1. CHECK制約では別テーブルを参照できないため、トリガー関数（例:
+   fn_validate_contract_tenant_consistency()）を作成し、contracts への
+   INSERT/UPDATE時に以下を検証してエラーにする。
+   - attachment_id が設定されている場合、参照先attachmentsのtenant_idがcontracts.tenant_idと
+     一致すること
+   - created_byユーザーの所属tenant（既存のuser-tenant関連テーブルを参照）が
+     contracts.tenant_idと一致すること
+2. 実DB E2Eテストに、他テナントのattachment_id / created_byを指定してcontractsへINSERTしようと
+   すると拒否されるケースを追加する。
+
+# 修正不要（今回は仕様確認のみで対応可）
+- draft→terminatedの状態遷移が本当に必要か、報告内で一言、意図した仕様かどうかを確認・明記して
+  ください（不要と判断すれば削除、必要な仕様であれば理由を一言添えてください）。修正は必須ではありません。
+- RBAC API enforcement（contract.*パーミッションのAPI側チェック）は今回のP1-T1では対応不要です。
+  DEBT-005として計画書側で追跡し、P1-T3で対応します。
+
+# 受け入れ基準（Definition of Done）
+- [ ] 承認ルール未設定のテナントでcontract申請時にエラーとなり、自動activeにならないことをテストで確認
+- [ ] 明示的0-step自動承認は引き続き機能する（1人テナント運用を壊さない）
+- [ ] 他テナントのattachment_id / created_byを指定したcontracts INSERTがDBトリガーで拒否される
+- [ ] draft→terminated遷移について意図した仕様か報告に一言明記する
+- [ ] 修正後、クリーンDBで001〜009+今回の追加migrationを実行し、verify_schema.pyで
+      追加テストを含めて全件PASSすることを確認する
+- [ ] feature/p1-t1-contracts-table ブランチに追加コミット・pushし、比較URLを報告に含める
+
+# ChatGPTレビュー時の確認観点
+- 「承認ルール未設定→エラー」への変更が、既存のvendor_bill/expense_report等、Phase 0以前からの
+  承認フローに影響を与えていないか（target_type='contract'に限定した変更になっているか）
+- tenant整合性トリガーが、attachment_idがNULL（契約書PDF未添付）のケースを正しくスキップしているか
+```
+
+---
+
 ## 3.4 決定事項: ロール・権限の粒度方針
 
 - **方針**: 権限を細分化し、権限外の領域は閲覧も含めて不可とする（deny-by-default）。既存のRLSが「fail-closed（未設定・不一致時は0件返却）」の原則を採っているため、この方針とも整合的。
@@ -783,6 +853,7 @@ attachments（document_category='contract'）を実際に活用する契約書�
 | DEBT-002 | P0-T3 | `suggested_fields.*.confidence` および `confidenceScore` に0〜1の範囲制約がTypeScript型・Zod入力・JSONB内部のいずれでも実行時に保証されていない。DB制約はJSONB内部までは及ばないため、異常値（例: 1.5, -0.3）が保存され得る。共通スキーマに`z.number().min(0).max(1)`等のruntime validationを追加する必要がある。 | MEDIUM | AIゲートウェイ正式化（複数プロバイダ対応）タイミングで対応 | 🔴 未対応 |
 | DEBT-003 | P0-T3 | 契約書条項抽出（`extractContractTerms()`）は現状ルールエンジン（正規表現ベース）だが、`generateContractSuggestion()`の`model_name`デフォルト値が`claude-3-5-sonnet-20241022`になっており、実際にはLLMを呼んでいないのに監査データ上はClaudeが生成したように見える。`provider='rule_engine'`, `model_name='contract-extractor-v1'`等、実態に即した値に修正し、将来的にはAI Provider/Gateway抽象化（Claude/Gemini/OpenAI/Rule Engineを共通payloadで扱う設計）を正式化する。 | MEDIUM（会計SaaSとして監査追跡性に影響） | Phase 1でAI条項抽出を本格実装するタイミングで対応必須（それまでの暫定値として認識しておく） | 🔴 未対応（**P1-T2で必須対応**） |
 | DEBT-004 | P0-T4 | 開発・レビュー環境に`psql`クライアントが存在せず、`npm run db:migrate` / `verify_schema.py`のDB接続を伴う実行（実DB E2E検証）が未実施のまま。SQLの静的な安全性（migration runnerの実行順序等）は確認済みだが、実DBに対する動作確認ができていない。CI環境またはローカル開発環境に`psql`（またはコンテナ経由のPostgreSQLクライアント）を整備し、今後のmigrationタスクで実DB E2E確認を標準化する。 | MEDIUM（開発環境整備） | Phase 1のP1-T1（contractsテーブル実装、実DB検証が必須）着手前に対応推奨 | ✅ 解消（P0-T5、実DB E2E 34/34 PASS確認済み） |
+| DEBT-005 | P1-T1 | ContractsControllerのCRUD/承認申請APIが`TenantAuthGuard`は通しているが、P0-T4で整備した`contract.create/view/edit/approve/terminate`のpermission（RBAC）を明示的にチェックしていない（既存vendor-bills等と同じパターンを踏襲した結果）。`legal_viewer`が閲覧専用のはずが、現状のAPI実装だけでは書き込み系エンドポイントを呼べてしまう可能性がある。 | MEDIUM〜HIGH（権限外操作の防止に直結） | **P1-T3（契約承認ワークフロー統合）着手時に対応必須** | 🔴 未対応 |
 
 ---
 
@@ -812,3 +883,4 @@ attachments（document_category='contract'）を実際に活用する契約書�
 | 2.1.0 | P0-T5がSO判定REQUEST CHANGES（Docker fallbackがDATABASE_URLを無視し、意図しないDBへ接続するリスク）。フォローアップ指示プロンプト（P0-T5-FIX）を追加し、P0-T5を「要修正・再レビュー待ち」に更新 |
 | 2.2.0 | P0-T5がSO正式PASS（Docker fallback修正確認、実DB E2E 34/34 PASS）。DEBT-004を解消済みに更新、DEBTログにステータス列を追加。マージ指示プロンプト（P0-T5-MERGE）とPhase 0完全クローズのサマリを追加。**Phase 0が全5タスク完了**。P1-T1のDoDに実DB E2E検証（Phase 0で確立した基盤を前提）を必須として追記 |
 | 2.3.0 | P0-T5のmainマージ完了報告を反映（マージコミットb57968a、main上での再検証結果全PASS）。**Phase 0が正式にクローズ**。Phase 1（P1-T1）着手可能な状態に |
+| 2.4.0 | P1-T1がSO判定REQUEST CHANGES（承認ルール未設定時の暗黙自動承認、tenant整合性のDB未保証）。フォローアップ指示プロンプト（P1-T1-FIX）を追加。DEBT-005（RBAC API未強制、P1-T3で対応必須）を記録。Phase 1タスク一覧にステータス列を追加しP1-T1を「要修正・再レビュー待ち」に更新 |

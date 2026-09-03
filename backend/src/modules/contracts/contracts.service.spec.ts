@@ -221,10 +221,24 @@ describe('ContractsService', () => {
   });
 
   describe('submitForApproval (1人テナント vs 多段階承認)', () => {
-    it('承認ルール未設定(1人テナント)の場合: 即座にactive(自動承認)となりcontract.auto_approvedが記録される', async () => {
+    it('承認ルール未設定の場合: エラーを返し、自動的にactiveへ遷移しない (SoD偶発的無効化防止)', async () => {
       mockClient.query
         .mockResolvedValueOnce({ rowCount: 1, rows: [sampleContractRow] }) // existing draft
-        .mockResolvedValueOnce({ rows: [{ total_steps: 0 }] }) // rules check (0 steps)
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // rules check (0件 = 未設定)
+
+      await expect(service.submitForApproval(TENANT_ID, USER_ID, CONTRACT_ID)).rejects.toThrow(
+        AppException,
+      );
+      expect(mockAuditLogs.record).not.toHaveBeenCalled();
+    });
+
+    it('明示的自動承認ルール(is_explicit_auto_approve=true)の場合: 即座にactive(自動承認)となりcontract.auto_approvedが記録される', async () => {
+      mockClient.query
+        .mockResolvedValueOnce({ rowCount: 1, rows: [sampleContractRow] }) // existing draft
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ step_number: 0, is_explicit_auto_approve: true }],
+        }) // rules check (明示的自動承認)
         .mockResolvedValueOnce({
           rows: [
             {
@@ -253,7 +267,10 @@ describe('ContractsService', () => {
     it('承認ルール設定済(多段階)の場合: pending_approvalに遷移しapproval_requestsが起票される', async () => {
       mockClient.query
         .mockResolvedValueOnce({ rowCount: 1, rows: [sampleContractRow] }) // existing draft
-        .mockResolvedValueOnce({ rows: [{ total_steps: 1 }] }) // rules check (1 step)
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ step_number: 1, is_explicit_auto_approve: false }],
+        }) // rules check (1 step)
         .mockResolvedValueOnce({
           rows: [{ ...sampleContractRow, status: 'pending_approval' }],
         }) // update returning pending
