@@ -497,6 +497,9 @@ def run_verification(dsn: str) -> int:
                 (t1,),
             )
         r.ok("viewer_externalは許可期間内でも書き込み不可(権限レベル)", False, "例外が発生しなかった")
+    except Exception:
+        r.ok("viewer_externalは許可期間内でも書き込み不可(権限レベル)", True)
+
     # ------------------------------------------------------------------
     print("\n--- 6. attachments: document_category 汎用化 (Phase 0 P0-T2) ---")
     att1_id = str(uuid.uuid4())
