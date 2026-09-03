@@ -703,8 +703,8 @@ Phase 0で汎用化した承認エンジン・添付ファイル基盤・AIゲ�
 |----------|----------|------|------|-----------|
 | P1-T1 | `contracts`テーブル設計・実装 | 契約書メタデータ本体（相手先、種別、金額、期間、自動更新有無、ステータス） | P0-T1, P0-T2, P0-T5 | ✅ SO判定CONDITIONAL PASS（コミット48c8f56、DEBT-006を記録済み、mainマージ指示済み） |
 | P1-T2 | 契約書アップロード〜AI条項抽出フロー | PDFアップロード→AIゲートウェイでの条項抽出提案→人間確認画面（DEBT-002/DEBT-003をあわせて解消） | P0-T3, P1-T1 | ✅ SO正式PASS（コミット923ccfd修正後、実PDF内容依存性をE2Eで確認済み、DEBT-007を記録・mainマージ指示済み） |
-| P1-T3 | 契約RBAC強制・AI提案ライフサイクル正式化 | ~~承認ワークフロー統合~~（P1-T1で先行実装済みのため統合済み）→ **スコープ変更**: (1) DEBT-005: contract permissionのAPI認可強制、(2) `ai_suggestions.target_type/target_id`のライフサイクル正式決定、(3) 状態遷移・SoDの最終確認 | P0-T1, P0-T4, P1-T1, P1-T2 | ✅ P1-T3-FIX対応完了・実DB E2E全67項目PASS（並行INSERT耐性・tenant整合性検証済み、コミット追加・SO再レビュー待ち） |
-| P1-T4 | 契約期限アラート・バッチ | 満了/自動更新の一定日数前に通知を生成するバッチワーカー | P1-T1 | 未着手 |
+| P1-T3 | 契約RBAC強制・AI提案ライフサイクル正式化 | ~~承認ワークフロー統合~~（P1-T1で先行実装済みのため統合済み）→ **スコープ変更**: (1) DEBT-005: contract permissionのAPI認可強制、(2) `ai_suggestions.target_type/target_id`のライフサイクル正式決定、(3) 状態遷移・SoDの最終確認 | P0-T1, P0-T4, P1-T1, P1-T2 | ✅ SO正式PASS（コミットb9a948d、DEBT-005/006/source_suggestion_id整合性を解消、DEBT-008を記録、mainマージ指示済み） |
+| P1-T4 | 契約期限アラート・バッチ | 満了/自動更新の一定日数前に通知を生成するバッチワーカー | P1-T1 | プロンプト発行済み・着手待ち（プロジェクト初の全テナント横断バッチ） |
 | P1-T5 | 稟議申請（汎用ワークフロー起票UI） | 契約以外の一般的な稟議（購買以外の申請）もこの画面から起票できる汎用フォーム | P0-T1 | 未着手 |
 | P1-T6 | 契約書全文検索（pgvector活用） | 既存のjournal_entry_embeddingsと同様のパターンで契約書本文をベクトル化し類似契約検索を提供 | P1-T1 | 未着手 |
 
@@ -1155,6 +1155,91 @@ Tenant Aのcontractに対し、Tenant Bのai_suggestions.idをsource_suggestion_
 
 ---
 
+#### 【マージ指示プロンプト P1-T3-MERGE】mainへのマージ ＋ マージ後の最終E2E
+
+ChatGPT(SO)よりP1-T3-FIXが正式PASS（並行実行耐性・source_suggestion_idのtenant整合性を実DBで確認済み）と判定された。SOの推奨に従い、マージ後のmain上でも最終E2Eを1回実行する。
+
+```
+# 指示
+feature/p1-t3-rbac-and-lifecycle を main へマージしてください。
+SO(ChatGPT)による正式PASS判定を得ています（DEBT-005/006の解消、source_suggestion_idの
+tenant整合性、並行INSERT耐性を実DB E2E 67/67で確認済み）。
+DEBT-008（RBAC静的マップとDBの二重管理）は計画書側で追跡することとし、
+今回のマージをブロックするものではありません。
+マージ後、以下を確認し報告してください。
+- main上でクリーンDBに対しverify_schema.pyを含む実DB E2Eを再実行し、全件PASSを確認する
+  （SOの推奨により、マージ前の検証だけでなくマージ後のmain自体でも最終確認を行う）
+- Backend/Frontendのテストを再実行して確認
+- マージコミットハッシュ
+- 作業ブランチ feature/p1-t3-rbac-and-lifecycle の削除（マージ済み後）
+```
+
+これでP1-T3は完了。次はP1-T4（契約期限アラート・バッチ）へ進む。
+
+---
+
+#### 【指示プロンプト P1-T4】契約期限アラート・バッチ
+
+```
+# 背景・目的
+契約書の満了・自動更新期限が近づいたら、テナントの担当者へ通知する機能を実装する。
+1人テナント運用では、担当者が個別に契約期限を追跡し続けるのは現実的でないため、
+この通知機能は「AIエージェントによる最大効率化」というプロダクトコンセプトの
+重要な一部となる。
+
+# 前提となる既存実装
+- P1-T1: contracts テーブル（end_date, auto_renewal, renewal_notice_days, status等）
+- 既存の audit_logs / RLS / マルチテナント設計全般
+
+# やってはいけないこと
+- バッチ処理が全テナントのデータを横断的に扱う都合上、DBの実行ユーザーでRLSを
+  バイパスする（BYPASSRLS権限を使う、あるいはRLSを一時的に無効化する）ような実装をしない。
+  必ずテナントごとにループし、各テナント処理の冒頭で
+  SET LOCAL app.current_tenant_id = '<tenant_id>' を設定した上でクエリを実行すること
+  （これがこのプロジェクトで初めての「全テナット横断バッチ」なので、RLSの原則を
+  破らない実装パターンをここで確立する）。
+- 通知未達（メール送信失敗等）によってバッチ全体が異常終了し、他テナントの通知処理まで
+  巻き添えにする設計にしない（1テナントの失敗が他テナントに影響しないようにする）。
+
+# 実装対象
+1. notifications テーブルを新規作成する（tenant_id, type, target_type, target_id, title,
+   body, status(unread/read), created_at等）。既存のattachments/approval_requests等と
+   同様にRLS（ENABLE + FORCE）を適用する。
+2. バッチワーカー（@nestjs/scheduleのCron、または既存の実行方式があればそれに合わせる）を実装し、
+   1日1回、以下を行う。
+   - 全テナントをループ
+   - 各テナントについて、SET LOCAL app.current_tenant_id を設定した上で、
+     status='active' の contracts のうち、end_date が
+     (今日 + renewal_notice_days)以内に到達するものを抽出
+   - 該当契約ごとに、まだ同じ内容の未読通知が存在しなければnotificationsへ1件作成
+     （同じ契約に対する重複通知を防ぐ）
+   - auto_renewal=trueの契約は「自動更新されます」、falseの契約は「満了します。更新手続きが
+     必要です」等、内容を分ける
+3. 通知一覧取得API（GET /notifications）と既読化API（PATCH /notifications/:id/read）を実装する。
+4. フロントエンドに簡易的な通知一覧（バッジ表示程度でよい）を追加する。
+
+# 受け入れ基準（Definition of Done）
+- [ ] end_dateがrenewal_notice_days以内に迫ったactive契約に対して通知が生成される
+- [ ] 同じ契約に対して重複通知が作られない
+- [ ] 1テナントのバッチ処理でエラーが発生しても、他テナントの処理が継続することを確認する
+- [ ] 他テナントの通知が一切見えないことをRLSで確認する
+- [ ] バッチ処理がSET LOCAL app.current_tenant_idを経由せずにcontracts/notificationsへ
+      アクセスしていないことをコードで確認できる（RLSバイパスの禁止）
+- [ ] 実DB E2Eで、複数テナント・複数契約（通知対象/対象外が混在するデータ）を用意し、
+      正しいテナントの正しい契約にのみ通知が生成されることを確認する
+- [ ] feature/p1-t4-contract-expiry-alerts ブランチにコミット・pushし、比較URLを報告に含める
+      （本計画書0.4節に従う）
+
+# ChatGPTレビュー時の確認観点
+- これがプロジェクト初の「全テナント横断バッチ」であるため、RLSバイパスに頼らず
+  テナントごとのSET LOCALで処理する設計が本当に一貫しているか、実装の隅々まで確認してほしい
+  （バッチ処理は往々にして「管理者権限で全部見えた方が楽」という誘惑に負けやすい箇所）
+- 通知の重複防止ロジックが、バッチが日次で複数回実行された場合や、リトライされた場合にも
+  正しく機能するか
+```
+
+---
+
 ## 3.4 決定事項: ロール・権限の粒度方針
 
 - **方針**: 権限を細分化し、権限外の領域は閲覧も含めて不可とする（deny-by-default）。既存のRLSが「fail-closed（未設定・不一致時は0件返却）」の原則を採っているため、この方針とも整合的。
@@ -1173,8 +1258,8 @@ Tenant Aのcontractに対し、Tenant Bのai_suggestions.idをsource_suggestion_
 | DEBT-002 | P0-T3 | `suggested_fields.*.confidence` および `confidenceScore` に0〜1の範囲制約がTypeScript型・Zod入力・JSONB内部のいずれでも実行時に保証されていない。DB制約はJSONB内部までは及ばないため、異常値（例: 1.5, -0.3）が保存され得る。共通スキーマに`z.number().min(0).max(1)`等のruntime validationを追加する必要がある。 | MEDIUM | AIゲートウェイ正式化（複数プロバイダ対応）タイミングで対応 | 🔴 未対応 |
 | DEBT-003 | P0-T3 | 契約書条項抽出（`extractContractTerms()`）は現状ルールエンジン（正規表現ベース）だが、`generateContractSuggestion()`の`model_name`デフォルト値が`claude-3-5-sonnet-20241022`になっており、実際にはLLMを呼んでいないのに監査データ上はClaudeが生成したように見える。`provider='rule_engine'`, `model_name='contract-extractor-v1'`等、実態に即した値に修正し、将来的にはAI Provider/Gateway抽象化（Claude/Gemini/OpenAI/Rule Engineを共通payloadで扱う設計）を正式化する。 | MEDIUM（会計SaaSとして監査追跡性に影響） | Phase 1でAI条項抽出を本格実装するタイミングで対応必須（それまでの暫定値として認識しておく） | 🔴 未対応（**P1-T2で必須対応**） |
 | DEBT-004 | P0-T4 | 開発・レビュー環境に`psql`クライアントが存在せず、`npm run db:migrate` / `verify_schema.py`のDB接続を伴う実行（実DB E2E検証）が未実施のまま。SQLの静的な安全性（migration runnerの実行順序等）は確認済みだが、実DBに対する動作確認ができていない。CI環境またはローカル開発環境に`psql`（またはコンテナ経由のPostgreSQLクライアント）を整備し、今後のmigrationタスクで実DB E2E確認を標準化する。 | MEDIUM（開発環境整備） | Phase 1のP1-T1（contractsテーブル実装、実DB検証が必須）着手前に対応推奨 | ✅ 解消（P0-T5、実DB E2E 34/34 PASS確認済み） |
-| DEBT-005 | P1-T1 | ContractsControllerのCRUD/承認申請APIが`TenantAuthGuard`は通しているが、P0-T4で整備した`contract.create/view/edit/approve/terminate`のpermission（RBAC）を明示的にチェックしていない（既存vendor-bills等と同じパターンを踏襲した結果）。`legal_viewer`が閲覧専用のはずが、現状のAPI実装だけでは書き込み系エンドポイントを呼べてしまう可能性がある。 | MEDIUM〜HIGH（権限外操作の防止に直結） | **P1-T3（契約承認ワークフロー統合）着手時に対応必須** | ✅ 解消（PermissionsGuardによるAPI認可強制、実DB E2Eでlegal_viewer拒否を確認） |
-| DEBT-006 | P1-T1-FIX | `is_explicit_auto_approve=true`の0-stepルールと、1ステップ以上の通常承認ルールが同一ルールセット内に混在していても、現状のロジックは自動承認ルールを優先して選択してしまう（この組み合わせ自体を防ぐ制約がない）。承認ルール管理API/UIを実装する際に、「0-step自動承認ルールは他のstepと同一ルールセットに共存させない」という制約を追加する必要がある。 | LOW〜MEDIUM | 承認ルール管理API/UIの実装タイミング（Phase 1後半、または P1-T3の一部として） | ✅ 解消（DBトリガーfn_prevent_auto_approve_mixにadvisory lockを追加し、並行INSERT耐性を保証。実DB並行E2Eで検証済み） |
+| DEBT-005 | P1-T1 | ContractsControllerのCRUD/承認申請APIが`TenantAuthGuard`は通しているが、P0-T4で整備した`contract.create/view/edit/approve/terminate`のpermission（RBAC）を明示的にチェックしていない（既存vendor-bills等と同じパターンを踏襲した結果）。`legal_viewer`が閲覧専用のはずが、現状のAPI実装だけでは書き込み系エンドポイントを呼べてしまう可能性がある。 | MEDIUM〜HIGH（権限外操作の防止に直結） | **P1-T3（契約承認ワークフロー統合）着手時に対応必須** | ✅ 解消（P1-T3、PermissionsGuard導入・Service層でも二重確認済み） |
+| DEBT-006 | P1-T1-FIX | `is_explicit_auto_approve=true`の0-stepルールと、1ステップ以上の通常承認ルールが同一ルールセット内に混在していても、現状のロジックは自動承認ルールを優先して選択してしまう（この組み合わせ自体を防ぐ制約がない）。承認ルール管理API/UIを実装する際に、「0-step自動承認ルールは他のstepと同一ルールセットに共存させない」という制約を追加する必要がある。 | LOW〜MEDIUM | 承認ルール管理API/UIの実装タイミング（Phase 1後半、または P1-T3の一部として） | ✅ 解消（P1-T3-FIX、pg_advisory_xact_lockによる並行実行耐性を実DBで確認済み） |
 | DEBT-007 | P1-T2 | 現在のPDFテキスト抽出は、テキストが埋め込まれたPDFのみに対応しており、スキャン画像PDF・画像のみのPDFは本文抽出不能として400エラーを返す（フォールバックでダミー処理はしない、安全側の設計）。ただし実際の契約書運用ではスキャンPDFが一定割合存在するため、将来的にはOCR経路（文字なしPDF→OCR→抽出）を追加する必要がある。 | LOW（現状はfail-closedで安全、機能制約のみ） | 契約書アップロード運用の実績を見て、スキャンPDF比率が無視できない場合に対応 | 🔴 未対応（意図的な機能制約として現状維持） |
 | DEBT-008 | P1-T3 | `PermissionsGuard`がDBの`role_permissions`テーブルを直接参照せず、静的マップ（ROLE_PERMISSIONS）を独自に保持しており、DB側のRBAC定義とAPI側の権限マップが二重管理になっている。将来DBで新しいroleやpermissionを追加・変更した際に、Guard側の静的マップを更新し忘れる「RBACドリフト」のリスクがある。 | LOW〜MEDIUM（将来の変更時に権限不整合を生むリスク） | RBAC管理API/UIを作る際、またはロール定義の変更頻度が増えたタイミングでDB参照方式へ統一を検討 | 🔴 未対応 |
 
@@ -1211,4 +1296,4 @@ Tenant Aのcontractに対し、Tenant Bのai_suggestions.idをsource_suggestion_
 | 2.6.0 | P1-T2がSO判定REQUEST CHANGES（重大: PDF本文が実読込されず固定テスト文章にフォールバックしていた。テスト56/56 PASSでも機能未達）。フォローアップ指示プロンプト（P1-T2-FIX）を追加。0.4節に「テストPASSは実動作の証明にならない」教訓を追記 |
 | 2.7.0 | P1-T2-FIXが正式PASS（実PDF内容依存性をE2Eで確認、providerフィールド実装済み）。DEBT-007（スキャンPDF/OCR未対応、意図的な制約として現状維持）を記録。マージ指示プロンプト（P1-T2-MERGE）を追加しP1-T2を完了扱いに更新。**P1-T3のスコープを見直し**（承認ワークフロー統合はP1-T1で先行達成済みのため、DEBT-005のRBAC強制・ai_suggestionsのライフサイクル正式化・DEBT-006対応に再定義し、実装指示プロンプトを新規作成） |
 | 2.8.0 | P1-T3がSO判定REQUEST CHANGES（DEBT-006トリガーの同時実行耐性の欠如、source_suggestion_idのtenant整合性がDB未保証）。フォローアップ指示プロンプト（P1-T3-FIX）を追加。DEBT-008（RBAC静的マップとDBの二重管理）を記録 |
-| 2.9.0 | P1-T3-FIX対応完了。BLOCKER-01（fn_prevent_auto_approve_mixにadvisory lock導入＋マルチスレッド並行INSERT E2Eテスト）およびBLOCKER-02（fn_validate_contract_tenant_consistencyにsource_suggestion_idのtenant整合性検証追加＋越境INSERT拒否E2Eテスト）を解消。実DB E2E全67項目PASS確認 |
+| 2.9.0 | P1-T3-FIXが正式PASS（並行実行耐性をpg_advisory_xact_lockで実装、source_suggestion_idのtenant整合性トリガーを追加、実DB E2E 67/67）。DEBT-005/DEBT-006を解消済みに更新。マージ指示プロンプト（P1-T3-MERGE、マージ後の最終E2E含む）を追加しP1-T3を完了扱いに更新。**P1-T4（契約期限アラート・バッチ）の実装指示プロンプトを新規作成**（プロジェクト初の全テナント横断バッチとして、RLSバイパス禁止・テナントごとのSET LOCALを明示的に指示） |
