@@ -10,7 +10,9 @@ import {
 } from '@nestjs/common';
 import { z } from 'zod';
 import { RequestContext } from '../../common/context/request-context';
+import { RequirePermissions } from '../../common/decorators/permissions.decorator';
 import { AppException } from '../../common/exceptions/app.exception';
+import { PermissionsGuard } from '../../common/guards/permissions.guard';
 import { TenantAuthGuard } from '../../common/guards/tenant-auth.guard';
 import { successEnvelope } from '../../common/http/envelope';
 import { parseWithZod } from '../../common/validation/zod-parse';
@@ -21,7 +23,7 @@ import { ContractExpiryAlertService } from './contract-expiry-alert.service';
 const idParamSchema = z.string().uuid('idはUUID形式で指定してください');
 
 @Controller('notifications')
-@UseGuards(TenantAuthGuard)
+@UseGuards(TenantAuthGuard, PermissionsGuard)
 export class NotificationsController {
   constructor(
     private readonly notificationsService: NotificationsService,
@@ -51,16 +53,19 @@ export class NotificationsController {
   }
 
   /**
-   * 契約期限アラートバッチを手動実行する (テスト・運用用)。
+   * 契約期限アラートバッチを手動実行する (全テナント横断管理機能)。
+   * - notification.batch_execute 権限を持つロール (owner のみ) に制限。
+   * - 個別テナントの情報漏洩を防ぐため、集計値のみを返却。
    */
   @Post('run-expiry-batch')
   @HttpCode(200)
+  @RequirePermissions('notification.batch_execute')
   async runExpiryBatch() {
     const result = await this.contractExpiryAlertService.runBatch();
     return successEnvelope({
       processed_tenants: result.processedTenants,
       created_notifications: result.createdNotifications,
-      errors: result.errors.map((e) => `Tenant ${e.tenantId}: ${e.error}`),
+      failed_tenants_count: result.failedTenantsCount,
     });
   }
 

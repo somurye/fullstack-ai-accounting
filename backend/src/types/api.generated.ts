@@ -5975,6 +5975,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
             };
         };
         delete?: never;
@@ -7737,7 +7738,7 @@ export interface components {
             data?: {
                 processed_tenants?: number;
                 created_notifications?: number;
-                errors?: string[];
+                failed_tenants_count?: number;
             };
         };
     };

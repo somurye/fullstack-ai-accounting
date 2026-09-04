@@ -46,7 +46,7 @@ describe('ContractExpiryAlertService', () => {
 
       expect(result.processedTenants).toBe(2);
       expect(result.createdNotifications).toBe(3);
-      expect(result.errors).toHaveLength(0);
+      expect(result.failedTenantsCount).toBe(0);
       expect(service.processTenant).toHaveBeenCalledWith(tenant1);
       expect(service.processTenant).toHaveBeenCalledWith(tenant2);
     });
@@ -67,9 +67,7 @@ describe('ContractExpiryAlertService', () => {
 
       expect(result.processedTenants).toBe(2);
       expect(result.createdNotifications).toBe(1);
-      expect(result.errors).toHaveLength(1);
-      expect(result.errors[0].tenantId).toBe(tenant1);
-      expect(result.errors[0].error).toContain('DB connection timeout');
+      expect(result.failedTenantsCount).toBe(1);
       expect(service.processTenant).toHaveBeenCalledWith(tenant2);
     });
   });

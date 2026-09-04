@@ -704,7 +704,7 @@ Phase 0で汎用化した承認エンジン・添付ファイル基盤・AIゲ�
 | P1-T1 | `contracts`テーブル設計・実装 | 契約書メタデータ本体（相手先、種別、金額、期間、自動更新有無、ステータス） | P0-T1, P0-T2, P0-T5 | ✅ SO判定CONDITIONAL PASS（コミット48c8f56、DEBT-006を記録済み、mainマージ指示済み） |
 | P1-T2 | 契約書アップロード〜AI条項抽出フロー | PDFアップロード→AIゲートウェイでの条項抽出提案→人間確認画面（DEBT-002/DEBT-003をあわせて解消） | P0-T3, P1-T1 | ✅ SO正式PASS（コミット923ccfd修正後、実PDF内容依存性をE2Eで確認済み、DEBT-007を記録・mainマージ指示済み） |
 | P1-T3 | 契約RBAC強制・AI提案ライフサイクル正式化 | ~~承認ワークフロー統合~~（P1-T1で先行実装済みのため統合済み）→ **スコープ変更**: (1) DEBT-005: contract permissionのAPI認可強制、(2) `ai_suggestions.target_type/target_id`のライフサイクル正式決定、(3) 状態遷移・SoDの最終確認 | P0-T1, P0-T4, P1-T1, P1-T2 | ✅ SO正式PASS（コミットb9a948d、DEBT-005/006/source_suggestion_id整合性を解消、DEBT-008を記録、mainマージ指示済み） |
-| P1-T4 | 契約期限アラート・バッチ | 満了/自動更新の一定日数前に通知を生成するバッチワーカー | P1-T1 | ✅ 実装完了・実DB E2E 71/71全PASS（全テナント横断バッチ・RLS非バイパス・未読重複防止・既読化・障害隔離を実証、コミット・SOレビュー待ち） |
+| P1-T4 | 契約期限アラート・バッチ | 満了/自動更新の一定日数前に通知を生成するバッチワーカー | P1-T1 | ✅ P1-T4-FIX対応完了・実DB E2E 73/73全PASS（notification.batch_execute権限強制・owner限定割当・他ロール403拒否・他テナント情報秘匿化、コミット・SOレビュー待ち） |
 | P1-T5 | 稟議申請（汎用ワークフロー起票UI） | 契約以外の一般的な稟議（購買以外の申請）もこの画面から起票できる汎用フォーム | P0-T1 | 未着手 |
 | P1-T6 | 契約書全文検索（pgvector活用） | 既存のjournal_entry_embeddingsと同様のパターンで契約書本文をベクトル化し類似契約検索を提供 | P1-T1 | 未着手 |
 
@@ -1240,6 +1240,61 @@ DEBT-008（RBAC静的マップとDBの二重管理）は計画書側で追跡す
 
 ---
 
+#### 【フォローアップ指示プロンプト P1-T4-FIX】REQUEST CHANGES対応（全テナント横断バッチAPIの認可欠落）
+
+ChatGPT(SO)よりP1-T4が「REQUEST CHANGES」と判定された。RLS非バイパス設計・DB側重複防止・
+テナント単位の障害隔離は評価されており、修正対象は認可(RBAC)の1点に限定される。
+
+**重要**: これはRLSが破られたわけではない。「RLSは正しく守られているが、そもそも
+『全テナント横断のバッチ処理を誰が起動してよいか』という認可が存在しない」という、
+RLSとは別レイヤーの問題である。
+
+```
+# SOレビュー結果：P1-T4 REQUEST CHANGES
+main...feature/p1-t4-contract-expiry-alerts の実差分（コミット8c5365d）を確認した結果、
+現状はマージ不可です。以下を修正してください。
+
+# BLOCKER-01: run-expiry-batch APIに認可がない
+POST /notifications/run-expiry-batch は @UseGuards(TenantAuthGuard) のみで、
+PermissionsGuard / RequirePermissionsが設定されていません。このAPIは1テナントの
+データだけでなく全有効テナントを横断して処理するため、通常のテナント内CRUD APIとは
+性質が全く異なります。現状はログイン済みの一般ユーザーであれば誰でも呼び出せ、
+かつレスポンスに他テナントのtenantIdを含むエラー情報が含まれてしまいます。
+
+## 修正方針
+1. 新しいpermission notification.batch_execute を定義し、P0-T4のRBAC体系に追加する
+   （既存のcontract.*等と同じ形式で、role_permissionsへの割当も行う）。
+   運用上は、owner等ごく限られたロールにのみ付与することを想定する
+   （具体的にどのロールへ付与したか報告に明記すること）。
+2. run-expiry-batch エンドポイントに @RequirePermissions('notification.batch_execute') を追加する。
+3. レスポンスから他テナントのtenantIdを含む詳細エラー情報を除去する。
+   バッチ実行者への応答は「成功件数」「失敗件数」程度の集計情報に留め、
+   個別テナントの内部情報（tenantId等）を含めない。
+   詳細なエラーはサーバーログにのみ出力する形にする。
+4. notification.batch_execute権限を持たないロール（legal_viewer、accountant等）で
+   このAPIを呼び出すと403になることを確認するテストを追加する。
+
+# 修正不要（今回は記録のみ）
+- notificationsに個人宛（recipient_user_id）の概念がなく、テナント内全員が共有する通知に
+  なっている点は、今回のP1-T4では修正不要です。DEBT-009として計画書側で追跡します。
+
+# 受け入れ基準（Definition of Done）
+- [ ] notification.batch_execute権限を持たないユーザーがrun-expiry-batchを呼ぶと403になる
+- [ ] 権限を持つユーザー（owner等）は従来通りバッチを実行できる
+- [ ] レスポンスに他テナントのtenantId等、内部情報が含まれていない
+- [ ] 既存のRLS非バイパス設計・テナント単位障害隔離に回帰がない
+- [ ] 実DB E2Eで、権限あり/なしそれぞれのケースを確認し、結果を報告に添付する
+- [ ] feature/p1-t4-contract-expiry-alerts ブランチに追加コミット・pushし、比較URLを報告に含める
+
+# ChatGPTレビュー時の確認観点
+- notification.batch_execute権限の割当ロールが、運用上妥当か（例えば全テナントのlegal_admin等、
+  本来1テナント内に閉じるべきロールに誤って付与されていないか）
+- エラーレスポンスの簡略化が、正当な権限者にとって障害調査に必要な情報まで削りすぎていないか
+  （サーバーログ側で十分な情報が追えることを確認する）
+```
+
+---
+
 ## 3.4 決定事項: ロール・権限の粒度方針
 
 - **方針**: 権限を細分化し、権限外の領域は閲覧も含めて不可とする（deny-by-default）。既存のRLSが「fail-closed（未設定・不一致時は0件返却）」の原則を採っているため、この方針とも整合的。
@@ -1262,6 +1317,7 @@ DEBT-008（RBAC静的マップとDBの二重管理）は計画書側で追跡す
 | DEBT-006 | P1-T1-FIX | `is_explicit_auto_approve=true`の0-stepルールと、1ステップ以上の通常承認ルールが同一ルールセット内に混在していても、現状のロジックは自動承認ルールを優先して選択してしまう（この組み合わせ自体を防ぐ制約がない）。承認ルール管理API/UIを実装する際に、「0-step自動承認ルールは他のstepと同一ルールセットに共存させない」という制約を追加する必要がある。 | LOW〜MEDIUM | 承認ルール管理API/UIの実装タイミング（Phase 1後半、または P1-T3の一部として） | ✅ 解消（P1-T3-FIX、pg_advisory_xact_lockによる並行実行耐性を実DBで確認済み） |
 | DEBT-007 | P1-T2 | 現在のPDFテキスト抽出は、テキストが埋め込まれたPDFのみに対応しており、スキャン画像PDF・画像のみのPDFは本文抽出不能として400エラーを返す（フォールバックでダミー処理はしない、安全側の設計）。ただし実際の契約書運用ではスキャンPDFが一定割合存在するため、将来的にはOCR経路（文字なしPDF→OCR→抽出）を追加する必要がある。 | LOW（現状はfail-closedで安全、機能制約のみ） | 契約書アップロード運用の実績を見て、スキャンPDF比率が無視できない場合に対応 | 🔴 未対応（意図的な機能制約として現状維持） |
 | DEBT-008 | P1-T3 | `PermissionsGuard`がDBの`role_permissions`テーブルを直接参照せず、静的マップ（ROLE_PERMISSIONS）を独自に保持しており、DB側のRBAC定義とAPI側の権限マップが二重管理になっている。将来DBで新しいroleやpermissionを追加・変更した際に、Guard側の静的マップを更新し忘れる「RBACドリフト」のリスクがある。 | LOW〜MEDIUM（将来の変更時に権限不整合を生むリスク） | RBAC管理API/UIを作る際、またはロール定義の変更頻度が増えたタイミングでDB参照方式へ統一を検討 | 🔴 未対応 |
+| DEBT-009 | P1-T4 | notificationsテーブルにuser_id/recipient_idが存在せず、契約期限通知は「テナント内の全ユーザーが共有する通知」として実装されている（個人宛ではない）。そのため、あるユーザーが既読にすると同じテナントの他ユーザーからも既読として見える。MVPとしてテナント共通通知に割り切るのは許容範囲だが、将来「契約担当者・承認者・経理・法務」等への個別通知が必要になった場合は、recipient_user_id列の追加とAPIの見直しが必要。 | LOW（MVPとしては仕様として許容） | 個人宛通知の必要性が具体化したタイミングで対応（Phase 1後半〜Phase 2以降） | 🔴 未対応（仕様として現状維持） |
 
 ---
 
@@ -1297,4 +1353,6 @@ DEBT-008（RBAC静的マップとDBの二重管理）は計画書側で追跡す
 | 2.7.0 | P1-T2-FIXが正式PASS（実PDF内容依存性をE2Eで確認、providerフィールド実装済み）。DEBT-007（スキャンPDF/OCR未対応、意図的な制約として現状維持）を記録。マージ指示プロンプト（P1-T2-MERGE）を追加しP1-T2を完了扱いに更新。**P1-T3のスコープを見直し**（承認ワークフロー統合はP1-T1で先行達成済みのため、DEBT-005のRBAC強制・ai_suggestionsのライフサイクル正式化・DEBT-006対応に再定義し、実装指示プロンプトを新規作成） |
 | 2.8.0 | P1-T3がSO判定REQUEST CHANGES（DEBT-006トリガーの同時実行耐性の欠如、source_suggestion_idのtenant整合性がDB未保証）。フォローアップ指示プロンプト（P1-T3-FIX）を追加。DEBT-008（RBAC静的マップとDBの二重管理）を記録 |
 | 2.9.0 | P1-T3-FIXが正式PASS（並行実行耐性をpg_advisory_xact_lockで実装、source_suggestion_idのtenant整合性トリガーを追加、実DB E2E 67/67）。DEBT-005/DEBT-006を解消済みに更新。マージ指示プロンプト（P1-T3-MERGE、マージ後の最終E2E含む）を追加しP1-T3を完了扱いに更新。**P1-T4（契約期限アラート・バッチ）の実装指示プロンプトを新規作成**（プロジェクト初の全テナント横断バッチとして、RLSバイパス禁止・テナントごとのSET LOCALを明示的に指示） |
-| 3.0.0 | P1-T4実装完了。notificationsテーブル新設（RLS ENABLE+FORCE）、全テナント横断バッチワーカー（RLS非バイパス・テナントごとSET LOCAL・障害隔離・auto_renewal文面分岐・未読重複防止）、通知一覧/既読化API、フロントエンド通知バッジ/ドロップダウンを実装。実DB E2E全71項目完全PASS |
+| 3.0.0 | P1-T4がSO判定REQUEST CHANGES（全テナント横断バッチAPIに認可がなく、ログイン済みなら誰でも実行可能。他テナント情報がエラーレスポンスに露出）。フォローアップ指示プロンプト（P1-T4-FIX、notification.batch_execute権限の新設）を追加。DEBT-009（通知が個人宛でなくテナント共有）を記録 |
+| 3.1.0 | P1-T4-FIX対応完了。notification.batch_execute権限をpermissionsに登録しownerロールにのみ割り当て、run-expiry-batch APIにPermissionsGuard認可を強制。レスポンスから他テナント情報・エラー詳細を除去しfailed_tenants_countに集計化。実DB E2Eで403拒否および情報秘匿性を実証、全73/73項目PASS |
+

@@ -1,8 +1,11 @@
 import { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
+import { Reflector } from '@nestjs/core';
 import { DatabaseService } from '../database/database.service';
 import { NotificationsService } from '../modules/notifications/notifications.service';
 import { ContractExpiryAlertService } from '../modules/notifications/contract-expiry-alert.service';
+import { NotificationsController } from '../modules/notifications/notifications.controller';
+import { PermissionsGuard } from '../common/guards/permissions.guard';
 import { NotFoundException } from '@nestjs/common';
 
 async function run() {
@@ -153,11 +156,11 @@ async function run() {
     console.log('--- 1. バッチ初回実行 ---');
     const batchRes1 = await expiryAlertService.runBatch();
     console.log(
-      `  [Batch 1] 処理テナント数: ${batchRes1.processedTenants}, 新規通知数: ${batchRes1.createdNotifications}, エラー: ${batchRes1.errors.length}`,
+      `  [Batch 1] 処理テナント数: ${batchRes1.processedTenants}, 新規通知数: ${batchRes1.createdNotifications}, 失敗テナント数: ${batchRes1.failedTenantsCount}`,
     );
 
-    if (batchRes1.errors.length > 0) {
-      throw new Error(`バッチ初回実行で予期せぬエラー: ${JSON.stringify(batchRes1.errors)}`);
+    if (batchRes1.failedTenantsCount > 0) {
+      throw new Error(`バッチ初回実行で予期せぬエラー: ${batchRes1.failedTenantsCount}件失敗`);
     }
 
     // Tenant 1 の通知確認
@@ -271,16 +274,78 @@ async function run() {
 
     const batchResFault = await expiryAlertService.runBatch();
     console.log(
-      `  [Fault Test] 処理テナント数: ${batchResFault.processedTenants}, エラー数: ${batchResFault.errors.length}`,
+      `  [Fault Test] 処理テナント数: ${batchResFault.processedTenants}, 失敗テナント数: ${batchResFault.failedTenantsCount}`,
     );
 
-    if (batchResFault.errors.length === 0 || !batchResFault.errors.some((e) => e.tenantId === tenant1)) {
-      throw new Error('Tenant 1 で意図的に発生させたエラーが捕捉されていません');
+    if (batchResFault.failedTenantsCount !== 1) {
+      throw new Error(`Tenant 1 で意図的に発生させたエラーが集計されていません: ${batchResFault.failedTenantsCount}`);
     }
     console.log('  [PASS] 1テナントでエラーが発生してもバッチ全体は中断せず、他テナントの処理を継続 (障害隔離達成)');
 
+    console.log('\n--- 5. run-expiry-batch API 認可 (RBAC) & 情報漏洩防止の検証 (P1-T4-FIX) ---');
+    const reflector = new Reflector();
+    const permissionsGuard = new PermissionsGuard(reflector);
+    const notificationsController = new NotificationsController(notificationsService, expiryAlertService);
+
+    function createMockContext(handler: Function, roles: string[], tId: string, uId: string): any {
+      return {
+        getHandler: () => handler,
+        getClass: () => NotificationsController,
+        switchToHttp: () => ({
+          getRequest: () => ({
+            user: {
+              sub: uId,
+              tenant_id: tId,
+              roles,
+            },
+            header: (name: string) => (name.toLowerCase() === 'x-tenant-id' ? tId : undefined),
+          }),
+        }),
+      };
+    }
+
+    // 1. owner ロールによるバッチAPI実行 (認可成功 & レスポンスの秘匿性確認)
+    const ownerCtx = createMockContext(notificationsController.runExpiryBatch, ['owner'], tenant1, user1);
+    const ownerCanActivate = permissionsGuard.canActivate(ownerCtx);
+    if (!ownerCanActivate) {
+      throw new Error('owner ロールが runExpiryBatch の実行を拒否されました');
+    }
+
+    const apiResult = await notificationsController.runExpiryBatch();
+    console.log('  [API Response]:', JSON.stringify(apiResult));
+
+    // レスポンスのキー検証 (他テナントのtenantIdや詳細エラーが漏洩していないこと)
+    const dataKeys = Object.keys(apiResult.data);
+    if (!dataKeys.includes('processed_tenants') || !dataKeys.includes('created_notifications') || !dataKeys.includes('failed_tenants_count')) {
+      throw new Error(`APIレスポンスのキーが不正です: ${JSON.stringify(dataKeys)}`);
+    }
+    if (dataKeys.includes('errors') || JSON.stringify(apiResult).includes(tenant2)) {
+      throw new Error('APIレスポンスに他テナントのtenantIdまたはerrorsが漏洩しています (情報漏洩)');
+    }
+    console.log('  [PASS] owner による run-expiry-batch 実行成功、かつ他テナント情報や詳細エラーの非露出を確認 (情報秘匿)');
+
+    // 2. 権限外ロール (legal_viewer, accountant, legal_admin) による実行試行 -> 403 拒否
+    const unauthorizedRoles = ['legal_viewer', 'accountant', 'legal_admin', 'employee'];
+    for (const role of unauthorizedRoles) {
+      const unauthCtx = createMockContext(notificationsController.runExpiryBatch, [role], tenant1, user1);
+      let blocked = false;
+      try {
+        permissionsGuard.canActivate(unauthCtx);
+      } catch (err: any) {
+        if (err?.getStatus && err.getStatus() === 403) {
+          blocked = true;
+        } else if (err?.errorCode === 'FORBIDDEN') {
+          blocked = true;
+        }
+      }
+      if (!blocked) {
+        throw new Error(`ロール ${role} で runExpiryBatch の実行が許可されてしまいました (403認可欠落)`);
+      }
+      console.log(`  [PASS] ロール ${role} による run-expiry-batch 実行は PermissionsGuard により 403 で拒否された`);
+    }
+
     console.log('\n======================================================');
-    console.log('全 E2E シナリオ PASS: 契約期限アラート・全テナント横断バッチは正常に動作しています');
+    console.log('全 E2E シナリオ PASS: 契約期限アラート・全テナント横断バッチ (認可・秘匿化含む) は正常に動作しています');
     console.log('======================================================');
   } finally {
     client.release();

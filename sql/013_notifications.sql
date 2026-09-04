@@ -64,9 +64,26 @@ CREATE POLICY tenant_isolation_notifications ON notifications
     USING (tenant_id = fn_current_tenant_id())
     WITH CHECK (tenant_id = fn_current_tenant_id());
 
--- ----------------------------------------------------------------------------
--- 権限付与
--- ----------------------------------------------------------------------------
-
 GRANT SELECT, INSERT, UPDATE, DELETE ON notifications TO app_runtime;
 GRANT SELECT ON notifications TO app_readonly_external;
+
+-- ----------------------------------------------------------------------------
+-- RBAC: 全テナント横断バッチ実行パーミッション (P1-T4-FIX)
+-- ----------------------------------------------------------------------------
+
+-- 1. permissions テーブルへパーミッション登録
+INSERT INTO permissions (code, description) VALUES
+    ('notification.batch_execute', '契約期限アラート・全テナント横断バッチの実行権限')
+ON CONFLICT (code) DO NOTHING;
+
+-- 2. role_permissions でロールと権限を紐付け
+-- 全テナント横断バッチはシステム管理者向け特殊機能のため、owner ロールにのみ付与する
+-- (一般ロール、legal_admin, legal_viewer, accountant 等には付与しない)
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id
+FROM roles r
+CROSS JOIN permissions p
+WHERE r.code = 'owner'
+  AND p.code = 'notification.batch_execute'
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+

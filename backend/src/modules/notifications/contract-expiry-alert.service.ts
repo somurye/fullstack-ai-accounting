@@ -5,7 +5,7 @@ import { DatabaseService } from '../../database/database.service';
 export interface ExpiryAlertBatchResult {
   processedTenants: number;
   createdNotifications: number;
-  errors: Array<{ tenantId: string; error: string }>;
+  failedTenantsCount: number;
 }
 
 interface ExpiringContractRow {
@@ -32,7 +32,7 @@ export class ContractExpiryAlertService {
     try {
       const result = await this.runBatch();
       this.logger.log(
-        `Scheduled batch finished: ${result.processedTenants} tenants processed, ${result.createdNotifications} notifications created, ${result.errors.length} errors.`,
+        `Scheduled batch finished: ${result.processedTenants} tenants processed, ${result.createdNotifications} notifications created, ${result.failedTenantsCount} failures.`,
       );
     } catch (err) {
       this.logger.error('Unexpected error in scheduled contract expiry alert batch', (err as Error).stack);
@@ -53,6 +53,10 @@ export class ContractExpiryAlertService {
    * 【障害隔離原則】
    * 1テナントの処理中にDB例外等が発生しても、他テナントの処理を巻き添えにしないよう
    * 各テナントの処理を独立した try-catch で保護する。
+   *
+   * 【情報漏洩防止 (P1-T4-FIX)】
+   * バッチ実行結果の戻り値には個別テナントの tenantId や詳細エラーを含めず、
+   * 成功数・失敗件数のみを返す。個別テナントのエラー詳細はサーバーログにのみ出力する。
    */
   async runBatch(): Promise<ExpiryAlertBatchResult> {
     // 1. テナントマスタから有効なテナント一覧を取得
@@ -61,29 +65,26 @@ export class ContractExpiryAlertService {
     );
 
     let createdNotificationsTotal = 0;
-    const errors: Array<{ tenantId: string; error: string }> = [];
+    let failedTenantsCount = 0;
 
     for (const tenant of tenantRows) {
       try {
         const createdCount = await this.processTenant(tenant.id);
         createdNotificationsTotal += createdCount;
       } catch (err) {
+        failedTenantsCount += 1;
         const errorMessage = (err as Error).message || String(err);
         this.logger.error(
           `Error processing expiry alerts for tenant ${tenant.id}: ${errorMessage}`,
           (err as Error).stack,
         );
-        errors.push({
-          tenantId: tenant.id,
-          error: errorMessage,
-        });
       }
     }
 
     return {
       processedTenants: tenantRows.length,
       createdNotifications: createdNotificationsTotal,
-      errors,
+      failedTenantsCount,
     };
   }
 

@@ -1264,13 +1264,29 @@ def run_verification(dsn: str) -> int:
             duplicate_blocked = True
         r.ok("同一契約・同一種別の未読通知重複INSERTは部分ユニークインデックスで拒否される (多層重複防止)", duplicate_blocked)
 
-    # 4. 【P1-T4実証】契約期限アラート・全テナント横断バッチ E2Eテスト
+    # 4. RBAC: notification.batch_execute 権限の存在と owner 限定割当の確認 (P1-T4-FIX)
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute("SELECT id FROM permissions WHERE code = 'notification.batch_execute'")
+        r.ok("notification.batch_execute パーミッションが登録されている (P1-T4-FIX)", cur.fetchone() is not None)
+
+        cur.execute(
+            """SELECT r.code
+               FROM roles r
+               JOIN role_permissions rp ON r.id = rp.role_id
+               JOIN permissions p ON rp.permission_id = p.id
+               WHERE p.code = 'notification.batch_execute'"""
+        )
+        assigned_roles = [row["code"] for row in cur.fetchall()]
+        r.ok("notification.batch_execute は owner ロールにのみ割り当てられている (P1-T4-FIX)",
+             assigned_roles == ["owner"])
+
+    # 5. 【P1-T4実証】契約期限アラート・全テナント横断バッチ E2Eテスト (認可・情報漏洩防止含む)
     cmd_batch = f"npx ts-node src/scripts/verify-contract-expiry-alerts-e2e.ts \"{dsn}\""
     batch_run = subprocess.run(cmd_batch, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
     if batch_run.returncode != 0:
         err_msg = f"\n[BATCH E2E ERROR STDOUT]:\n{batch_run.stdout}\n[BATCH E2E ERROR STDERR]:\n{batch_run.stderr}"
         print(err_msg.encode("cp932", errors="replace").decode("cp932"))
-    r.ok("契約期限アラートE2E: 全テナント横断バッチ(RLS非バイパス)・auto_renewal文面分岐・未読重複防止・既読化・障害隔離が動作する (P1-T4)",
+    r.ok("契約期限アラートE2E: 全テナント横断バッチ(RLS非バイパス)・認可強制(403)・情報秘匿化・auto_renewal文面分岐・未読重複防止・既読化・障害隔離が動作する (P1-T4-FIX)",
          batch_run.returncode == 0)
 
     return r.summary()
