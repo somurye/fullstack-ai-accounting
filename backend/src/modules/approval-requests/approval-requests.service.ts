@@ -30,7 +30,8 @@ type TargetType =
   | 'expense_report'
   | 'vendor_bill'
   | 'contract'
-  | 'purchase_request';
+  | 'purchase_request'
+  | 'general_request';
 
 /**
  * ApprovalRequestsService
@@ -240,6 +241,23 @@ export class ApprovalRequestsService {
       }
     }
 
+    // 汎用稟議(target_type='general_request')の場合、実行ユーザーが general_request.approve パーミッションを保持していることを検証
+    if (ar.target_type === 'general_request') {
+      const permCheck = await client.query(
+        `SELECT 1
+         FROM user_roles ur
+         JOIN role_permissions rp ON rp.role_id = ur.role_id
+         JOIN permissions p ON p.id = rp.permission_id
+         WHERE ur.tenant_id = $1 AND ur.user_id = $2
+           AND p.code = 'general_request.approve'
+         LIMIT 1`,
+        [tenantId, userId],
+      );
+      if (permCheck.rowCount === 0) {
+        throw AppException.forbidden('稟議の承認・却下を行う権限(general_request.approve)がありません');
+      }
+    }
+
     const result = await client.query(
       `SELECT 1 FROM approval_rules rule
        WHERE rule.tenant_id = $1 AND rule.target_type = $2
@@ -330,6 +348,21 @@ export class ApprovalRequestsService {
         actorUserId: userId,
         action: 'contract.approved',
         targetType: 'contract',
+        targetId,
+        afterData: { status: 'active' },
+      });
+      return;
+    }
+
+    if (targetType === 'general_request') {
+      await client.query(
+        `UPDATE general_requests SET status = 'active', approved_at = now(), updated_at = now() WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, targetId],
+      );
+      await this.auditLogs.record(client, tenantId, {
+        actorUserId: userId,
+        action: 'general_request.approved',
+        targetType: 'general_request',
         targetId,
         afterData: { status: 'active' },
       });
@@ -436,6 +469,21 @@ export class ApprovalRequestsService {
         actorUserId: userId,
         action: 'contract.rejected',
         targetType: 'contract',
+        targetId,
+        afterData: { status: 'rejected' },
+      });
+      return;
+    }
+
+    if (targetType === 'general_request') {
+      await client.query(
+        `UPDATE general_requests SET status = 'rejected', updated_at = now() WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, targetId],
+      );
+      await this.auditLogs.record(client, tenantId, {
+        actorUserId: userId,
+        action: 'general_request.rejected',
+        targetType: 'general_request',
         targetId,
         afterData: { status: 'rejected' },
       });

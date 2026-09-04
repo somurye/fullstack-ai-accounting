@@ -85,6 +85,8 @@ tags:
     description: "契約書管理 (Phase 1: 総務・法務)"
   - name: Notifications
     description: "通知 (Phase 1: P1-T4 契約期限アラート等)"
+  - name: GeneralRequests
+    description: "汎用稟議申請 (Phase 1: P1-T5 汎用ワークフロー)"
 
 security:
   - BearerAuth: []
@@ -3020,6 +3022,130 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /general-requests:
+    get:
+      tags: [GeneralRequests]
+      summary: 汎用稟議一覧を取得する
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [draft, pending_approval, active, rejected]
+          description: ステータス絞り込み
+        - in: query
+          name: category
+          schema: { type: string }
+          description: カテゴリ絞り込み
+        - in: query
+          name: search
+          schema: { type: string }
+          description: タイトル・説明の検索キーワード
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+      responses:
+        "200":
+          description: 稟議一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GeneralRequestListResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [GeneralRequests]
+      summary: 汎用稟議を新規作成する (draft)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateGeneralRequestInput" }
+      responses:
+        "201":
+          description: 作成成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GeneralRequestResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /general-requests/{id}:
+    get:
+      tags: [GeneralRequests]
+      summary: 汎用稟議の詳細を取得する
+      parameters:
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 稟議詳細
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GeneralRequestResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [GeneralRequests]
+      summary: 汎用稟議を更新する (draftのみ)
+      parameters:
+        - $ref: "#/components/parameters/IdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateGeneralRequestInput" }
+      responses:
+        "200":
+          description: 更新成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GeneralRequestResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+    delete:
+      tags: [GeneralRequests]
+      summary: 汎用稟議を削除する (draftのみ物理削除)
+      parameters:
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 削除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { const: true }
+                  data:
+                    type: object
+                    properties:
+                      deleted_id: { type: string, format: uuid }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /general-requests/{id}/submit-approval:
+    post:
+      tags: [GeneralRequests]
+      summary: 汎用稟議の承認を申請する
+      parameters:
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 申請成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GeneralRequestResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
 # ==============================================================================
 # COMPONENTS
 # ==============================================================================
@@ -4349,7 +4475,7 @@ components:
       readOnly: true
       properties:
         id: { type: string, format: uuid }
-        target_type: { type: string, enum: [journal_entry, expense_report, vendor_bill, contract, purchase_request] }
+        target_type: { type: string, enum: [journal_entry, expense_report, vendor_bill, contract, purchase_request, general_request] }
         target_id: { type: string, format: uuid }
         submitted_by: { type: string, format: uuid }
         total_steps: { type: integer }
@@ -4971,4 +5097,73 @@ components:
             processed_tenants: { type: integer }
             created_notifications: { type: integer }
             failed_tenants_count: { type: integer }
+
+    GeneralRequest:
+      type: object
+      required:
+        - id
+        - tenant_id
+        - request_no
+        - title
+        - description
+        - category
+        - status
+        - created_by
+        - created_at
+        - updated_at
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        request_no: { type: string }
+        title: { type: string }
+        description: { type: string }
+        category: { type: string }
+        amount: { type: number, nullable: true }
+        attachment_id: { type: string, format: uuid, nullable: true }
+        status:
+          type: string
+          enum: [draft, pending_approval, active, rejected]
+        created_by: { type: string, format: uuid }
+        approved_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CreateGeneralRequestInput:
+      type: object
+      required:
+        - title
+        - description
+      properties:
+        title: { type: string, minLength: 1 }
+        description: { type: string, minLength: 1 }
+        category: { type: string, default: "general" }
+        amount: { type: number, nullable: true }
+        attachment_id: { type: string, format: uuid, nullable: true }
+
+    UpdateGeneralRequestInput:
+      type: object
+      properties:
+        title: { type: string, minLength: 1 }
+        description: { type: string, minLength: 1 }
+        category: { type: string }
+        amount: { type: number, nullable: true }
+        attachment_id: { type: string, format: uuid, nullable: true }
+
+    GeneralRequestResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/GeneralRequest" }
+
+    GeneralRequestListResponse:
+      type: object
+      required: [success, data, meta]
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/GeneralRequest" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
 

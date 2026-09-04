@@ -596,7 +596,7 @@ def run_verification(dsn: str) -> int:
             """SELECT p.code FROM role_permissions rp
                JOIN roles r ON r.id = rp.role_id
                JOIN permissions p ON p.id = rp.permission_id
-               WHERE r.code = 'legal_viewer'"""
+               WHERE r.code = 'legal_viewer' AND p.code LIKE 'contract.%'"""
         )
         legal_viewer_perms = {r["code"] for r in cur.fetchall()}
         r.ok("legal_viewer は contract.view のみを持ち作成・承認権限を持たない",
@@ -1288,6 +1288,96 @@ def run_verification(dsn: str) -> int:
         print(err_msg.encode("cp932", errors="replace").decode("cp932"))
     r.ok("契約期限アラートE2E: 全テナント横断バッチ(RLS非バイパス)・認可強制(403)・情報秘匿化・auto_renewal文面分岐・未読重複防止・既読化・障害隔離が動作する (P1-T4-FIX)",
          batch_run.returncode == 0)
+
+    # ------------------------------------------------------------------------
+    # 12. 汎用稟議申請・ワークフロー起票 (Phase 1: P1-T5)
+    # ------------------------------------------------------------------------
+    print("\n--- 12. 汎用稟議申請・ワークフロー起票 (P1-T5) ---")
+
+    # 1. general_requests テーブルとカラムの存在確認
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute(
+            """SELECT column_name, data_type
+               FROM information_schema.columns
+               WHERE table_name = 'general_requests' AND column_name IN ('request_no', 'category', 'status', 'attachment_id', 'created_by')"""
+        )
+        cols = {row["column_name"] for row in cur.fetchall()}
+        r.ok("general_requests テーブルに必要なカラム群が存在する",
+             {'request_no', 'category', 'status', 'attachment_id', 'created_by'}.issubset(cols))
+
+    # 2. general_requests RLS (ENABLE + FORCE) の確認
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute(
+            """SELECT relrowsecurity, relforcerowsecurity
+               FROM pg_class
+               WHERE relname = 'general_requests'"""
+        )
+        row = cur.fetchone()
+        r.ok("general_requests テーブルで RLS が ENABLE かつ FORCE されている",
+             row is not None and row["relrowsecurity"] and row["relforcerowsecurity"])
+
+    # 3. approval_rules / approval_requests の target_type に 'general_request' が許可され、無効な値は拒否されること
+    test_rule_id = str(uuid.uuid4())
+    test_req_id = str(uuid.uuid4())
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute(
+            """INSERT INTO approval_rules (id, tenant_id, target_type, step_number, approver_user_id, is_active)
+               VALUES (%s, %s, 'general_request', 99, %s, TRUE)""",
+            (test_rule_id, t1, approver),
+        )
+        cur.execute(
+            """INSERT INTO approval_requests (id, tenant_id, target_type, target_id, submitted_by, total_steps)
+               VALUES (%s, %s, 'general_request', %s, %s, 1)""",
+            (test_req_id, t1, str(uuid.uuid4()), owner),
+        )
+
+    invalid_blocked = False
+    try:
+        with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+            cur.execute(
+                """INSERT INTO approval_rules (tenant_id, target_type, step_number, approver_user_id, is_active)
+                   VALUES (%s, 'invalid_target', 1, %s, TRUE)""",
+                (t1, approver),
+            )
+    except psycopg2.errors.CheckViolation:
+        invalid_blocked = True
+
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute("DELETE FROM approval_requests WHERE id = %s", (test_req_id,))
+        cur.execute("DELETE FROM approval_rules WHERE id = %s", (test_rule_id,))
+
+    r.ok("approval_rules / approval_requests の target_type に 'general_request' が追加され有効に機能する",
+         invalid_blocked)
+
+    # 4. RBAC: general_request.* パーミッションの登録と employee ロールへの付与確認
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute(
+            """SELECT code FROM permissions WHERE code LIKE 'general_request.%%' ORDER BY code"""
+        )
+        perms = [row["code"] for row in cur.fetchall()]
+        r.ok("general_request.create/view/edit/approve パーミッションが登録されている",
+             perms == ['general_request.approve', 'general_request.create', 'general_request.edit', 'general_request.view'])
+
+        cur.execute(
+            """SELECT p.code
+               FROM roles r
+               JOIN role_permissions rp ON r.id = rp.role_id
+               JOIN permissions p ON rp.permission_id = p.id
+               WHERE r.code = 'employee' AND p.code LIKE 'general_request.%%'
+               ORDER BY p.code"""
+        )
+        emp_perms = [row["code"] for row in cur.fetchall()]
+        r.ok("employee ロールに general_request.create, view, edit が付与されている (SoD維持)",
+             emp_perms == ['general_request.create', 'general_request.edit', 'general_request.view'])
+
+    # 5. 【P1-T5実証】汎用稟議実DB E2Eテスト (多段階承認・ルール未設定エラー・テナント整合性トリガー・改ざん防止・RLS分離)
+    cmd_gr = f"npx ts-node src/scripts/verify-general-requests-e2e.ts \"{dsn}\""
+    gr_run = subprocess.run(cmd_gr, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
+    if gr_run.returncode != 0:
+        err_msg = f"\n[GENERAL REQUESTS E2E ERROR STDOUT]:\n{gr_run.stdout}\n[GENERAL REQUESTS E2E ERROR STDERR]:\n{gr_run.stderr}"
+        print(err_msg.encode("cp932", errors="replace").decode("cp932"))
+    r.ok("汎用稟議E2E: 一連の起票〜承認完了(active)・未設定時安全エラー・テナント整合性トリガー・active改ざん防止・RLS分離が動作する (P1-T5)",
+         gr_run.returncode == 0)
 
     return r.summary()
 

@@ -38,6 +38,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ContractsModule } from './modules/contracts/contracts.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
+import { GeneralRequestsModule } from './modules/general-requests/general-requests.module';
 
 /**
  * AppModule
@@ -93,6 +94,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
     ContractsModule,
     ScheduleModule.forRoot(),
     NotificationsModule,
+    GeneralRequestsModule,
   ],
   controllers: [],
   providers: [

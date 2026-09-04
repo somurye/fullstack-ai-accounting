@@ -3,6 +3,7 @@ import {
   BookOpen,
   Building2,
   FileStack,
+  FileText,
   Landmark,
   LayoutDashboard,
   Paperclip,
@@ -74,6 +75,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: '経費・承認 (領域B)',
     items: [
       { label: '経費精算', to: '/expense-reports', icon: Wallet },
+      { label: '稟議申請', to: '/general-requests', icon: FileText },
       { label: '承認待ち', to: '/approval-requests', icon: ScrollText },
     ],
   },

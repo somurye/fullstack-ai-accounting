@@ -5984,6 +5984,228 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/general-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 汎用稟議一覧を取得する */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description ステータス絞り込み */
+                    status?: "draft" | "pending_approval" | "active" | "rejected";
+                    /** @description カテゴリ絞り込み */
+                    category?: string;
+                    /** @description タイトル・説明の検索キーワード */
+                    search?: string;
+                    page?: components["parameters"]["PageParam"];
+                    page_size?: components["parameters"]["PageSizeParam"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 稟議一覧 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["GeneralRequestListResponse"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+            };
+        };
+        put?: never;
+        /** 汎用稟議を新規作成する (draft) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CreateGeneralRequestInput"];
+                };
+            };
+            responses: {
+                /** @description 作成成功 */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["GeneralRequestResponse"];
+                    };
+                };
+                400: components["responses"]["BadRequest"];
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/general-requests/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 汎用稟議の詳細を取得する */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 稟議詳細 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["GeneralRequestResponse"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                404: components["responses"]["NotFound"];
+            };
+        };
+        /** 汎用稟議を更新する (draftのみ) */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["UpdateGeneralRequestInput"];
+                };
+            };
+            responses: {
+                /** @description 更新成功 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["GeneralRequestResponse"];
+                    };
+                };
+                400: components["responses"]["BadRequest"];
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                404: components["responses"]["NotFound"];
+                422: components["responses"]["UnprocessableEntity"];
+            };
+        };
+        post?: never;
+        /** 汎用稟議を削除する (draftのみ物理削除) */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 削除成功 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @constant */
+                            success?: true;
+                            data?: {
+                                /** Format: uuid */
+                                deleted_id?: string;
+                            };
+                        };
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                404: components["responses"]["NotFound"];
+                422: components["responses"]["UnprocessableEntity"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/general-requests/{id}/submit-approval": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 汎用稟議の承認を申請する */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 申請成功 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["GeneralRequestResponse"];
+                    };
+                };
+                400: components["responses"]["BadRequest"];
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                404: components["responses"]["NotFound"];
+                422: components["responses"]["UnprocessableEntity"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -7146,7 +7368,7 @@ export interface components {
             /** Format: uuid */
             id?: string;
             /** @enum {string} */
-            target_type?: "journal_entry" | "expense_report" | "vendor_bill" | "contract" | "purchase_request";
+            target_type?: "journal_entry" | "expense_report" | "vendor_bill" | "contract" | "purchase_request" | "general_request";
             /** Format: uuid */
             target_id?: string;
             /** Format: uuid */
@@ -7740,6 +7962,57 @@ export interface components {
                 created_notifications?: number;
                 failed_tenants_count?: number;
             };
+        };
+        GeneralRequest: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            tenant_id: string;
+            request_no: string;
+            title: string;
+            description: string;
+            category: string;
+            amount?: number | null;
+            /** Format: uuid */
+            attachment_id?: string | null;
+            /** @enum {string} */
+            status: "draft" | "pending_approval" | "active" | "rejected";
+            /** Format: uuid */
+            created_by: string;
+            /** Format: date-time */
+            approved_at?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        CreateGeneralRequestInput: {
+            title: string;
+            description: string;
+            /** @default general */
+            category: string;
+            amount?: number | null;
+            /** Format: uuid */
+            attachment_id?: string | null;
+        };
+        UpdateGeneralRequestInput: {
+            title?: string;
+            description?: string;
+            category?: string;
+            amount?: number | null;
+            /** Format: uuid */
+            attachment_id?: string | null;
+        };
+        GeneralRequestResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["GeneralRequest"];
+        };
+        GeneralRequestListResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["GeneralRequest"][];
+            meta: components["schemas"]["Meta"];
         };
     };
     responses: {

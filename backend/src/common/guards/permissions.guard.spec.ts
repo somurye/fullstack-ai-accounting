@@ -124,4 +124,37 @@ describe('PermissionsGuard (DEBT-005)', () => {
       }
     });
   });
+
+  describe('general_request.* 権限 (P1-T5 汎用稟議)', () => {
+    it('employee ロールは general_request.create, view, edit を許可し、approve は拒否する', () => {
+      const allowedPerms = ['general_request.create', 'general_request.view', 'general_request.edit'];
+      for (const perm of allowedPerms) {
+        jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue([perm]);
+        expect(guard.canActivate(createMockContext(['employee']))).toBe(true);
+      }
+
+      jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue(['general_request.approve']);
+      expect(() => guard.canActivate(createMockContext(['employee']))).toThrow(AppException);
+    });
+
+    it('approver ロールは general_request.view, approve を許可し、create は拒否する', () => {
+      jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue(['general_request.view']);
+      expect(guard.canActivate(createMockContext(['approver']))).toBe(true);
+
+      jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue(['general_request.approve']);
+      expect(guard.canActivate(createMockContext(['approver']))).toBe(true);
+
+      jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue(['general_request.create']);
+      expect(() => guard.canActivate(createMockContext(['approver']))).toThrow(AppException);
+    });
+
+    it('owner ロールはすべての general_request パーミッション (create, view, edit, approve) を許可する', () => {
+      const perms = ['general_request.create', 'general_request.view', 'general_request.edit', 'general_request.approve'];
+      for (const perm of perms) {
+        jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue([perm]);
+        expect(guard.canActivate(createMockContext(['owner']))).toBe(true);
+      }
+    });
+  });
 });
+
