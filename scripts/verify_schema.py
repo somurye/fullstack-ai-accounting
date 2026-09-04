@@ -1216,6 +1216,79 @@ def run_verification(dsn: str) -> int:
     r.ok("契約RBAC強制E2E: legal_viewer書込拒否(403)・閲覧許可・承認権限検証・解約遷移が動作する (DEBT-005)",
          rbac_run.returncode == 0)
 
+    # ------------------------------------------------------------------------
+    # 11. 契約期限アラート・全テナント横断バッチ基盤 (Phase 1: P1-T4)
+    # ------------------------------------------------------------------------
+    print("\n--- 11. 契約期限アラート・全テナント横断バッチ基盤 (P1-T4) ---")
+
+    # 1. notifications テーブル定義の確認
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute(
+            """SELECT column_name, data_type
+               FROM information_schema.columns
+               WHERE table_name = 'notifications' AND column_name = 'status'"""
+        )
+        col = cur.fetchone()
+        r.ok("notifications テーブルが存在し status 列を持つ", col is not None)
+
+    # 2. notifications RLS 設定の確認 (fail-closed)
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        notif_id = str(uuid.uuid4())
+        cur.execute(
+            """INSERT INTO notifications (id, tenant_id, type, target_type, target_id, title, body, status)
+               VALUES (%s, %s, 'test_type', 'contract', %s, 'テスト通知', '本文', 'unread')""",
+            (notif_id, t1, str(uuid.uuid4())),
+        )
+
+    # 他テナント(t2)からは見えないこと (RLS)
+    with tx_as(dsn, role="app_runtime", tenant_id=t2) as cur:
+        cur.execute("SELECT id FROM notifications WHERE id = %s", (notif_id,))
+        r.ok("他テナントの notifications は見えない (RLS完全分離)", cur.fetchone() is None)
+
+    # 3. 未読重複防止用部分ユニークインデックスの確認 (同一未読のINSERT拒否)
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        target_contract_id = str(uuid.uuid4())
+        cur.execute(
+            """INSERT INTO notifications (id, tenant_id, type, target_type, target_id, title, body, status)
+               VALUES (%s, %s, 'contract_expiry', 'contract', %s, '通知1', '本文1', 'unread')""",
+            (str(uuid.uuid4()), t1, target_contract_id),
+        )
+        duplicate_blocked = False
+        try:
+            cur.execute(
+                """INSERT INTO notifications (id, tenant_id, type, target_type, target_id, title, body, status)
+                   VALUES (%s, %s, 'contract_expiry', 'contract', %s, '通知2', '本文2', 'unread')""",
+                (str(uuid.uuid4()), t1, target_contract_id),
+            )
+        except psycopg2.errors.UniqueViolation:
+            duplicate_blocked = True
+        r.ok("同一契約・同一種別の未読通知重複INSERTは部分ユニークインデックスで拒否される (多層重複防止)", duplicate_blocked)
+
+    # 4. RBAC: notification.batch_execute 権限の存在と owner 限定割当の確認 (P1-T4-FIX)
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute("SELECT id FROM permissions WHERE code = 'notification.batch_execute'")
+        r.ok("notification.batch_execute パーミッションが登録されている (P1-T4-FIX)", cur.fetchone() is not None)
+
+        cur.execute(
+            """SELECT r.code
+               FROM roles r
+               JOIN role_permissions rp ON r.id = rp.role_id
+               JOIN permissions p ON rp.permission_id = p.id
+               WHERE p.code = 'notification.batch_execute'"""
+        )
+        assigned_roles = [row["code"] for row in cur.fetchall()]
+        r.ok("notification.batch_execute は owner ロールにのみ割り当てられている (P1-T4-FIX)",
+             assigned_roles == ["owner"])
+
+    # 5. 【P1-T4実証】契約期限アラート・全テナント横断バッチ E2Eテスト (認可・情報漏洩防止含む)
+    cmd_batch = f"npx ts-node src/scripts/verify-contract-expiry-alerts-e2e.ts \"{dsn}\""
+    batch_run = subprocess.run(cmd_batch, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
+    if batch_run.returncode != 0:
+        err_msg = f"\n[BATCH E2E ERROR STDOUT]:\n{batch_run.stdout}\n[BATCH E2E ERROR STDERR]:\n{batch_run.stderr}"
+        print(err_msg.encode("cp932", errors="replace").decode("cp932"))
+    r.ok("契約期限アラートE2E: 全テナント横断バッチ(RLS非バイパス)・認可強制(403)・情報秘匿化・auto_renewal文面分岐・未読重複防止・既読化・障害隔離が動作する (P1-T4-FIX)",
+         batch_run.returncode == 0)
+
     return r.summary()
 
 

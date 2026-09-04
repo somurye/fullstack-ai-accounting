@@ -109,4 +109,19 @@ describe('PermissionsGuard (DEBT-005)', () => {
       expect(() => guard.canActivate(createMockContext(['employee']))).toThrow(AppException);
     });
   });
+
+  describe('notification.batch_execute 権限 (P1-T4-FIX)', () => {
+    it('owner ロールは notification.batch_execute を許可する', () => {
+      jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue(['notification.batch_execute']);
+      expect(guard.canActivate(createMockContext(['owner']))).toBe(true);
+    });
+
+    it('legal_admin / legal_viewer / accountant / approver / employee ロールは 403 で拒否される', () => {
+      const nonBatchRoles = ['legal_admin', 'legal_viewer', 'accountant', 'accounting_manager', 'approver', 'employee'];
+      for (const role of nonBatchRoles) {
+        jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue(['notification.batch_execute']);
+        expect(() => guard.canActivate(createMockContext([role]))).toThrow(AppException);
+      }
+    });
+  });
 });

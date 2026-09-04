@@ -83,6 +83,8 @@ tags:
     description: ダッシュボード集計(KPIサマリー・月次推移・承認待ち・直近アクティビティ)
   - name: Contracts
     description: "契約書管理 (Phase 1: 総務・法務)"
+  - name: Notifications
+    description: "通知 (Phase 1: P1-T4 契約期限アラート等)"
 
 security:
   - BearerAuth: []
@@ -2963,6 +2965,61 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
 
+  # ----------------------------------------------------------------------------
+  # Notifications (Phase 1: P1-T4)
+  # ----------------------------------------------------------------------------
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: 通知一覧を取得する
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - name: status
+          in: query
+          schema: { type: string, enum: [unread, read] }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: 通知一覧取得成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NotificationListResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /notifications/{id}/read:
+    patch:
+      tags: [Notifications]
+      summary: 通知を既読にする
+      parameters:
+        - $ref: "#/components/parameters/TenantIdHeader"
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 既読化成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NotificationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /notifications/run-expiry-batch:
+    post:
+      tags: [Notifications]
+      summary: 契約期限アラートバッチを手動実行する (テスト・運用用)
+      responses:
+        "200":
+          description: バッチ実行結果
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchRunResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
 # ==============================================================================
 # COMPONENTS
 # ==============================================================================
@@ -4869,3 +4926,49 @@ components:
           type: array
           items: { $ref: "#/components/schemas/Contract" }
         meta: { $ref: "#/components/schemas/Meta" }
+
+    Notification:
+      type: object
+      required: [id, tenant_id, type, target_type, target_id, title, body, status, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        type: { type: string }
+        target_type: { type: string }
+        target_id: { type: string, format: uuid }
+        title: { type: string }
+        body: { type: string }
+        status: { type: string, enum: [unread, read] }
+        read_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    NotificationResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/Notification" }
+
+    NotificationListResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: object
+          properties:
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/Notification" }
+            unread_count: { type: integer }
+
+    BatchRunResponse:
+      type: object
+      properties:
+        success: { const: true }
+        data:
+          type: object
+          properties:
+            processed_tenants: { type: integer }
+            created_notifications: { type: integer }
+            failed_tenants_count: { type: integer }
+

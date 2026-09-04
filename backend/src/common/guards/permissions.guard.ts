@@ -15,6 +15,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     'contract.edit',
     'contract.approve',
     'contract.terminate',
+    'notification.batch_execute',
   ],
   legal_admin: [
     'contract.create',
