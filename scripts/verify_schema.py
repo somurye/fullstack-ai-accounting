@@ -1349,7 +1349,48 @@ def run_verification(dsn: str) -> int:
     r.ok("approval_rules / approval_requests の target_type に 'general_request' が追加され有効に機能する",
          invalid_blocked)
 
-    # 4. RBAC: general_request.* パーミッションの登録と employee ロールへの付与確認
+    # 4. 【P1-T5-FIX実証】amount 非負 CHECK 制約 (BLOCKER-01) および category CHECK 制約
+    # 4-1. amount = -1 の直接 INSERT が CHECK 制約で拒否されること
+    neg_amount_blocked = False
+    try:
+        with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+            cur.execute(
+                """INSERT INTO general_requests (tenant_id, request_no, title, description, category, amount, status, created_by)
+                   VALUES (%s, 'REQ-CHECK-001', '負の金額テスト', 'テスト', 'general', -1, 'draft', %s)""",
+                (t1, owner),
+            )
+    except psycopg2.errors.CheckViolation:
+        neg_amount_blocked = True
+    r.ok("general_requests.amount に非負 CHECK 制約が設定されており amount = -1 は拒否される (BLOCKER-01)",
+         neg_amount_blocked)
+
+    # 4-2. 無効な category の直接 INSERT が CHECK 制約で拒否されること
+    inv_category_blocked = False
+    try:
+        with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+            cur.execute(
+                """INSERT INTO general_requests (tenant_id, request_no, title, description, category, amount, status, created_by)
+                   VALUES (%s, 'REQ-CHECK-002', '不正カテゴリテスト', 'テスト', 'invalid_cat', 1000, 'draft', %s)""",
+                (t1, owner),
+            )
+    except psycopg2.errors.CheckViolation:
+        inv_category_blocked = True
+    r.ok("general_requests.category に CHECK 制約が設定されており未定義値は拒否される",
+         inv_category_blocked)
+
+    # 4-3. 正常系: amount IS NULL または amount >= 0、有効なカテゴリが正常に INSERT できること
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute(
+            """INSERT INTO general_requests (tenant_id, request_no, title, description, category, amount, status, created_by)
+               VALUES (%s, 'REQ-CHECK-003', '正常申請', 'テスト', 'equipment', 50000, 'draft', %s)
+               RETURNING id""",
+            (t1, owner),
+        )
+        ok_req_id = cur.fetchone()["id"]
+        cur.execute("DELETE FROM general_requests WHERE id = %s", (ok_req_id,))
+    r.ok("general_requests は正の金額・有効カテゴリで正常に登録できる (正常系回帰なし)", True)
+
+    # 5. RBAC: general_request.* パーミッションの登録と employee ロールへの付与確認
     with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
         cur.execute(
             """SELECT code FROM permissions WHERE code LIKE 'general_request.%%' ORDER BY code"""

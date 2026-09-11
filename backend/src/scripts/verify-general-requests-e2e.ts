@@ -9,6 +9,7 @@ import { GeneralRequestsController } from '../modules/general-requests/general-r
 import { ApprovalRequestsService } from '../modules/approval-requests/approval-requests.service';
 import { PermissionsGuard } from '../common/guards/permissions.guard';
 import { AppException } from '../common/exceptions/app.exception';
+import { RequestContext } from '../common/context/request-context';
 
 function createMockContext(
   handler: Function,
@@ -145,6 +146,119 @@ async function run() {
     }
     if (!getDeletedFailed) throw new Error('FAIL: 削除した下書きが取得できてしまいます');
     console.log('  [PASS] 下書き稟議の物理削除完了');
+
+    // =========================================================================
+    // 2-B. amount非負制約 & category 制約の検証 (BLOCKER-01 & 推奨対応)
+    // =========================================================================
+    console.log('[P1-T5-FIX E2E] 2-B. amount 非負制約 & category CHECK制約の検証...');
+
+    // 2-B-1. DB直接INSERTで amount = -1 -> CHECK制約(23514)で拒否されること
+    let negativeAmountDbBlocked = false;
+    try {
+      await client.query(
+        `INSERT INTO general_requests (tenant_id, request_no, title, description, category, amount, status, created_by)
+         VALUES ($1, 'REQ-NEG-001', '負の金額テスト', 'テスト', 'general', -1, 'draft', $2)`,
+        [tenantAId, userA1],
+      );
+    } catch (e: any) {
+      if (e.code === '23514' || e.message.includes('check constraint') || e.message.includes('amount')) {
+        negativeAmountDbBlocked = true;
+      }
+    }
+    if (!negativeAmountDbBlocked) {
+      throw new Error('FAIL: amount = -1 のDB直接INSERTがCHECK制約で拒否されませんでした (BLOCKER-01)');
+    }
+    console.log('  [PASS] amount = -1 のDB直接INSERTがCHECK制約により拒否された (BLOCKER-01)');
+
+    // 2-B-2. DB直接INSERTで無効な category -> CHECK制約(23514)で拒否されること
+    let invalidCategoryDbBlocked = false;
+    try {
+      await client.query(
+        `INSERT INTO general_requests (tenant_id, request_no, title, description, category, amount, status, created_by)
+         VALUES ($1, 'REQ-CAT-001', '不正カテゴリテスト', 'テスト', 'invalid_cat', 1000, 'draft', $2)`,
+        [tenantAId, userA1],
+      );
+    } catch (e: any) {
+      if (e.code === '23514' || e.message.includes('check constraint') || e.message.includes('category')) {
+        invalidCategoryDbBlocked = true;
+      }
+    }
+    if (!invalidCategoryDbBlocked) {
+      throw new Error('FAIL: 不正な category のDB直接INSERTがCHECK制約で拒否されませんでした');
+    }
+    console.log('  [PASS] 不正な category のDB直接INSERTがCHECK制約により拒否された');
+
+    // 2-B-3. API経由 (Controller.create) で負の金額 -> バリデーションエラー(400)になること
+    const reqCtxStore = {
+      tenantId: tenantAId,
+      userId: userA1,
+      requestId: randomUUID(),
+      ipAddress: '127.0.0.1',
+      userAgent: 'verify-script',
+    };
+
+    let negativeAmountApiBlocked = false;
+    try {
+      await RequestContext.run(reqCtxStore, async () => {
+        await generalRequestsController.create({
+          title: 'API負の金額テスト',
+          description: 'テスト',
+          category: 'general',
+          amount: -100,
+        });
+      });
+    } catch (e: any) {
+      if (e instanceof AppException && e.getStatus() === 400) {
+        negativeAmountApiBlocked = true;
+      }
+    }
+    if (!negativeAmountApiBlocked) {
+      throw new Error('FAIL: API経由で負の金額がバリデーションエラーになりませんでした');
+    }
+    console.log('  [PASS] API経由で amount = -100 がバリデーションエラー(400)で拒否された');
+
+    // 2-B-4. API経由 (Controller.create) で無効な category -> バリデーションエラー(400)になること
+    let invalidCategoryApiBlocked = false;
+    try {
+      await RequestContext.run(reqCtxStore, async () => {
+        await generalRequestsController.create({
+          title: 'API不正カテゴリテスト',
+          description: 'テスト',
+          category: 'unknown_category',
+          amount: 100,
+        });
+      });
+    } catch (e: any) {
+      if (e instanceof AppException && e.getStatus() === 400) {
+        invalidCategoryApiBlocked = true;
+      }
+    }
+    if (!invalidCategoryApiBlocked) {
+      throw new Error('FAIL: API経由で無効な category がバリデーションエラーになりませんでした');
+    }
+    console.log('  [PASS] API経由で不正な category がバリデーションエラー(400)で拒否された');
+
+    // 2-B-5. 正常系: amount = 0, amount = NULL, 各種有効なcategoryが作成・取得できること
+    const zeroAmountReq = await generalRequestsService.create(tenantAId, userA1, {
+      title: '金額0申請',
+      description: 'ゼロ円申請',
+      category: 'rule_change',
+      amount: 0,
+    });
+    expect(zeroAmountReq.amount).toBe(0);
+    expect(zeroAmountReq.category).toBe('rule_change');
+    await generalRequestsService.delete(tenantAId, userA1, zeroAmountReq.id);
+
+    const nullAmountReq = await generalRequestsService.create(tenantAId, userA1, {
+      title: '金額NULL申請',
+      description: '規程変更提案',
+      category: 'business_trip',
+      amount: null,
+    });
+    expect(nullAmountReq.amount).toBeNull();
+    expect(nullAmountReq.category).toBe('business_trip');
+    await generalRequestsService.delete(tenantAId, userA1, nullAmountReq.id);
+    console.log('  [PASS] 正常系 (amount=0, amount=NULL, 有効カテゴリ) に回帰がないことを確認');
 
     // =========================================================================
     // 3. 承認ルール未設定時の安全策検証 (自動 active 化の防止)

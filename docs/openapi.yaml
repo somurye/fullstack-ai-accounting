@@ -3035,7 +3035,9 @@ paths:
           description: ステータス絞り込み
         - in: query
           name: category
-          schema: { type: string }
+          schema:
+            type: string
+            enum: [general, equipment, rule_change, business_trip, other]
           description: カテゴリ絞り込み
         - in: query
           name: search
@@ -5117,8 +5119,10 @@ components:
         request_no: { type: string }
         title: { type: string }
         description: { type: string }
-        category: { type: string }
-        amount: { type: number, nullable: true }
+        category:
+          type: string
+          enum: [general, equipment, rule_change, business_trip, other]
+        amount: { type: number, minimum: 0, nullable: true }
         attachment_id: { type: string, format: uuid, nullable: true }
         status:
           type: string
@@ -5136,8 +5140,11 @@ components:
       properties:
         title: { type: string, minLength: 1 }
         description: { type: string, minLength: 1 }
-        category: { type: string, default: "general" }
-        amount: { type: number, nullable: true }
+        category:
+          type: string
+          enum: [general, equipment, rule_change, business_trip, other]
+          default: "general"
+        amount: { type: number, minimum: 0, nullable: true }
         attachment_id: { type: string, format: uuid, nullable: true }
 
     UpdateGeneralRequestInput:
@@ -5145,8 +5152,10 @@ components:
       properties:
         title: { type: string, minLength: 1 }
         description: { type: string, minLength: 1 }
-        category: { type: string }
-        amount: { type: number, nullable: true }
+        category:
+          type: string
+          enum: [general, equipment, rule_change, business_trip, other]
+        amount: { type: number, minimum: 0, nullable: true }
         attachment_id: { type: string, format: uuid, nullable: true }
 
     GeneralRequestResponse:

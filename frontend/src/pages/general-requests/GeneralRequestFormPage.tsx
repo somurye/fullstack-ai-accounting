@@ -196,7 +196,10 @@ export function GeneralRequestFormPage() {
             <select
               value={formData.category}
               onChange={(e) =>
-                setFormData((prev) => ({ ...prev, category: e.target.value }))
+                setFormData((prev) => ({
+                  ...prev,
+                  category: e.target.value as CreateGeneralRequestInput['category'],
+                }))
               }
               className="mt-1.5 w-full rounded-lg border border-surface-700 bg-surface-800 px-3.5 py-2.5 text-sm text-surface-100 transition-colors focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
             >

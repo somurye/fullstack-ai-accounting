@@ -8,7 +8,7 @@ export interface GeneralRequestRow {
   request_no: string;
   title: string;
   description: string;
-  category: string;
+  category: GeneralRequestDto['category'];
   amount: string | null;
   attachment_id: string | null;
   status: 'draft' | 'pending_approval' | 'active' | 'rejected';

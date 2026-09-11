@@ -705,7 +705,7 @@ Phase 0で汎用化した承認エンジン・添付ファイル基盤・AIゲ�
 | P1-T2 | 契約書アップロード〜AI条項抽出フロー | PDFアップロード→AIゲートウェイでの条項抽出提案→人間確認画面（DEBT-002/DEBT-003をあわせて解消） | P0-T3, P1-T1 | ✅ SO正式PASS（コミット923ccfd修正後、実PDF内容依存性をE2Eで確認済み、DEBT-007を記録・mainマージ指示済み） |
 | P1-T3 | 契約RBAC強制・AI提案ライフサイクル正式化 | ~~承認ワークフロー統合~~（P1-T1で先行実装済みのため統合済み）→ **スコープ変更**: (1) DEBT-005: contract permissionのAPI認可強制、(2) `ai_suggestions.target_type/target_id`のライフサイクル正式決定、(3) 状態遷移・SoDの最終確認 | P0-T1, P0-T4, P1-T1, P1-T2 | ✅ SO正式PASS（コミットb9a948d、DEBT-005/006/source_suggestion_id整合性を解消、DEBT-008を記録、mainマージ指示済み） |
 | P1-T4 | 契約期限アラート・バッチ | 満了/自動更新の一定日数前に通知を生成するバッチワーカー | P1-T1 | ✅ SO正式PASS（コミット、notification.batch_execute権限をowner限定で追加、DEBT-009を記録、mainマージ指示済み） |
-| P1-T5 | 稟議申請（汎用ワークフロー起票UI） | 契約以外の一般的な稟議（購買以外の申請）もこの画面から起票できる汎用フォーム | P0-T1, P1-T1, P1-T3 | プロンプト発行済み・着手待ち |
+| P1-T5 | 稟議申請（汎用ワークフロー起票UI） | 契約以外の一般的な稟議（購買以外の申請）もこの画面から起票できる汎用フォーム | P0-T1, P1-T1, P1-T3 | ⚠️ SO判定REQUEST CHANGES（コミットda4bbca5、amountの非負DB制約が欠落。修正指示済み・再レビュー待ち） |
 | P1-T6 | 契約書全文検索（pgvector活用） | 既存のjournal_entry_embeddingsと同様のパターンで契約書本文をベクトル化し類似契約検索を提供 | P1-T1 | 未着手 |
 
 ### 3.3 Phase 1 実装指示プロンプト（Gemini向け）
@@ -1382,6 +1382,61 @@ DEBT-008（RBAC静的マップとDBの二重管理）、DEBT-009（通知が個�
 
 ---
 
+#### 【フォローアップ指示プロンプト P1-T5-FIX】REQUEST CHANGES対応（amountの非負制約欠落）
+
+ChatGPT(SO)よりP1-T5が「REQUEST CHANGES」と判定された。P1-T1〜P1-T3で確立した設計
+（tenant整合性のDBトリガー、暗黙自動承認の防止、RBAC強制、SoD維持）は正しく横展開できて
+おり、修正対象は金額制約の1点に限定される。
+
+```
+# SOレビュー結果：P1-T5 REQUEST CHANGES
+main...feature/p1-t5-general-requests の実差分（コミットda4bbca5）を確認した結果、
+現状はマージ不可です。以下を修正してください。
+
+# BLOCKER-01: amountのDB非負制約が欠落している
+general_requests.amount は NUMERIC(14,2) の型制約のみで、DB CHECK制約がありません。
+既存のcontracts.contract_amountには CHECK (contract_amount IS NULL OR contract_amount >= 0)
+が設定されているのに対し、general_requestsだけこの防御が抜けています。
+API側のZodスキーマにもmin(0)がなく、負の金額（例: -100000）がAPI経由でもDB直接操作でも
+登録できてしまいます。
+
+## 修正方針
+1. マイグレーションで general_requests.amount に
+   CHECK (amount IS NULL OR amount >= 0) を追加する。
+2. Backend Zodスキーマの amount を z.number().min(0).nullable().optional() に修正する。
+3. 実DB E2Eに、amount = -1 でのDB直接INSERTが拒否されることを確認するテストを追加する。
+
+# 推奨修正（今回まとめて対応することを推奨、必須ではない）
+categoryが、API側で定義済みのenumスキーマ（generalRequestCategorySchema）を実際には
+使用しておらず、任意の文字列を受け付けてしまっています。
+1. create/update/listのクエリスキーマで、category: generalRequestCategorySchema.optional()
+   .default('general') を実際に適用する。
+2. DBにも CHECK (category IN ('general','equipment','rule_change','business_trip','other'))
+   を追加する。
+3. 実DB E2Eに、無効なcategory値でのDB直接INSERTが拒否されることを確認するテストを追加する。
+
+# 修正不要（今回は記録のみ）
+- PUT/DELETEが created_by（起票者本人）を確認せず、general_request.edit権限があれば
+  同一テナントの誰でも他人のdraftを編集・削除できる点は、仕様として明記されていないため
+  今回は修正必須にしません。DEBT-010として計画書側で記録し、仕様を正式決定するまで
+  現状維持とします。
+
+# 受け入れ基準（Definition of Done）
+- [ ] amount = -1 でのDB直接INSERTがCHECK制約により拒否される
+- [ ] API経由でも負の金額がバリデーションエラーになる
+- [ ] （推奨対応を行った場合）無効なcategory値がDB直接INSERTでも拒否される
+- [ ] 既存の正常系（正の金額、有効なcategory）に回帰がない
+- [ ] 修正後、クリーンDBでverify_schema.pyを含む実DB E2Eを再実行し、追加テストを含めて
+      全件PASSの結果を報告に添付する
+- [ ] feature/p1-t5-general-requests ブランチに追加コミット・pushし、比較URLを報告に含める
+
+# ChatGPTレビュー時の確認観点
+- 追加したCHECK制約が、既存の正の金額データや金額未設定(NULL)のレコードに影響しないか
+- categoryのCHECK制約を追加した場合、フロントエンドの選択肢と完全に一致しているか
+```
+
+---
+
 ## 3.4 決定事項: ロール・権限の粒度方針
 
 - **方針**: 権限を細分化し、権限外の領域は閲覧も含めて不可とする（deny-by-default）。既存のRLSが「fail-closed（未設定・不一致時は0件返却）」の原則を採っているため、この方針とも整合的。
@@ -1405,6 +1460,7 @@ DEBT-008（RBAC静的マップとDBの二重管理）、DEBT-009（通知が個�
 | DEBT-007 | P1-T2 | 現在のPDFテキスト抽出は、テキストが埋め込まれたPDFのみに対応しており、スキャン画像PDF・画像のみのPDFは本文抽出不能として400エラーを返す（フォールバックでダミー処理はしない、安全側の設計）。ただし実際の契約書運用ではスキャンPDFが一定割合存在するため、将来的にはOCR経路（文字なしPDF→OCR→抽出）を追加する必要がある。 | LOW（現状はfail-closedで安全、機能制約のみ） | 契約書アップロード運用の実績を見て、スキャンPDF比率が無視できない場合に対応 | 🔴 未対応（意図的な機能制約として現状維持） |
 | DEBT-008 | P1-T3 | `PermissionsGuard`がDBの`role_permissions`テーブルを直接参照せず、静的マップ（ROLE_PERMISSIONS）を独自に保持しており、DB側のRBAC定義とAPI側の権限マップが二重管理になっている。将来DBで新しいroleやpermissionを追加・変更した際に、Guard側の静的マップを更新し忘れる「RBACドリフト」のリスクがある。 | LOW〜MEDIUM（将来の変更時に権限不整合を生むリスク） | RBAC管理API/UIを作る際、またはロール定義の変更頻度が増えたタイミングでDB参照方式へ統一を検討 | 🔴 未対応 |
 | DEBT-009 | P1-T4 | notificationsテーブルにuser_id/recipient_idが存在せず、契約期限通知は「テナント内の全ユーザーが共有する通知」として実装されている（個人宛ではない）。そのため、あるユーザーが既読にすると同じテナントの他ユーザーからも既読として見える。MVPとしてテナント共通通知に割り切るのは許容範囲だが、将来「契約担当者・承認者・経理・法務」等への個別通知が必要になった場合は、recipient_user_id列の追加とAPIの見直しが必要。 | LOW（MVPとしては仕様として許容） | 個人宛通知の必要性が具体化したタイミングで対応（Phase 1後半〜Phase 2以降） | 🔴 未対応（仕様として現状維持） |
+| DEBT-010 | P1-T5 | `general_requests`のPUT/DELETEが`general_request.edit`権限のみで判定されており、`created_by`（起票者本人）かどうかを確認していない。そのため同一テナント内のemployee同士が互いの下書き稟議を編集・削除できてしまう。「テナント内で共同編集可能」なのか「起票者本人のみ編集可能」なのかの仕様が明文化されていない。 | LOW〜MEDIUM（仕様次第でセキュリティ上の意味合いが変わる） | 稟議機能の実運用が始まる前、または利用者からのフィードバックがあったタイミングで仕様を正式決定 | 🔴 未対応（仕様確認待ち） |
 
 ---
 
@@ -1442,3 +1498,4 @@ DEBT-008（RBAC静的マップとDBの二重管理）、DEBT-009（通知が個�
 | 2.9.0 | P1-T3-FIXが正式PASS（並行実行耐性をpg_advisory_xact_lockで実装、source_suggestion_idのtenant整合性トリガーを追加、実DB E2E 67/67）。DEBT-005/DEBT-006を解消済みに更新。マージ指示プロンプト（P1-T3-MERGE、マージ後の最終E2E含む）を追加しP1-T3を完了扱いに更新。**P1-T4（契約期限アラート・バッチ）の実装指示プロンプトを新規作成**（プロジェクト初の全テナント横断バッチとして、RLSバイパス禁止・テナントごとのSET LOCALを明示的に指示） |
 | 3.0.0 | P1-T4がSO判定REQUEST CHANGES（全テナント横断バッチAPIに認可がなく、ログイン済みなら誰でも実行可能。他テナント情報がエラーレスポンスに露出）。フォローアップ指示プロンプト（P1-T4-FIX、notification.batch_execute権限の新設）を追加。DEBT-009（通知が個人宛でなくテナント共有）を記録 |
 | 3.1.0 | P1-T4-FIXが正式APPROVE（notification.batch_executeをowner限定に設定、cross-tenant情報のレスポンス秘匿を確認、実DB E2E 73/73）。マージ指示プロンプト（P1-T4-MERGE）を追加しP1-T4を完了扱いに更新。**P1-T5（稟議申請：汎用ワークフロー起票UI）の実装指示プロンプトを新規作成**。過去に繰り返し指摘された問題（暗黙自動承認・tenant整合性のアプリ層依存・RBAC未強制）を新ドメインで再発させないことをレビュー観点として明記 |
+| 3.2.0 | P1-T5がSO判定REQUEST CHANGES（general_requests.amountに非負DB制約が欠落。category制約も推奨事項として指摘）。フォローアップ指示プロンプト（P1-T5-FIX）を追加。DEBT-010（起票者本人以外もdraft稟議を編集・削除できる、仕様未確定）を記録 |

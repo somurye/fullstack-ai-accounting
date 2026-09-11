@@ -1,6 +1,10 @@
 import { AppException } from '../../common/exceptions/app.exception';
 import type { DatabaseService } from '../../database/database.service';
 import type { AuditLogsService } from '../audit-logs/audit-logs.service';
+import {
+  createGeneralRequestSchema,
+  updateGeneralRequestSchema,
+} from './dto/general-request.schemas';
 import { GeneralRequestsService } from './general-requests.service';
 
 describe('GeneralRequestsService', () => {
@@ -271,6 +275,59 @@ describe('GeneralRequestsService', () => {
           afterData: { status: 'pending_approval', total_steps: 1 },
         }),
       );
+    });
+  });
+
+  describe('schema validation (BLOCKER-01 & category enum)', () => {
+    it('負の金額 (amount < 0) はバリデーションエラーとなる', () => {
+      const result = createGeneralRequestSchema.safeParse({
+        title: 'テスト',
+        description: 'テスト理由',
+        amount: -1,
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0].message).toContain('金額は0以上で入力してください');
+      }
+    });
+
+    it('update時も負の金額はバリデーションエラーとなる', () => {
+      const result = updateGeneralRequestSchema.safeParse({
+        amount: -500,
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0].message).toContain('金額は0以上で入力してください');
+      }
+    });
+
+    it('無効なカテゴリはバリデーションエラーとなる', () => {
+      const result = createGeneralRequestSchema.safeParse({
+        title: 'テスト',
+        description: 'テスト理由',
+        category: 'invalid_category',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('0円やnull、有効カテゴリは正常にパースされる', () => {
+      const res1 = createGeneralRequestSchema.safeParse({
+        title: 'テスト',
+        description: 'テスト理由',
+        category: 'equipment',
+        amount: 0,
+      });
+      expect(res1.success).toBe(true);
+
+      const res2 = createGeneralRequestSchema.safeParse({
+        title: 'テスト',
+        description: 'テスト理由',
+        amount: null,
+      });
+      expect(res2.success).toBe(true);
+      if (res2.success) {
+        expect(res2.data.category).toBe('general'); // デフォルト値
+      }
     });
   });
 });

@@ -5998,7 +5998,7 @@ export interface paths {
                     /** @description ステータス絞り込み */
                     status?: "draft" | "pending_approval" | "active" | "rejected";
                     /** @description カテゴリ絞り込み */
-                    category?: string;
+                    category?: "general" | "equipment" | "rule_change" | "business_trip" | "other";
                     /** @description タイトル・説明の検索キーワード */
                     search?: string;
                     page?: components["parameters"]["PageParam"];
@@ -7971,7 +7971,8 @@ export interface components {
             request_no: string;
             title: string;
             description: string;
-            category: string;
+            /** @enum {string} */
+            category: "general" | "equipment" | "rule_change" | "business_trip" | "other";
             amount?: number | null;
             /** Format: uuid */
             attachment_id?: string | null;
@@ -7989,8 +7990,11 @@ export interface components {
         CreateGeneralRequestInput: {
             title: string;
             description: string;
-            /** @default general */
-            category: string;
+            /**
+             * @default general
+             * @enum {string}
+             */
+            category: "general" | "equipment" | "rule_change" | "business_trip" | "other";
             amount?: number | null;
             /** Format: uuid */
             attachment_id?: string | null;
@@ -7998,7 +8002,8 @@ export interface components {
         UpdateGeneralRequestInput: {
             title?: string;
             description?: string;
-            category?: string;
+            /** @enum {string} */
+            category?: "general" | "equipment" | "rule_change" | "business_trip" | "other";
             amount?: number | null;
             /** Format: uuid */
             attachment_id?: string | null;

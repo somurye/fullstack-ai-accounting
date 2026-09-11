@@ -11,22 +11,22 @@ export const generalRequestCategorySchema = z.enum([
 export const createGeneralRequestSchema = z.object({
   title: z.string().min(1, 'タイトルを入力してください').max(200, 'タイトルは200文字以内で入力してください'),
   description: z.string().min(1, '説明・理由を入力してください'),
-  category: z.string().optional().default('general'),
-  amount: z.number().nullable().optional(),
+  category: generalRequestCategorySchema.optional().default('general'),
+  amount: z.number().min(0, '金額は0以上で入力してください').nullable().optional(),
   attachment_id: z.string().uuid('添付ファイルIDはUUID形式で指定してください').nullable().optional(),
 });
 
 export const updateGeneralRequestSchema = z.object({
   title: z.string().min(1, 'タイトルを入力してください').max(200, 'タイトルは200文字以内で入力してください').optional(),
   description: z.string().min(1, '説明・理由を入力してください').optional(),
-  category: z.string().optional(),
-  amount: z.number().nullable().optional(),
+  category: generalRequestCategorySchema.optional(),
+  amount: z.number().min(0, '金額は0以上で入力してください').nullable().optional(),
   attachment_id: z.string().uuid('添付ファイルIDはUUID形式で指定してください').nullable().optional(),
 });
 
 export const generalRequestListQuerySchema = z.object({
   status: z.enum(['draft', 'pending_approval', 'active', 'rejected']).optional(),
-  category: z.string().optional(),
+  category: generalRequestCategorySchema.optional(),
   search: z.string().optional(),
   page: z.coerce.number().int().min(1).default(1),
   page_size: z.coerce.number().int().min(1).max(100).default(20),
