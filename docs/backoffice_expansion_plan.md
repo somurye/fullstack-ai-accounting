@@ -708,7 +708,7 @@ Phase 0で汎用化した承認エンジン・添付ファイル基盤・AIゲ�
 | P1-T3 | 契約RBAC強制・AI提案ライフサイクル正式化 | ~~承認ワークフロー統合~~（P1-T1で先行実装済みのため統合済み）→ **スコープ変更**: (1) DEBT-005: contract permissionのAPI認可強制、(2) `ai_suggestions.target_type/target_id`のライフサイクル正式決定、(3) 状態遷移・SoDの最終確認 | P0-T1, P0-T4, P1-T1, P1-T2 | ✅ SO正式PASS（コミットb9a948d、DEBT-005/006/source_suggestion_id整合性を解消、DEBT-008を記録、mainマージ指示済み） |
 | P1-T4 | 契約期限アラート・バッチ | 満了/自動更新の一定日数前に通知を生成するバッチワーカー | P1-T1 | ✅ SO正式PASS（コミット、notification.batch_execute権限をowner限定で追加、DEBT-009を記録、mainマージ指示済み） |
 | P1-T5 | 稟議申請（汎用ワークフロー起票UI） | 契約以外の一般的な稟議（購買以外の申請）もこの画面から起票できる汎用フォーム | P0-T1, P1-T1, P1-T3 | ✅ SO正式PASS（コミット60a0724、fail-closed migration・DEBT-010を記録、mainマージ指示済み） |
-| P1-T6 | 契約書全文検索（pgvector活用） | 既存のjournal_entry_embeddingsと同様のパターンで契約書本文をベクトル化し類似契約検索を提供 | P1-T1, P1-T2 | ⚠️ SO判定REQUEST CHANGES（DB/RLS/tenant整合性/RBACは良好だが、検索対象がdraft/pending/rejectedまで含んでしまい「確定済み契約のみ検索」という仕様境界に違反。修正指示済み・再レビュー待ち） |
+| P1-T6 | 契約書全文検索（pgvector活用） | 既存のjournal_entry_embeddingsと同様のパターンで契約書本文をベクトル化し類似契約検索を提供 | P1-T1, P1-T2 | ✅ SO正式PASS（コミット1750b21、検索対象をactiveのみに限定、DEBT-012を記録、mainマージ指示済み）— **Phase 1完了** |
 
 ### 3.3 Phase 1 実装指示プロンプト（Gemini向け）
 
@@ -1731,6 +1731,56 @@ draft/pending/rejectedの契約本文には、他のテストデータと重複�
 
 ---
 
+#### 【マージ指示プロンプト P1-T6-MERGE】mainへのマージ ＋ Phase 1クローズ
+
+ChatGPT(SO)よりP1-T6-FIXが正式PASS（検索対象をactiveのみのallowlistに限定、自然文検索・ID類似検索の両経路に適用、実DB E2Eで4状態を実証）と判定された。
+
+```
+# 指示
+feature/p1-t6-contract-fulltext-search を main へマージしてください。
+SO(ChatGPT)による正式PASS判定を得ています（確定済み契約(active)のみを検索対象とする
+allowlist方式、tenant分離の維持、実DB E2E 97/97・単体テスト102/102を確認済み）。
+DEBT-011（疑似embeddingの精度限界）、DEBT-012（terminated/expired契約が検索対象外）は
+計画書側で追跡することとし、今回のマージをブロックするものではありません。
+マージ後、以下を確認し報告してください。
+- main上でクリーンDBに対しverify_schema.pyを含む実DB E2Eを再実行し、全件PASSを確認する
+- Backend/Frontendのテストを再実行して確認
+- マージコミットハッシュ
+- 作業ブランチ feature/p1-t6-contract-fulltext-search の削除（マージ済み後）
+```
+
+**これでPhase 1（総務・法務: 契約書管理）は全6タスク完了。**
+
+### Phase 1クローズ時点のサマリ
+
+| タスク | 最終判定 | 往復回数 |
+|--------|----------|----------|
+| P1-T1 | ✅ CONDITIONAL PASS | 2回（REQUEST CHANGES → FIX） |
+| P1-T2 | ✅ PASS | 2回（REQUEST CHANGES → FIX、PDF本文未読込という重大な指摘） |
+| P1-T3 | ✅ PASS | 2回（REQUEST CHANGES → FIX、並行実行耐性） |
+| P1-T4 | ✅ APPROVE | 2回（REQUEST CHANGES → FIX、バッチAPIの認可欠落） |
+| P1-T5 | ✅ PASS | 4回（amount制約 → migration書き換え問題 → 自動データ改変問題 → push漏れ） |
+| P1-T6 | ✅ PASS | 2回（REQUEST CHANGES → FIX、検索対象の状態境界） |
+
+### Phase 1で確立された恒久ルール（0.4節に反映済み）
+
+1. テストPASSは機能の実動作を証明しない。外部入力を扱うタスクは実データでのE2Eを必須とする（P1-T2）。
+2. migrationはappend-only。既存ファイルを事後的に書き換えない（P1-T5）。
+3. 制約追加migrationは既存データを自動改変せず、fail-closedで停止する（P1-T5）。
+
+### 未解決の技術的負債一覧（Phase 2着手前に一度棚卸しを推奨）
+
+DEBT-001, 002, 003, 004(解消済み), 007, 008, 009, 010, 011, 012 が4節に記録されている
+（DEBT-004のみ解消済み、他は継続追跡中）。特にDEBT-003（Phase 1で対応必須としていたが
+実際にはP1-T2で解消済み・訂正）、DEBT-005/006（P1-T3で解消済み）は完了しているため、
+4節のステータス列を参照して現在も未対応のものを優先的に確認すること。
+
+Phase 2（購買・調達）着手にあたっては、本計画書1節のロードマップに従い、Phase 1で
+確立した設計パターン（tenant整合性のDBトリガー、暗黙自動承認の防止、RBAC強制、
+migration運用ルール）をそのまま踏襲する形で、Claudeが次のタスク分解を行う。
+
+---
+
 ## 3.4 決定事項: ロール・権限の粒度方針
 
 - **方針**: 権限を細分化し、権限外の領域は閲覧も含めて不可とする（deny-by-default）。既存のRLSが「fail-closed（未設定・不一致時は0件返却）」の原則を採っているため、この方針とも整合的。
@@ -1756,7 +1806,7 @@ draft/pending/rejectedの契約本文には、他のテストデータと重複�
 | DEBT-009 | P1-T4 | notificationsテーブルにuser_id/recipient_idが存在せず、契約期限通知は「テナント内の全ユーザーが共有する通知」として実装されている（個人宛ではない）。そのため、あるユーザーが既読にすると同じテナントの他ユーザーからも既読として見える。MVPとしてテナント共通通知に割り切るのは許容範囲だが、将来「契約担当者・承認者・経理・法務」等への個別通知が必要になった場合は、recipient_user_id列の追加とAPIの見直しが必要。 | LOW（MVPとしては仕様として許容） | 個人宛通知の必要性が具体化したタイミングで対応（Phase 1後半〜Phase 2以降） | 🔴 未対応（仕様として現状維持） |
 | DEBT-010 | P1-T5 | `general_requests`のPUT/DELETEが`general_request.edit`権限のみで判定されており、`created_by`（起票者本人）かどうかを確認していない。そのため同一テナント内のemployee同士が互いの下書き稟議を編集・削除できてしまう。「テナント内で共同編集可能」なのか「起票者本人のみ編集可能」なのかの仕様が明文化されていない。 | LOW〜MEDIUM（仕様次第でセキュリティ上の意味合いが変わる） | 稟議機能の実運用が始まる前、または利用者からのフィードバックがあったタイミングで仕様を正式決定 | 🔴 未対応（仕様確認待ち） |
 | DEBT-011 | P1-T6 | 契約書全文検索のembeddingは、外部embedding APIを呼ばず文字n-gramのハッシュによる疑似embedding（`pseudo-char-ngram-hash-v1`）で生成されている。MVPとしては許容範囲（model_nameも実態を正しく表しており、DEBT-003のような虚偽表示問題は回避できている）が、実運用での検索精度は限定的。将来的には実際のembeddingモデル（OpenAI/Anthropic/オープンソース等）への切り替えを検討する必要がある。 | LOW（検索精度の課題、セキュリティ上の問題ではない） | 契約書全文検索の実運用フィードバックを見て、精度不足が問題になった場合に対応 | 🔴 未対応（意図的なMVP実装として現状維持） |
-| DEBT-012 | P1-T6-FIX | 全文類似検索の確定済みステータスとして、初期実装では安全・保守的な`active`のみを採用した。過去に締結された契約（中途解約済`terminated`や満了`expired`）も条項参照や雛形検索の対象として価値が高いが、最新契約と区別なく上位表示される誤用リスクがある。将来的に検索オプション（例: `include_inactive=true`）として過去契約を明示的に検索可能とするAPI/UI拡張の検討が必要。 | LOW（セキュリティ・境界はactiveで確保済み、利便性向上のための将来拡張課題） | 契約書全文検索の業務利用における過去契約参照ニーズの優先度に応じて対応を検討 | 🔴 未対応（保守的設計として現状維持） |
+| DEBT-012 | P1-T6-FIX | 契約書全文検索の対象は`status='active'`のみに限定されており、`terminated`（解約済み）・`expired`（満了）の過去契約は検索対象に含まれない。「過去契約も参照したい」という業務ニーズが将来生じた場合、`include_inactive`のような明示的なオプションを別タスクとして設計する必要がある。 | LOW（意図的な保守的設計、機能制約） | 過去契約検索の必要性が具体化したタイミングで別タスクとして対応 | 🔴 未対応（意図的な機能制約として現状維持） |
 
 ---
 
@@ -1800,3 +1850,4 @@ draft/pending/rejectedの契約本文には、他のテストデータと重複�
 | 3.5.0 | P1-T5-FIX3がSO判定REQUEST CHANGES（設計自体は承認、ただし報告内容とGitHub実コミットが不一致。push漏れ）。フォローアップ指示プロンプト（P1-T5-FIX3-VERIFY）を追加し、push状態の確認・是正を指示（0.4節の既存ルールの再徹底） |
 | 3.6.0 | P1-T5-FIX3が正式PASS（GitHub実体とも一致、既存データ自動改変の完全撤廃、fail-closed migrationを85/85で確認）。マージ指示プロンプト（P1-T5-MERGE）を追加しP1-T5を完了扱いに更新。**P1-T6（契約書全文検索：pgvector活用）の実装指示プロンプトを新規作成**。これでPhase 1の全6タスクの指示プロンプトが出揃った |
 | 3.7.0 | P1-T6がSO判定REQUEST CHANGES（DB/RLS/tenant整合性/RBACは良好だが、検索対象がdraft/pending/rejectedの契約まで含んでしまい「確定済み契約のみ検索」という仕様境界に違反）。フォローアップ指示プロンプト（P1-T6-FIX、検索対象ステータスの明示的な絞り込み）を追加。DEBT-011（疑似embeddingの精度限界、MVPとして意図的に許容）を記録 |
+| 4.0.0 | P1-T6-FIXが正式PASS（検索対象をactiveのみのallowlistに限定、自然文検索・ID類似検索の両方に適用、実DB E2E 97/97）。DEBT-012（terminated/expired契約が検索対象外）を記録。マージ指示プロンプト（P1-T6-MERGE）とPhase 1クローズのサマリ（往復回数、確立された恒久ルール、DEBT棚卸し）を追加。**Phase 1（総務・法務）が全6タスク完了** |
