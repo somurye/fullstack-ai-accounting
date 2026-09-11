@@ -708,7 +708,7 @@ Phase 0で汎用化した承認エンジン・添付ファイル基盤・AIゲ�
 | P1-T3 | 契約RBAC強制・AI提案ライフサイクル正式化 | ~~承認ワークフロー統合~~（P1-T1で先行実装済みのため統合済み）→ **スコープ変更**: (1) DEBT-005: contract permissionのAPI認可強制、(2) `ai_suggestions.target_type/target_id`のライフサイクル正式決定、(3) 状態遷移・SoDの最終確認 | P0-T1, P0-T4, P1-T1, P1-T2 | ✅ SO正式PASS（コミットb9a948d、DEBT-005/006/source_suggestion_id整合性を解消、DEBT-008を記録、mainマージ指示済み） |
 | P1-T4 | 契約期限アラート・バッチ | 満了/自動更新の一定日数前に通知を生成するバッチワーカー | P1-T1 | ✅ SO正式PASS（コミット、notification.batch_execute権限をowner限定で追加、DEBT-009を記録、mainマージ指示済み） |
 | P1-T5 | 稟議申請（汎用ワークフロー起票UI） | 契約以外の一般的な稟議（購買以外の申請）もこの画面から起票できる汎用フォーム | P0-T1, P1-T1, P1-T3 | ✅ SO正式PASS（コミット60a0724、fail-closed migration・DEBT-010を記録、mainマージ指示済み） |
-| P1-T6 | 契約書全文検索（pgvector活用） | 既存のjournal_entry_embeddingsと同様のパターンで契約書本文をベクトル化し類似契約検索を提供 | P1-T1, P1-T2 | プロンプト発行済み・着手待ち（Phase 1最終タスク） |
+| P1-T6 | 契約書全文検索（pgvector活用） | 既存のjournal_entry_embeddingsと同様のパターンで契約書本文をベクトル化し類似契約検索を提供 | P1-T1, P1-T2 | ⚠️ SO判定REQUEST CHANGES（DB/RLS/tenant整合性/RBACは良好だが、検索対象がdraft/pending/rejectedまで含んでしまい「確定済み契約のみ検索」という仕様境界に違反。修正指示済み・再レビュー待ち） |
 
 ### 3.3 Phase 1 実装指示プロンプト（Gemini向け）
 
@@ -1678,6 +1678,59 @@ DEBT-010（起票者本人以外もdraft稟議を編集・削除できる、仕�
 
 ---
 
+#### 【フォローアップ指示プロンプト P1-T6-FIX】REQUEST CHANGES対応（検索対象が確定済み契約に限定されていない）
+
+ChatGPT(SO)よりP1-T6が「REQUEST CHANGES」と判定された。DB設計・RLS・tenant整合性・RBACは
+評価されており、修正対象は「検索対象を確定済み契約に限定する」という機能境界の1点に絞られる。
+
+```
+# SOレビュー結果：P1-T6 REQUEST CHANGES
+searchSimilarContractsByText() / findSimilarContractsById() が、contracts.statusを
+一切見ずにcontract_embeddingsのtenant_idのみで検索しているため、draft / pending_approval /
+rejected の契約本文まで検索結果に含まれてしまいます。P1-T6の仕様「全文検索はあくまで
+確定済みcontractsの本文に対する検索機能」という境界を満たしていません。
+契約書本文は機微情報であるため、tenantを跨がなくても、社内承認前・却下済みの契約内容が
+検索経由で露出するのは業務データの意味論として避けるべきです。
+
+# 修正方針
+1. 「確定済み」として検索対象に含めるステータスを明示的にコード上の定数として定義する。
+   最も安全な選択は status = 'active' のみを対象とすることです。terminated（解約済み）を
+   含めるかどうかは、過去の契約内容も参照したいという業務ニーズがあり得るため判断が分かれます。
+   どちらを採用するか決定し、理由とともに報告に明記してください（判断に迷う場合は、
+   より保守的な 'active' のみを初期実装として採用し、DEBT候補として記録する形でも構いません）。
+2. searchSimilarContractsByText() と findSimilarContractsById() の両方のSQLに、
+   contracts とのJOINまたはサブクエリで c.status IN (<確定済みステータス群>) の条件を追加する。
+3. embedding生成タイミング（現状draft作成時・更新時に生成している）自体は今回変更不要です。
+   検索クエリ側でステータスを絞り込めば機能境界は満たせます
+   （ただし、生成タイミングと検索範囲がズレている設計である旨は報告に一言明記してください）。
+
+# 追加すべき実DB E2E（必須）
+以下を1テナント内に用意し、確定済みでない契約が検索結果に含まれないことを確認してください。
+  tenant1
+   ├─ active contract （検索結果に出る）
+   ├─ draft contract （出ない）
+   ├─ pending_approval contract （出ない）
+   └─ rejected contract （出ない）
+draft/pending/rejectedの契約本文には、他のテストデータと重複しない特徴的な文言を含め、
+その文言で検索しても該当契約が結果に出てこないことを確認する形にしてください。
+
+# 受け入れ基準（Definition of Done）
+- [ ] 検索対象となる契約ステータスがコード上で明示的に定義されている（暗黙の「embeddingが
+      あれば全部検索対象」になっていない）
+- [ ] draft / pending_approval / rejected の契約が、特徴的な文言で検索しても結果に出てこないこと
+      を実DB E2Eで確認する
+- [ ] active（採用した場合はterminatedも）の契約は引き続き正しく検索結果に出る
+- [ ] 既存のtenant isolation E2E（tenant1/tenant2の相互不可視性）に回帰がない
+- [ ] feature/p1-t6-contract-fulltext-search ブランチに追加コミット・pushし、比較URLを報告に含める
+
+# ChatGPTレビュー時の確認観点
+- 確定済みステータスの定義が、契約のライフサイクル全体（P1-T1で定義した状態遷移）と矛盾しないか
+- ステータスによる絞り込みが、SQL側だけでなくAPIレスポンスの一貫性としても機能しているか
+  （一覧APIと詳細APIで挙動が食い違っていないか）
+```
+
+---
+
 ## 3.4 決定事項: ロール・権限の粒度方針
 
 - **方針**: 権限を細分化し、権限外の領域は閲覧も含めて不可とする（deny-by-default）。既存のRLSが「fail-closed（未設定・不一致時は0件返却）」の原則を採っているため、この方針とも整合的。
@@ -1702,6 +1755,8 @@ DEBT-010（起票者本人以外もdraft稟議を編集・削除できる、仕�
 | DEBT-008 | P1-T3 | `PermissionsGuard`がDBの`role_permissions`テーブルを直接参照せず、静的マップ（ROLE_PERMISSIONS）を独自に保持しており、DB側のRBAC定義とAPI側の権限マップが二重管理になっている。将来DBで新しいroleやpermissionを追加・変更した際に、Guard側の静的マップを更新し忘れる「RBACドリフト」のリスクがある。 | LOW〜MEDIUM（将来の変更時に権限不整合を生むリスク） | RBAC管理API/UIを作る際、またはロール定義の変更頻度が増えたタイミングでDB参照方式へ統一を検討 | 🔴 未対応 |
 | DEBT-009 | P1-T4 | notificationsテーブルにuser_id/recipient_idが存在せず、契約期限通知は「テナント内の全ユーザーが共有する通知」として実装されている（個人宛ではない）。そのため、あるユーザーが既読にすると同じテナントの他ユーザーからも既読として見える。MVPとしてテナント共通通知に割り切るのは許容範囲だが、将来「契約担当者・承認者・経理・法務」等への個別通知が必要になった場合は、recipient_user_id列の追加とAPIの見直しが必要。 | LOW（MVPとしては仕様として許容） | 個人宛通知の必要性が具体化したタイミングで対応（Phase 1後半〜Phase 2以降） | 🔴 未対応（仕様として現状維持） |
 | DEBT-010 | P1-T5 | `general_requests`のPUT/DELETEが`general_request.edit`権限のみで判定されており、`created_by`（起票者本人）かどうかを確認していない。そのため同一テナント内のemployee同士が互いの下書き稟議を編集・削除できてしまう。「テナント内で共同編集可能」なのか「起票者本人のみ編集可能」なのかの仕様が明文化されていない。 | LOW〜MEDIUM（仕様次第でセキュリティ上の意味合いが変わる） | 稟議機能の実運用が始まる前、または利用者からのフィードバックがあったタイミングで仕様を正式決定 | 🔴 未対応（仕様確認待ち） |
+| DEBT-011 | P1-T6 | 契約書全文検索のembeddingは、外部embedding APIを呼ばず文字n-gramのハッシュによる疑似embedding（`pseudo-char-ngram-hash-v1`）で生成されている。MVPとしては許容範囲（model_nameも実態を正しく表しており、DEBT-003のような虚偽表示問題は回避できている）が、実運用での検索精度は限定的。将来的には実際のembeddingモデル（OpenAI/Anthropic/オープンソース等）への切り替えを検討する必要がある。 | LOW（検索精度の課題、セキュリティ上の問題ではない） | 契約書全文検索の実運用フィードバックを見て、精度不足が問題になった場合に対応 | 🔴 未対応（意図的なMVP実装として現状維持） |
+| DEBT-012 | P1-T6-FIX | 全文類似検索の確定済みステータスとして、初期実装では安全・保守的な`active`のみを採用した。過去に締結された契約（中途解約済`terminated`や満了`expired`）も条項参照や雛形検索の対象として価値が高いが、最新契約と区別なく上位表示される誤用リスクがある。将来的に検索オプション（例: `include_inactive=true`）として過去契約を明示的に検索可能とするAPI/UI拡張の検討が必要。 | LOW（セキュリティ・境界はactiveで確保済み、利便性向上のための将来拡張課題） | 契約書全文検索の業務利用における過去契約参照ニーズの優先度に応じて対応を検討 | 🔴 未対応（保守的設計として現状維持） |
 
 ---
 
@@ -1744,3 +1799,4 @@ DEBT-010（起票者本人以外もdraft稟議を編集・削除できる、仕�
 | 3.4.0 | P1-T5-FIX2がSO判定REQUEST CHANGES（migration append-only原則は解消済みだが、015が既存データを無断でUPDATE/自動クレンジングしていた）。フォローアップ指示プロンプト（P1-T5-FIX3、fail-closedなDO $$ EXCEPTIONブロックへの置き換え）を追加。**0.4節に「制約追加migrationは既存データを自動改変せずfail-closedで停止する」原則を新設** |
 | 3.5.0 | P1-T5-FIX3がSO判定REQUEST CHANGES（設計自体は承認、ただし報告内容とGitHub実コミットが不一致。push漏れ）。フォローアップ指示プロンプト（P1-T5-FIX3-VERIFY）を追加し、push状態の確認・是正を指示（0.4節の既存ルールの再徹底） |
 | 3.6.0 | P1-T5-FIX3が正式PASS（GitHub実体とも一致、既存データ自動改変の完全撤廃、fail-closed migrationを85/85で確認）。マージ指示プロンプト（P1-T5-MERGE）を追加しP1-T5を完了扱いに更新。**P1-T6（契約書全文検索：pgvector活用）の実装指示プロンプトを新規作成**。これでPhase 1の全6タスクの指示プロンプトが出揃った |
+| 3.7.0 | P1-T6がSO判定REQUEST CHANGES（DB/RLS/tenant整合性/RBACは良好だが、検索対象がdraft/pending/rejectedの契約まで含んでしまい「確定済み契約のみ検索」という仕様境界に違反）。フォローアップ指示プロンプト（P1-T6-FIX、検索対象ステータスの明示的な絞り込み）を追加。DEBT-011（疑似embeddingの精度限界、MVPとして意図的に許容）を記録 |

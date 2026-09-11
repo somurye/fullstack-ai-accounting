@@ -159,6 +159,9 @@ async function run() {
     // テスト3: 類似条項を持つ契約2・異なる契約3の作成 & ID指定類似検索
     // =========================================================================
     console.log('\n--- テスト3: 類似契約探索 (GET /contracts/:id/similar) ---');
+    // 契約1を確定済み(active)へ遷移（P1-T6-FIX: 確定済み契約のみが検索対象）
+    await client.query(`UPDATE contracts SET status = 'active' WHERE id = $1`, [createdContract1.id]);
+
     // 類似する契約 (SLAや稼働率保証に関する契約)
     const similarText = `Cloud System Maintenance Agreement
 Article 1 (Purpose) This agreement defines standards for system maintenance.
@@ -175,6 +178,8 @@ Article 12 (Confidentiality) Both parties shall keep proprietary information con
       renewal_notice_days: 30,
       extracted_text: similarText,
     });
+    // 契約2を確定済み(active)へ遷移
+    await client.query(`UPDATE contracts SET status = 'active' WHERE id = $1`, [createdContract2.id]);
 
     // 全く異なる契約 (賃貸借契約)
     const unsimilarText = `Office Building Real Estate Lease Contract
@@ -191,6 +196,8 @@ Article 2 (Rent and Deposit) Monthly rent shall be paid by the end of each month
       renewal_notice_days: 30,
       extracted_text: unsimilarText,
     });
+    // 契約3を確定済み(active)へ遷移
+    await client.query(`UPDATE contracts SET status = 'active' WHERE id = $1`, [createdContract3.id]);
 
     // 契約1 (クラウドSLA) に対して類似契約を検索
     const similarContracts = await contractsService.findSimilarContractsById(
@@ -240,6 +247,128 @@ Article 2 (Rent and Deposit) Monthly rent shall be paid by the end of each month
     console.log(`  [PASS] 自然文類似検索で ${searchResults.length} 件の関連契約がヒットしました`);
 
     // =========================================================================
+    // テスト4-B: 【P1-T6-FIX】確定済み契約限定検索実証 (未確定契約の除外検証)
+    // =========================================================================
+    console.log('\n--- テスト4-B: 【P1-T6-FIX】確定済み契約限定検索実証 (draft / pending / rejected 除外) ---');
+    // 同一テナント (tenant1) 内に、4種類のステータスの契約を作成
+    // draft / pending_approval / rejected には重複しない特徴的な文言を付与
+
+    // 1. active契約
+    const activeContract = await contractsService.create(tenant1Id, user1Id, {
+      title: '確定済み業務委託契約書 (P1-T6-FIX)',
+      counterparty_name: '株式会社確定パートナー',
+      contract_type: 'service',
+      currency: 'JPY',
+      start_date: '2026-07-01',
+      auto_renewal: false,
+      renewal_notice_days: 30,
+      extracted_text: 'ARTICLE_STATUS_TEST: CONFIRMED_ACTIVE_CLAUSE_777777 有効な確定済み契約の条項です。',
+    });
+    await client.query(`UPDATE contracts SET status = 'active' WHERE id = $1`, [activeContract.id]);
+
+    // 2. draft契約
+    const draftContract = await contractsService.create(tenant1Id, user1Id, {
+      title: '起草中ドラフト契約書 (P1-T6-FIX)',
+      counterparty_name: '株式会社起草パートナー',
+      contract_type: 'service',
+      currency: 'JPY',
+      start_date: '2026-07-01',
+      auto_renewal: false,
+      renewal_notice_days: 30,
+      extracted_text: 'ARTICLE_STATUS_TEST: DRAFT_SECRET_UNAPPROVED_CLAUSE_111111 社内検討中の極秘ドラフト条項です。',
+    });
+    // デフォルトで draft のまま
+
+    // 3. pending_approval契約
+    const pendingContract = await contractsService.create(tenant1Id, user1Id, {
+      title: '承認申請中契約書 (P1-T6-FIX)',
+      counterparty_name: '株式会社申請パートナー',
+      contract_type: 'service',
+      currency: 'JPY',
+      start_date: '2026-07-01',
+      auto_renewal: false,
+      renewal_notice_days: 30,
+      extracted_text: 'ARTICLE_STATUS_TEST: PENDING_INTERNAL_REVIEW_CLAUSE_222222 決裁承認待ちの契約条項です。',
+    });
+    await client.query(`UPDATE contracts SET status = 'pending_approval' WHERE id = $1`, [pendingContract.id]);
+
+    // 4. rejected契約 (契約ライフサイクル規則: draft -> pending_approval -> rejected)
+    const rejectedContract = await contractsService.create(tenant1Id, user1Id, {
+      title: '法務審査却下契約書 (P1-T6-FIX)',
+      counterparty_name: '株式会社却下パートナー',
+      contract_type: 'service',
+      currency: 'JPY',
+      start_date: '2026-07-01',
+      auto_renewal: false,
+      renewal_notice_days: 30,
+      extracted_text: 'ARTICLE_STATUS_TEST: REJECTED_DISAPPROVED_CLAUSE_333333 法務審査で却下された条項です。',
+    });
+    await client.query(`UPDATE contracts SET status = 'pending_approval' WHERE id = $1`, [rejectedContract.id]);
+    await client.query(`UPDATE contracts SET status = 'rejected' WHERE id = $1`, [rejectedContract.id]);
+
+    // (1) draftの特徴的文言で検索 -> ヒットしないことを検証
+    const draftSearch = await contractsService.searchSimilarContractsByText(
+      tenant1Id,
+      user1Id,
+      { q: 'DRAFT_SECRET_UNAPPROVED_CLAUSE_111111', limit: 10, threshold: 0.1 },
+    );
+    if (draftSearch.some((c) => c.id === draftContract.id)) {
+      throw new Error('FAIL: draft 状態の契約書が自然文検索結果に露出してしまいました！');
+    }
+    console.log('  [PASS] draft 状態の契約書は検索結果に含まれません (露出 0件)');
+
+    // (2) pending_approvalの特徴的文言で検索 -> ヒットしないことを検証
+    const pendingSearch = await contractsService.searchSimilarContractsByText(
+      tenant1Id,
+      user1Id,
+      { q: 'PENDING_INTERNAL_REVIEW_CLAUSE_222222', limit: 10, threshold: 0.1 },
+    );
+    if (pendingSearch.some((c) => c.id === pendingContract.id)) {
+      throw new Error('FAIL: pending_approval 状態の契約書が自然文検索結果に露出してしまいました！');
+    }
+    console.log('  [PASS] pending_approval 状態の契約書は検索結果に含まれません (露出 0件)');
+
+    // (3) rejectedの特徴的文言で検索 -> ヒットしないことを検証
+    const rejectedSearch = await contractsService.searchSimilarContractsByText(
+      tenant1Id,
+      user1Id,
+      { q: 'REJECTED_DISAPPROVED_CLAUSE_333333', limit: 10, threshold: 0.1 },
+    );
+    if (rejectedSearch.some((c) => c.id === rejectedContract.id)) {
+      throw new Error('FAIL: rejected 状態の契約書が自然文検索結果に露出してしまいました！');
+    }
+    console.log('  [PASS] rejected 状態の契約書は検索結果に含まれません (露出 0件)');
+
+    // (4) activeの特徴的文言で検索 -> 正しくヒットすることを検証
+    const activeSearch = await contractsService.searchSimilarContractsByText(
+      tenant1Id,
+      user1Id,
+      { q: 'CONFIRMED_ACTIVE_CLAUSE_777777', limit: 10, threshold: 0.1 },
+    );
+    if (!activeSearch.some((c) => c.id === activeContract.id)) {
+      throw new Error('FAIL: active 状態の確定済み契約書が自然文検索結果でヒットしませんでした！');
+    }
+    console.log('  [PASS] active 状態の確定済み契約書は正しく検索結果にヒットしました');
+
+    // (5) ID指定類似検索 (findSimilarContractsById) においても未確定契約が除外されることを検証
+    // activeContract を起点に類似検索を実行
+    const idSimilarResults = await contractsService.findSimilarContractsById(
+      tenant1Id,
+      user1Id,
+      activeContract.id,
+      { limit: 20, threshold: 0.01 },
+    );
+    const unconfirmedInIdSearch = idSimilarResults.filter((c) =>
+      [draftContract.id, pendingContract.id, rejectedContract.id].includes(c.id),
+    );
+    if (unconfirmedInIdSearch.length > 0) {
+      throw new Error(
+        `FAIL: ID類似検索結果に未確定契約 (draft/pending/rejected) が含まれています: ${unconfirmedInIdSearch.map((c) => c.status).join(', ')}`,
+      );
+    }
+    console.log('  [PASS] ID類似検索結果においても draft / pending_approval / rejected は完全に除外されています');
+
+    // =========================================================================
     // テスト5: 【最重要】完全テナント分離 (他テナントデータの混入ゼロを厳格実証)
     // =========================================================================
     console.log('\n--- テスト5: 【最重要】完全テナント分離実証 (RLS + アプリ層二重防御) ---');
@@ -256,6 +385,8 @@ Article 2 (Rent and Deposit) Monthly rent shall be paid by the end of each month
 Article 5 SLA: 99.9% uptime guaranteed per month. 10% refund if uptime drops below SLA.
 Liability shall be limited to ten times the contract amount.`,
     });
+    // テナント2の契約書を確定済み(active)へ遷移
+    await client.query(`UPDATE contracts SET status = 'active' WHERE id = $1`, [tenant2Contract.id]);
 
     // テナント1のユーザーとして、テナント2の契約内容そのものの自然文で検索を実行！
     const t1LeakCheck = await contractsService.searchSimilarContractsByText(

@@ -40,6 +40,16 @@ export interface ContractListResult {
   pagination: PaginationMeta;
 }
 
+/**
+ * 全文類似検索の対象とする確定済み契約ステータス定義 (P1-T6-FIX)。
+ * 未承認（draft, pending_approval）や不成立（rejected）の機微な契約本文が
+ * 社内検索経由で露出するのを防ぐため、確定済み（active）契約のみを対象とする。
+ * ※ 解約済み（terminated）や満了（expired）などの過去契約の検索対象化は、
+ *   業務ニーズに応じた将来の拡張オプション（include_inactive等）としてDEBT候補として記録。
+ */
+export const CONFIRMED_SEARCH_CONTRACT_STATUSES = ['active'] as const;
+export type ConfirmedSearchContractStatus = (typeof CONFIRMED_SEARCH_CONTRACT_STATUSES)[number];
+
 export async function generateContractNo(
   client: PoolClient,
   tenantId: string,
@@ -790,9 +800,10 @@ export class ContractsService {
          FROM chunk_matches cm
          JOIN contracts c ON c.tenant_id = $1 AND c.id = cm.contract_id
          WHERE cm.rn = 1 AND cm.similarity_score >= $3
+           AND c.status = ANY($5)
          ORDER BY cm.similarity_score DESC
          LIMIT $4`,
-        [tenantId, contractId, query.threshold, query.limit],
+        [tenantId, contractId, query.threshold, query.limit, [...CONFIRMED_SEARCH_CONTRACT_STATUSES]],
       );
 
       return result.rows.map(mapSimilarContractRow);
@@ -840,9 +851,10 @@ export class ContractsService {
          FROM chunk_matches cm
          JOIN contracts c ON c.tenant_id = $1 AND c.id = cm.contract_id
          WHERE cm.rn = 1 AND cm.similarity_score >= $3
+           AND c.status = ANY($5)
          ORDER BY cm.similarity_score DESC
          LIMIT $4`,
-        [tenantId, vectorLiteral, query.threshold, query.limit],
+        [tenantId, vectorLiteral, query.threshold, query.limit, [...CONFIRMED_SEARCH_CONTRACT_STATUSES]],
       );
 
       return result.rows.map(mapSimilarContractRow);

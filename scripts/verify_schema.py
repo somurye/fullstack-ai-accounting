@@ -1656,7 +1656,7 @@ def run_verification(dsn: str) -> int:
     if cs_run.returncode != 0:
         err_msg = f"\n[CONTRACT SEARCH E2E ERROR STDOUT]:\n{cs_run.stdout}\n[CONTRACT SEARCH E2E ERROR STDERR]:\n{cs_run.stderr}"
         print(err_msg.encode("cp932", errors="replace").decode("cp932"))
-    r.ok("契約書全文検索E2E: PDFテキスト抽出・embedding生成・類似条項探索・完全テナント分離・仕訳類似検索回帰なしが動作する (P1-T6)",
+    r.ok("契約書全文検索E2E: PDFテキスト抽出・embedding生成・類似条項探索・未確定契約除外・完全テナント分離・仕訳類似検索回帰なしが動作する (P1-T6/P1-T6-FIX)",
          cs_run.returncode == 0)
 
     # 13-9. 【P1-T3/P1-T6回帰なし実証】PermissionsGuard RBAC認可強制・解約遷移 E2Eテスト (DEBT-005回帰なし)

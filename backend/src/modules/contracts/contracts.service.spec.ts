@@ -1,7 +1,7 @@
 import { AppException } from '../../common/exceptions/app.exception';
 import type { DatabaseService } from '../../database/database.service';
 import type { AuditLogsService } from '../audit-logs/audit-logs.service';
-import { ContractsService } from './contracts.service';
+import { CONFIRMED_SEARCH_CONTRACT_STATUSES, ContractsService } from './contracts.service';
 
 describe('ContractsService', () => {
   let service: ContractsService;
@@ -560,10 +560,10 @@ describe('ContractsService', () => {
       expect(results[0].similarity_score).toBe(0.885);
       expect(results[0].matched_chunk_text).toContain('秘密情報の目的外使用');
 
-      // クエリパラメータに自テナントIDが渡され、他テナントにアクセスしないこと
+      // クエリパラメータに自テナントIDおよび確定済みステータス群が渡され、未確定契約が除外されること
       expect(mockClient.query).toHaveBeenLastCalledWith(
-        expect.stringContaining('e.tenant_id = $1 AND e.contract_id != $2'),
-        [TENANT_ID, CONTRACT_ID, 0.5, 5],
+        expect.stringContaining('c.status = ANY($5)'),
+        [TENANT_ID, CONTRACT_ID, 0.5, 5, [...CONFIRMED_SEARCH_CONTRACT_STATUSES]],
       );
     });
 
@@ -620,10 +620,10 @@ describe('ContractsService', () => {
       expect(results[0].similarity_score).toBe(0.92);
       expect(results[0].matched_chunk_text).toContain('SLA保証');
 
-      // クエリパラメータに自テナントIDが渡されていること
+      // クエリパラメータに自テナントIDおよび確定済みステータス群が渡されていること
       expect(mockClient.query).toHaveBeenCalledWith(
-        expect.stringContaining('e.tenant_id = $1'),
-        [TENANT_ID, expect.any(String), 0.3, 10],
+        expect.stringContaining('c.status = ANY($5)'),
+        [TENANT_ID, expect.any(String), 0.3, 10, [...CONFIRMED_SEARCH_CONTRACT_STATUSES]],
       );
     });
   });
