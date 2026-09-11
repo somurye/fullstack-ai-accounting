@@ -45,6 +45,7 @@ export function ContractCreatePage() {
     attachment_id: null,
     source_suggestion_id: null as string | null,
     description: '',
+    extracted_text: '',
   });
 
   // 添付ファイル & AI抽出ステート
@@ -158,9 +159,13 @@ export function ContractCreatePage() {
 
     setIsSubmitting(true);
     try {
+      const payload: ContractCreate = {
+        ...formData,
+        extracted_text: formData.extracted_text?.trim() ? formData.extracted_text.trim() : undefined,
+      };
       const res = await apiClient.post<{ data: { id: string; contract_no: string } }>(
         '/contracts',
-        formData,
+        payload,
       );
       const created = res.data.data;
       toast.success(`契約書「${formData.title}」(${created.contract_no})を下書き保存しました`);
@@ -468,6 +473,27 @@ export function ContractCreatePage() {
                   {renderConfidenceBadge('notice_period_days')}
                 </div>
               )}
+            </div>
+
+            {/* 契約書本文 (全文検索・類似条項ベクトル検索対象) */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium text-slate-700 flex items-center gap-1.5">
+                  <FileText className="w-4 h-4 text-indigo-600" />
+                  契約書本文テキスト (全文・類似検索対象)
+                </label>
+                <span className="text-xs text-slate-400">pgvectorチャンク分割対象</span>
+              </div>
+              <p className="text-xs text-slate-500">
+                PDFアップロード時に自動抽出されます。手動での直接入力・修正も可能です。確定保存時に自動的にベクトル化され、類似契約検索の対象になります。
+              </p>
+              <textarea
+                rows={5}
+                value={formData.extracted_text ?? ''}
+                onChange={(e) => setFormData({ ...formData, extracted_text: e.target.value })}
+                placeholder="契約書の条項本文を入力してください（例：第1条 目的 甲および乙は...）"
+                className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50/50"
+              />
             </div>
 
             {/* 概要・特記事項 */}

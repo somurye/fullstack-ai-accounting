@@ -23,6 +23,8 @@ import {
   contractListQuerySchema,
   contractUpdateSchema,
   extractContractTermsSchema,
+  searchSimilarContractsQuerySchema,
+  similarContractsQuerySchema,
 } from './dto/contract.schemas';
 import { ContractsService } from './contracts.service';
 
@@ -70,6 +72,34 @@ export class ContractsController {
     const dto = parseWithZod(contractCreateSchema, body);
     const contract = await this.contractsService.create(tenantId, userId, dto);
     return successEnvelope(contract);
+  }
+
+  @Get('search/similar')
+  @RequirePermissions('contract.view')
+  async searchSimilar(@Query() query: unknown) {
+    const tenantId = this.requireTenantId();
+    const parsedQuery = parseWithZod(searchSimilarContractsQuerySchema, query);
+    const results = await this.contractsService.searchSimilarContractsByText(
+      tenantId,
+      RequestContext.getUserId(),
+      parsedQuery,
+    );
+    return successEnvelope(results);
+  }
+
+  @Get(':id/similar')
+  @RequirePermissions('contract.view')
+  async getSimilar(@Param('id') id: string, @Query() query: unknown) {
+    const tenantId = this.requireTenantId();
+    const parsedId = parseWithZod(idParamSchema, id);
+    const parsedQuery = parseWithZod(similarContractsQuerySchema, query);
+    const results = await this.contractsService.findSimilarContractsById(
+      tenantId,
+      RequestContext.getUserId(),
+      parsedId,
+      parsedQuery,
+    );
+    return successEnvelope(results);
   }
 
   @Get(':id')

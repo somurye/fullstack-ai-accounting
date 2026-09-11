@@ -5859,6 +5859,111 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/contracts/{id}/similar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 指定契約に類似する契約書をpgvectorで近傍探索する (P1-T6)
+         * @description 指定契約の条項チャンク埋め込みベクトルとコサイン類似度の高い同一テナント内の契約書一覧を返却する。
+         *     RLSおよびアプリケーション層の双方でテナント分離を強制する。
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description 取得最大件数 */
+                    limit?: number;
+                    /** @description コサイン類似度の下限しきい値 (0.0〜1.0) */
+                    threshold?: number;
+                };
+                header: {
+                    /** @description 操作対象テナントのUUID。JWTクレームの tenant_id と一致する必要がある。 */
+                    "X-Tenant-ID": components["parameters"]["TenantIdHeader"];
+                };
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 類似契約取得成功 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SimilarContractListResponse"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                404: components["responses"]["NotFound"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/contracts/search/similar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 自然文クエリから類似する契約書条項・契約を検索する (P1-T6)
+         * @description 入力テキストをpgvectorベクトル化し、同一テナント内の契約書条項チャンクから類似度の高い契約一覧を返却する。
+         */
+        get: {
+            parameters: {
+                query: {
+                    /** @description 検索自然文・条項キーワード */
+                    q: string;
+                    /** @description 取得最大件数 */
+                    limit?: number;
+                    /** @description コサイン類似度の下限しきい値 (0.0〜1.0) */
+                    threshold?: number;
+                };
+                header: {
+                    /** @description 操作対象テナントのUUID。JWTクレームの tenant_id と一致する必要がある。 */
+                    "X-Tenant-ID": components["parameters"]["TenantIdHeader"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 検索成功 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SimilarContractListResponse"];
+                    };
+                };
+                400: components["responses"]["BadRequest"];
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/notifications": {
         parameters: {
             query?: never;
@@ -7845,6 +7950,8 @@ export interface components {
             source_suggestion_id?: string | null;
             /** @description 契約概要・特記事項 */
             description?: string | null;
+            /** @description 抽出済み契約書本文テキスト */
+            extracted_text?: string | null;
             /** Format: date-time */
             approved_at?: string | null;
             /** Format: uuid */
@@ -7884,6 +7991,8 @@ export interface components {
             /** Format: uuid */
             source_suggestion_id?: string | null;
             description?: string | null;
+            /** @description 抽出済み契約書本文テキスト (未指定時は添付PDFから自動抽出) */
+            extracted_text?: string | null;
         };
         ContractUpdate: {
             title?: string;
@@ -7902,6 +8011,8 @@ export interface components {
             /** Format: uuid */
             source_suggestion_id?: string | null;
             description?: string | null;
+            /** @description 抽出済み契約書本文テキスト */
+            extracted_text?: string | null;
         };
         ContractResponse: {
             /** @constant */
@@ -7919,6 +8030,27 @@ export interface components {
             /** @constant */
             success?: true;
             data?: components["schemas"]["Contract"][];
+            meta?: components["schemas"]["Meta"];
+        };
+        SimilarContract: {
+            /** Format: uuid */
+            id: string;
+            contract_no: string;
+            title: string;
+            counterparty_name: string;
+            contract_type: components["schemas"]["ContractType"];
+            contract_amount?: number | null;
+            status: components["schemas"]["ContractStatus"];
+            /** @description コサイン類似度スコア (0.0〜1.0) */
+            similarity_score: number;
+            matched_chunk_index?: number | null;
+            /** @description 最も類似度の高かった条項・抜粋テキスト */
+            matched_chunk_text?: string | null;
+        };
+        SimilarContractListResponse: {
+            /** @constant */
+            success?: true;
+            data?: components["schemas"]["SimilarContract"][];
             meta?: components["schemas"]["Meta"];
         };
         Notification: {

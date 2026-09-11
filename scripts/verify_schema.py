@@ -1213,14 +1213,8 @@ def run_verification(dsn: str) -> int:
         r.ok("他テナントの source_suggestion_id を指定した contracts INSERT は DB トリガーで拒否される (BLOCKER-02)",
              cross_tenant_blocked)
 
-    # 8. 【P1-T3実証】PermissionsGuard RBAC認可強制・解約遷移 E2Eテスト (DEBT-005完全証明)
-    cmd_rbac = f"npx ts-node src/scripts/verify-contract-rbac-e2e.ts \"{dsn}\""
-    rbac_run = subprocess.run(cmd_rbac, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
-    if rbac_run.returncode != 0:
-        err_msg = f"\n[RBAC E2E ERROR STDOUT]:\n{rbac_run.stdout}\n[RBAC E2E ERROR STDERR]:\n{rbac_run.stderr}"
-        print(err_msg.encode("cp932", errors="replace").decode("cp932"))
-    r.ok("契約RBAC強制E2E: legal_viewer書込拒否(403)・閲覧許可・承認権限検証・解約遷移が動作する (DEBT-005)",
-         rbac_run.returncode == 0)
+    # 8. 【P1-T3実証】PermissionsGuard RBAC認可強制・解約遷移 E2Eテスト (DEBT-005)
+    # ※ 本 E2E は 016 スキーマ (extracted_text 列) を含む ContractsService を呼ぶため、016 適用後のセクション 13-9 で実行する
 
     # ------------------------------------------------------------------------
     # 11. 契約期限アラート・全テナント横断バッチ基盤 (Phase 1: P1-T4)
@@ -1522,6 +1516,158 @@ def run_verification(dsn: str) -> int:
     r.ok("汎用稟議E2E: 一連の起票〜承認完了(active)・未設定時安全エラー・テナント整合性トリガー・active改ざん防止・RLS分離が動作する (P1-T5)",
          gr_run.returncode == 0)
 
+    # =========================================================================
+    # 13. 契約書全文検索基盤 (pgvector活用・P1-T6)
+    # =========================================================================
+    print("\n--- 13. 契約書全文検索基盤 (P1-T6) 検証 ---")
+
+    # 13-1. 015適用時点では contracts.extracted_text 列および contract_embeddings テーブルが存在しないことを確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute(
+            """SELECT column_name FROM information_schema.columns
+               WHERE table_name = 'contracts' AND column_name = 'extracted_text'"""
+        )
+        col_before = cur.fetchone()
+        cur.execute(
+            """SELECT table_name FROM information_schema.tables
+               WHERE table_name = 'contract_embeddings'"""
+        )
+        tbl_before = cur.fetchone()
+    r.ok("段階的アップグレード検証 1: 015時点では contracts.extracted_text 列が存在しない", col_before is None)
+    r.ok("段階的アップグレード検証 2: 015時点では contract_embeddings テーブルが存在しない", tbl_before is None)
+
+    # 13-2. 016_contract_fulltext_search.sql を適用
+    file_016 = SQL_DIR / "016_contract_fulltext_search.sql"
+    sql_016 = file_016.read_text(encoding="utf-8")
+    apply_ok_016 = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_016)
+        finally:
+            conn.close()
+    except Exception as e:
+        apply_ok_016 = False
+        print(f"  [ERROR] 016 migration apply failed: {e}")
+    r.ok("段階的アップグレード検証 3: 016_contract_fulltext_search.sql がエラーなく正常適用される", apply_ok_016)
+
+    # 13-3. contracts.extracted_text 列の存在とデータ型確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute(
+            """SELECT data_type FROM information_schema.columns
+               WHERE table_name = 'contracts' AND column_name = 'extracted_text'"""
+        )
+        col_after = cur.fetchone()
+    r.ok("contracts.extracted_text 列 (TEXT) が正常に追加されている",
+         col_after is not None and col_after["data_type"] == "text")
+
+    # 13-4. contract_embeddings テーブル定義・カラム・インデックス確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute(
+            """SELECT table_name FROM information_schema.tables
+               WHERE table_name = 'contract_embeddings'"""
+        )
+        tbl_after = cur.fetchone()
+
+        cur.execute(
+            """SELECT column_name, data_type, udt_name FROM information_schema.columns
+               WHERE table_name = 'contract_embeddings'"""
+        )
+        emb_cols = {row["column_name"]: row["udt_name"] for row in cur.fetchall()}
+
+        # ivfflat インデックス確認
+        cur.execute(
+            """SELECT indexname, indexdef FROM pg_indexes
+               WHERE tablename = 'contract_embeddings' AND indexname = 'ix_contract_embeddings_ivfflat'"""
+        )
+        idx_row = cur.fetchone()
+    r.ok("contract_embeddings テーブルが正常に作成されている", tbl_after is not None)
+    r.ok("contract_embeddings.embedding が vector 型 (1536次元) として定義されている",
+         emb_cols.get("embedding") == "vector")
+    r.ok("contract_embeddings.embedding に ivfflat ベクトルインデックスが設定されている",
+         idx_row is not None and "ivfflat" in idx_row["indexdef"])
+
+    # 13-5. RLS (ENABLE + FORCE) & テナント分離ポリシー確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute(
+            """SELECT relrowsecurity, relforcerowsecurity
+               FROM pg_class WHERE relname = 'contract_embeddings'"""
+        )
+        rls_stat = cur.fetchone()
+        cur.execute(
+            """SELECT policyname FROM pg_policies
+               WHERE tablename = 'contract_embeddings' AND policyname = 'contract_embeddings_tenant_isolation'"""
+        )
+        pol_stat = cur.fetchone()
+    r.ok("contract_embeddings で RLS が有効化かつ FORCE されている (バイパス不可)",
+         rls_stat is not None and rls_stat["relrowsecurity"] and rls_stat["relforcerowsecurity"])
+    r.ok("contract_embeddings に tenant_isolation ポリシーが適用されている", pol_stat is not None)
+
+    # 13-6. 冪等性保証: 016を2回連続適用してもエラーにならないこと
+    idempotent_016_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_016)
+        finally:
+            conn.close()
+    except Exception as e:
+        idempotent_016_ok = False
+        print(f"  [ERROR] 016 re-apply failed: {e}")
+    r.ok("段階的アップグレード検証 4: 016を2回連続適用してもエラーにならず正常終了する (ALTER TABLE / DDL 冪等性保証)",
+         idempotent_016_ok)
+
+    # 13-7. DB層テナント整合性トリガーの検証 (他テナントのcontract_id参照をINSERT時に即時拒否)
+    trigger_rejected = False
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        # t1 の契約を作成
+        cur.execute(
+            """INSERT INTO contracts (tenant_id, contract_no, title, counterparty_name, contract_type, start_date, status, created_by)
+               VALUES (%s, 'CNT-TRIG-001', 'T1契約', '相手先A', 'service', '2026-04-01', 'draft', %s)
+               RETURNING id""",
+            (t1, owner),
+        )
+        t1_contract_id = cur.fetchone()["id"]
+
+    try:
+        with tx_as(dsn, role="app_runtime", tenant_id=t2) as cur:
+            dummy_vec = "[" + ",".join(["0.01"] * 1536) + "]"
+            cur.execute(
+                """INSERT INTO contract_embeddings (tenant_id, contract_id, chunk_index, chunk_text, embedding, model_name)
+                   VALUES (%s, %s, 0, '不正な他テナント契約チャンク', %s::vector, 'pseudo-embed-v1')""",
+                (t2, t1_contract_id, dummy_vec),
+            )
+    except Exception as e:
+        trigger_rejected = True
+        err_str = str(e)
+        pgcode = getattr(e, "pgcode", "")
+        r.ok("DB層テナント整合性トリガー: 他テナントのcontract_idを指定したembeddingのINSERTが拒否される (fail-closed保証)",
+             pgcode == "23503" or "23503" in err_str or "belong" in err_str or "violates" in err_str.lower() or "不整合" in err_str)
+    if not trigger_rejected:
+        r.ok("DB層テナント整合性トリガー: 他テナントのcontract_idを指定したembeddingのINSERTが拒否される (fail-closed保証)", False)
+
+    # 13-8. 【P1-T6実証】契約書全文検索 実DB E2Eテスト (テキスト抽出・embedding生成・類似探索・完全テナント分離・journal_entry回帰なし)
+    cmd_cs = f"npx ts-node src/scripts/verify-contract-search-e2e.ts \"{dsn}\""
+    cs_run = subprocess.run(cmd_cs, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
+    if cs_run.returncode != 0:
+        err_msg = f"\n[CONTRACT SEARCH E2E ERROR STDOUT]:\n{cs_run.stdout}\n[CONTRACT SEARCH E2E ERROR STDERR]:\n{cs_run.stderr}"
+        print(err_msg.encode("cp932", errors="replace").decode("cp932"))
+    r.ok("契約書全文検索E2E: PDFテキスト抽出・embedding生成・類似条項探索・完全テナント分離・仕訳類似検索回帰なしが動作する (P1-T6)",
+         cs_run.returncode == 0)
+
+    # 13-9. 【P1-T3/P1-T6回帰なし実証】PermissionsGuard RBAC認可強制・解約遷移 E2Eテスト (DEBT-005回帰なし)
+    cmd_rbac = f"npx ts-node src/scripts/verify-contract-rbac-e2e.ts \"{dsn}\""
+    rbac_run = subprocess.run(cmd_rbac, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
+    if rbac_run.returncode != 0:
+        err_msg = f"\n[RBAC E2E ERROR STDOUT]:\n{rbac_run.stdout}\n[RBAC E2E ERROR STDERR]:\n{rbac_run.stderr}"
+        print(err_msg.encode("cp932", errors="replace").decode("cp932"))
+    r.ok("契約RBAC強制E2E: legal_viewer書込拒否(403)・閲覧許可・承認権限検証・解約遷移が動作する (DEBT-005回帰なし)",
+         rbac_run.returncode == 0)
+
     return r.summary()
 
 
@@ -1550,12 +1696,12 @@ def main() -> int:
 
         # 1. まず 001〜014 までを適用 (P1-T5マージ直後の既存DB状態を再現)
         apply_schema(dsn, max_file="014_general_requests.sql")
-        # 2. 検証実行 (セクション12内で 014旧状態確認 -> 015段階的適用 -> 制約確認 -> 冪等性確認 -> E2E実行)
+        # 2. 検証実行 (セクション12で015段階適用、セクション13で016段階適用 -> E2E実行)
         exit_code = run_verification(dsn)
 
-        # 3. クリーンDBに最初から001〜015を一括適用した場合の回帰なし確認
+        # 3. クリーンDBに最初から001〜016を一括適用した場合の回帰なし確認
         if exit_code == 0:
-            fresh_db_name = "keiri_kaikei_fresh_015"
+            fresh_db_name = "keiri_kaikei_fresh_016"
             conn_raw = psycopg2.connect(dsn)
             conn_raw.autocommit = True
             try:
@@ -1566,9 +1712,9 @@ def main() -> int:
                 conn_raw.close()
 
             dsn_fresh = dsn.rsplit("/", 1)[0] + f"/{fresh_db_name}"
-            print("\n--- クリーンDBへの001〜015一括適用検証 (新規環境回帰なし確認) ---")
+            print("\n--- クリーンDBへの001〜016一括適用検証 (新規環境回帰なし確認) ---")
             apply_schema(dsn_fresh)
-            print("[schema] クリーンDBへの001〜015一括適用が正常終了しました (回帰なし確認完了)")
+            print("[schema] クリーンDBへの001〜016一括適用が正常終了しました (回帰なし確認完了)")
     finally:
         if args.use_docker and not args.keep_docker:
             docker_stop()

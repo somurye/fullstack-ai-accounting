@@ -7,21 +7,32 @@ import { acquireAdvisoryLock } from '../../common/database/advisory-lock';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { AiSuggestionsService } from '../ai-suggestions/ai-suggestions.service';
 import type { AiSuggestionDto } from '../ai-suggestions/ai-suggestions.mapper';
-import type {
-  ContractCreateInput,
-  ContractListQuery,
-  ContractUpdateInput,
-  ExtractContractTermsInput,
-} from './dto/contract.schemas';
+import {
+  chunkContractText,
+  computeTextEmbedding,
+  PSEUDO_EMBEDDING_MODEL,
+  toVectorLiteral,
+} from '../ai-suggestions/embedding';
 import {
   mapContractRow,
+  mapSimilarContractRow,
   SQL_CONTRACT_COLUMNS,
   type ContractApprovalHistoryEntryDto,
   type ContractAttachmentDto,
   type ContractDetailDto,
   type ContractDto,
   type ContractRow,
+  type SimilarContractDto,
+  type SimilarContractRow,
 } from './contracts.mapper';
+import type {
+  ContractCreateInput,
+  ContractListQuery,
+  ContractUpdateInput,
+  ExtractContractTermsInput,
+  SearchSimilarContractsQuery,
+  SimilarContractsQuery,
+} from './dto/contract.schemas';
 import { extractTextFromPdfFile } from './utils/pdf-text-extractor';
 
 export interface ContractListResult {
@@ -190,14 +201,31 @@ export class ContractsService {
     dto: ContractCreateInput,
   ): Promise<ContractDto> {
     return this.db.transaction(tenantId, userId, async (client) => {
+      // テキスト抽出 (指定された extracted_text を優先、なければ attachment から抽出)
+      let extractedText: string | null = dto.extracted_text ?? null;
+
       // 添付ファイルの存在確認(指定時)
       if (dto.attachment_id) {
-        const attCheck = await client.query(
-          `SELECT 1 FROM attachments WHERE tenant_id = $1 AND id = $2`,
+        const attCheck = await client.query<{
+          storage_path: string;
+          mime_type: string;
+          document_category: string;
+        }>(
+          `SELECT storage_path, mime_type, document_category FROM attachments WHERE tenant_id = $1 AND id = $2`,
           [tenantId, dto.attachment_id],
         );
         if (attCheck.rowCount === 0) {
           throw AppException.badRequest('指定された添付ファイルが存在しません');
+        }
+
+        if (!extractedText && attCheck.rows && attCheck.rows.length > 0 && attCheck.rows[0].storage_path) {
+          const att = attCheck.rows[0];
+          try {
+            extractedText = await extractTextFromPdfFile(att.storage_path);
+          } catch {
+            // テキスト抽出に失敗した場合でも契約作成自体は妨げない
+            extractedText = null;
+          }
         }
       }
 
@@ -218,11 +246,13 @@ export class ContractsService {
         `INSERT INTO contracts AS c (
            tenant_id, contract_no, title, counterparty_name, contract_type,
            contract_amount, currency, start_date, end_date, auto_renewal,
-           renewal_notice_days, status, attachment_id, source_suggestion_id, description, created_by
+           renewal_notice_days, status, attachment_id, source_suggestion_id, description,
+           extracted_text, created_by
          ) VALUES (
            $1, $2, $3, $4, $5,
            $6, $7, $8, $9, $10,
-           $11, 'draft', $12, $13, $14, $15
+           $11, 'draft', $12, $13, $14,
+           $15, $16
          )
          RETURNING ${SQL_CONTRACT_COLUMNS}`,
         [
@@ -240,11 +270,17 @@ export class ContractsService {
           dto.attachment_id ?? null,
           dto.source_suggestion_id ?? null,
           dto.description ?? null,
+          extractedText,
           userId,
         ],
       );
 
       const created = mapContractRow(result.rows[0]);
+
+      // 契約書本文の embedding をチャンク分割して保存
+      if (extractedText) {
+        await this.syncContractEmbeddings(client, tenantId, created.id, extractedText);
+      }
 
       await this.auditLogs.record(client, tenantId, {
         actorUserId: userId,
@@ -321,6 +357,26 @@ export class ContractsService {
       const description =
         dto.description !== undefined ? dto.description : current.description;
 
+      let extractedText =
+        dto.extracted_text !== undefined ? dto.extracted_text : current.extracted_text;
+      if (
+        dto.extracted_text === undefined &&
+        dto.attachment_id &&
+        dto.attachment_id !== current.attachment_id
+      ) {
+        const attFileResult = await client.query<{ storage_path: string }>(
+          `SELECT storage_path FROM attachments WHERE tenant_id = $1 AND id = $2`,
+          [tenantId, dto.attachment_id],
+        );
+        if (attFileResult.rowCount && attFileResult.rowCount > 0) {
+          try {
+            extractedText = await extractTextFromPdfFile(attFileResult.rows[0].storage_path);
+          } catch {
+            extractedText = null;
+          }
+        }
+      }
+
       const result = await client.query<ContractRow>(
         `UPDATE contracts c SET
            title = $3,
@@ -334,6 +390,7 @@ export class ContractsService {
            renewal_notice_days = $11,
            attachment_id = $12,
            description = $13,
+           extracted_text = $14,
            updated_at = now()
          WHERE c.tenant_id = $1 AND c.id = $2
          RETURNING ${SQL_CONTRACT_COLUMNS}`,
@@ -351,10 +408,16 @@ export class ContractsService {
           renewalNoticeDays,
           attachmentId,
           description,
+          extractedText,
         ],
       );
 
       const updated = mapContractRow(result.rows[0]);
+
+      // 本文に変更があった場合、embedding を再生成
+      if (extractedText !== current.extracted_text) {
+        await this.syncContractEmbeddings(client, tenantId, id, extractedText);
+      }
 
       await this.auditLogs.record(client, tenantId, {
         actorUserId: userId,
@@ -638,4 +701,152 @@ export class ContractsService {
       return suggestion;
     });
   }
+
+  /**
+   * 契約書本文のチャンク分割および contract_embeddings への保存・再生成を行う。
+   */
+  async syncContractEmbeddings(
+    client: PoolClient,
+    tenantId: string,
+    contractId: string,
+    text: string | null,
+  ): Promise<void> {
+    await client.query(
+      `DELETE FROM contract_embeddings WHERE tenant_id = $1 AND contract_id = $2`,
+      [tenantId, contractId],
+    );
+    if (!text || !text.trim()) return;
+
+    const chunks = chunkContractText(text);
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      const vector = computeTextEmbedding(chunk);
+      await client.query(
+        `INSERT INTO contract_embeddings (
+           tenant_id, contract_id, chunk_index, chunk_text, embedding, model_name
+         ) VALUES ($1, $2, $3, $4, $5::vector, $6)`,
+        [tenantId, contractId, i, chunk, toVectorLiteral(vector), PSEUDO_EMBEDDING_MODEL],
+      );
+    }
+  }
+
+  /**
+   * 指定契約に類似する他契約を検索する (P1-T6)。
+   * RLS + アプリケーション層 (tenant_id = $1, contract_id != $2) の二重絞り込みを実施。
+   */
+  async findSimilarContractsById(
+    tenantId: string,
+    userId: string | null,
+    contractId: string,
+    query: SimilarContractsQuery,
+  ): Promise<SimilarContractDto[]> {
+    return this.db.transaction(tenantId, userId, async (client) => {
+      // 対象契約の存在確認
+      const targetCheck = await client.query<{ id: string }>(
+        `SELECT id FROM contracts WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, contractId],
+      );
+      if (targetCheck.rowCount === 0) {
+        throw AppException.notFound('指定された契約書が見つかりません');
+      }
+
+      const targetChunks = await client.query<{ id: string }>(
+        `SELECT 1 FROM contract_embeddings WHERE tenant_id = $1 AND contract_id = $2 LIMIT 1`,
+        [tenantId, contractId],
+      );
+      if (targetChunks.rowCount === 0) {
+        return [];
+      }
+
+      const result = await client.query<SimilarContractRow>(
+        `WITH target_chunks AS (
+           SELECT embedding FROM contract_embeddings WHERE tenant_id = $1 AND contract_id = $2
+         ),
+         chunk_matches AS (
+           SELECT
+             e.contract_id,
+             e.chunk_index AS matched_chunk_index,
+             e.chunk_text AS matched_chunk_text,
+             (1 - (e.embedding <=> tc.embedding)) AS similarity_score,
+             ROW_NUMBER() OVER(
+               PARTITION BY e.contract_id
+               ORDER BY (e.embedding <=> tc.embedding) ASC
+             ) as rn
+           FROM contract_embeddings e
+           CROSS JOIN target_chunks tc
+           WHERE e.tenant_id = $1 AND e.contract_id != $2
+         )
+         SELECT
+           c.id,
+           c.contract_no,
+           c.title,
+           c.counterparty_name,
+           c.contract_type,
+           c.contract_amount,
+           c.status,
+           cm.similarity_score,
+           cm.matched_chunk_index,
+           cm.matched_chunk_text
+         FROM chunk_matches cm
+         JOIN contracts c ON c.tenant_id = $1 AND c.id = cm.contract_id
+         WHERE cm.rn = 1 AND cm.similarity_score >= $3
+         ORDER BY cm.similarity_score DESC
+         LIMIT $4`,
+        [tenantId, contractId, query.threshold, query.limit],
+      );
+
+      return result.rows.map(mapSimilarContractRow);
+    });
+  }
+
+  /**
+   * 自然文クエリから類似する契約条項・契約を検索する (P1-T6)。
+   * RLS + アプリケーション層 (tenant_id = $1) の二重絞り込みを実施。
+   */
+  async searchSimilarContractsByText(
+    tenantId: string,
+    userId: string | null,
+    query: SearchSimilarContractsQuery,
+  ): Promise<SimilarContractDto[]> {
+    return this.db.transaction(tenantId, userId, async (client) => {
+      const vector = computeTextEmbedding(query.q);
+      const vectorLiteral = toVectorLiteral(vector);
+
+      const result = await client.query<SimilarContractRow>(
+        `WITH chunk_matches AS (
+           SELECT
+             e.contract_id,
+             e.chunk_index AS matched_chunk_index,
+             e.chunk_text AS matched_chunk_text,
+             (1 - (e.embedding <=> $2::vector)) AS similarity_score,
+             ROW_NUMBER() OVER(
+               PARTITION BY e.contract_id
+               ORDER BY (e.embedding <=> $2::vector) ASC
+             ) as rn
+           FROM contract_embeddings e
+           WHERE e.tenant_id = $1
+         )
+         SELECT
+           c.id,
+           c.contract_no,
+           c.title,
+           c.counterparty_name,
+           c.contract_type,
+           c.contract_amount,
+           c.status,
+           cm.similarity_score,
+           cm.matched_chunk_index,
+           cm.matched_chunk_text
+         FROM chunk_matches cm
+         JOIN contracts c ON c.tenant_id = $1 AND c.id = cm.contract_id
+         WHERE cm.rn = 1 AND cm.similarity_score >= $3
+         ORDER BY cm.similarity_score DESC
+         LIMIT $4`,
+        [tenantId, vectorLiteral, query.threshold, query.limit],
+      );
+
+      return result.rows.map(mapSimilarContractRow);
+    });
+  }
 }
+

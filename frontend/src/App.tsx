@@ -110,6 +110,9 @@ const ApprovalRequestListPage = lazy(() =>
 const ContractCreatePage = lazy(() =>
   import('./pages/contracts/ContractCreatePage').then((m) => ({ default: m.ContractCreatePage })),
 );
+const ContractListPage = lazy(() =>
+  import('./pages/contracts/ContractListPage').then((m) => ({ default: m.ContractListPage })),
+);
 const GeneralRequestListPage = lazy(() =>
   import('./pages/general-requests/GeneralRequestListPage').then((m) => ({ default: m.GeneralRequestListPage })),
 );
@@ -196,7 +199,7 @@ export default function App() {
             <Route path="/fixed-assets/:id" element={<FixedAssetFormPage />} />
             <Route path="/consumption-tax-returns" element={<ConsumptionTaxReturnsPage />} />
             <Route path="/contracts/new" element={<ContractCreatePage />} />
-            <Route path="/contracts" element={<ContractCreatePage />} />
+            <Route path="/contracts" element={<ContractListPage />} />
             <Route path="/general-requests" element={<GeneralRequestListPage />} />
             <Route path="/general-requests/new" element={<GeneralRequestFormPage />} />
             <Route path="/general-requests/:id" element={<GeneralRequestDetailPage />} />
