@@ -15,6 +15,7 @@ import {
   Settings,
   ShieldAlert,
   ShieldCheck,
+  ShoppingCart,
   Sparkles,
   Truck,
   UserCog,
@@ -79,6 +80,12 @@ const NAV_GROUPS: NavGroup[] = [
       { label: '稟議申請', to: '/general-requests', icon: FileText },
       { label: '契約書管理', to: '/contracts', icon: FileCheck },
       { label: '承認待ち', to: '/approval-requests', icon: ScrollText },
+    ],
+  },
+  {
+    title: '購買・調達 (Phase 2)',
+    items: [
+      { label: '発注申請', to: '/purchase-requests', icon: ShoppingCart },
     ],
   },
   {

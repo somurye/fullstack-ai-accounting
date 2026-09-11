@@ -1668,6 +1668,93 @@ def run_verification(dsn: str) -> int:
     r.ok("契約RBAC強制E2E: legal_viewer書込拒否(403)・閲覧許可・承認権限検証・解約遷移が動作する (DEBT-005回帰なし)",
          rbac_run.returncode == 0)
 
+    # ========================================================================
+    # 14. 発注申請 (P2-T1) の検証 (purchase_requestsテーブル・RLS・CHECK制約・WORM・承認フロー・E2E)
+    # ========================================================================
+    print("\n--- 14. 発注申請 (P2-T1) の検証 ---")
+
+    # 14-1. 017_purchase_requests.sql の段階的適用
+    sql_017_path = SQL_DIR / "017_purchase_requests.sql"
+    with open(sql_017_path, "r", encoding="utf-8") as f:
+        sql_017 = f.read()
+
+    conn = psycopg2.connect(dsn)
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql_017)
+    finally:
+        conn.close()
+    print("[schema] 017_purchase_requests.sql を適用しました")
+
+    # 14-2. purchase_requests テーブル存在確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute(
+            """SELECT EXISTS (
+                   SELECT 1 FROM information_schema.tables
+                   WHERE table_schema = 'public' AND table_name = 'purchase_requests'
+               ) AS table_exists"""
+        )
+        pr_table_exists = cur.fetchone()["table_exists"]
+    r.ok("purchase_requests テーブルが正常に作成されている", pr_table_exists)
+
+    # 14-3. CHECK制約の確認 (chk_purchase_requests_quantity_positive, chk_purchase_requests_calc_match等)
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute(
+            """SELECT conname FROM pg_constraint
+               WHERE conrelid = 'purchase_requests'::regclass AND contype = 'c'"""
+        )
+        constraints = {row["conname"] for row in cur.fetchall()}
+    r.ok("purchase_requests に数量正数CHECK制約 (chk_purchase_requests_quantity_positive) が存在する",
+         "chk_purchase_requests_quantity_positive" in constraints)
+    r.ok("purchase_requests に単価非負CHECK制約 (chk_purchase_requests_unit_price_nonneg) が存在する",
+         "chk_purchase_requests_unit_price_nonneg" in constraints)
+    r.ok("purchase_requests に合計金額非負CHECK制約 (chk_purchase_requests_total_amount_nonneg) が存在する",
+         "chk_purchase_requests_total_amount_nonneg" in constraints)
+    r.ok("purchase_requests に数量×単価＝合計金額整合性CHECK制約 (chk_purchase_requests_calc_match) が存在する",
+         "chk_purchase_requests_calc_match" in constraints)
+
+    # 14-4. RLS (ENABLE + FORCE) & テナント分離ポリシー確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute(
+            """SELECT relrowsecurity, relforcerowsecurity
+               FROM pg_class WHERE relname = 'purchase_requests'"""
+        )
+        rls_pr = cur.fetchone()
+        cur.execute(
+            """SELECT policyname FROM pg_policies
+               WHERE tablename = 'purchase_requests' AND policyname = 'tenant_isolation_purchase_requests'"""
+        )
+        pol_pr = cur.fetchone()
+    r.ok("purchase_requests で RLS が有効化かつ FORCE されている (バイパス不可)",
+         rls_pr is not None and rls_pr["relrowsecurity"] and rls_pr["relforcerowsecurity"])
+    r.ok("purchase_requests に tenant_isolation ポリシーが適用されている", pol_pr is not None)
+
+    # 14-5. 冪等性保証: 017を2回連続適用してもエラーにならないこと
+    idempotent_017_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_017)
+        finally:
+            conn.close()
+    except Exception as e:
+        idempotent_017_ok = False
+        print(f"  [ERROR] 017 re-apply failed: {e}")
+    r.ok("段階的アップグレード検証 5: 017を2回連続適用してもエラーにならず正常終了する (ALTER TABLE / DDL 冪等性保証)",
+         idempotent_017_ok)
+
+    # 14-6. 【P2-T1実証】発注申請 実DB E2Eテスト (RBAC二重防御・DB CHECK・暗黙自動承認防止・0-step・SoD・WORM・テナント分離)
+    cmd_pr = f"npx ts-node src/scripts/verify-purchase-requests-e2e.ts \"{dsn}\""
+    pr_run = subprocess.run(cmd_pr, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
+    if pr_run.returncode != 0:
+        err_msg = f"\n[PURCHASE REQUESTS E2E ERROR STDOUT]:\n{pr_run.stdout}\n[PURCHASE REQUESTS E2E ERROR STDERR]:\n{pr_run.stderr}"
+        print(err_msg.encode("cp932", errors="replace").decode("cp932"))
+    r.ok("発注申請E2E: RBAC二重防御・DB CHECK整合性・暗黙自動承認防止・明示的0-step・多段階SoD自己承認拒否・WORM改ざん防止・完全テナント分離が動作する (P2-T1)",
+         pr_run.returncode == 0)
+
     return r.summary()
 
 
@@ -1696,12 +1783,12 @@ def main() -> int:
 
         # 1. まず 001〜014 までを適用 (P1-T5マージ直後の既存DB状態を再現)
         apply_schema(dsn, max_file="014_general_requests.sql")
-        # 2. 検証実行 (セクション12で015段階適用、セクション13で016段階適用 -> E2E実行)
+        # 2. 検証実行 (セクション12で015段階適用、セクション13で016段階適用、セクション14で017段階適用 -> E2E実行)
         exit_code = run_verification(dsn)
 
-        # 3. クリーンDBに最初から001〜016を一括適用した場合の回帰なし確認
+        # 3. クリーンDBに最初から001〜017を一括適用した場合の回帰なし確認
         if exit_code == 0:
-            fresh_db_name = "keiri_kaikei_fresh_016"
+            fresh_db_name = "keiri_kaikei_fresh_017"
             conn_raw = psycopg2.connect(dsn)
             conn_raw.autocommit = True
             try:
@@ -1712,9 +1799,9 @@ def main() -> int:
                 conn_raw.close()
 
             dsn_fresh = dsn.rsplit("/", 1)[0] + f"/{fresh_db_name}"
-            print("\n--- クリーンDBへの001〜016一括適用検証 (新規環境回帰なし確認) ---")
+            print("\n--- クリーンDBへの001〜017一括適用検証 (新規環境回帰なし確認) ---")
             apply_schema(dsn_fresh)
-            print("[schema] クリーンDBへの001〜016一括適用が正常終了しました (回帰なし確認完了)")
+            print("[schema] クリーンDBへの001〜017一括適用が正常終了しました (回帰なし確認完了)")
     finally:
         if args.use_docker and not args.keep_docker:
             docker_stop()

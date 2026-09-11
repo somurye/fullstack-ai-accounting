@@ -65,14 +65,14 @@ ChatGPT（SO）は実コードとの差分照合を前提にレビューする�
 
 実装順序は「①汎用化基盤への投資対効果」「②既存資産の再利用度」「③規制・専門性の複雑さ」の3軸で決定。複雑な人事労務を後回しにし、まず汎用ワークフローエンジンを固めてから横展開する設計。
 
-| Phase | ドメイン | 主な機能 | 既存資産の再利用度 | 規制複雑度 |
-|-------|----------|----------|---------------------|-------------|
-| **Phase 0** | 基盤汎用化 | 承認ワークフローエンジンの完全汎用化、汎用ドキュメント管理基盤 | −（投資フェーズ） | 低 |
-| **Phase 1** | 総務・法務 | 契約書管理、稟議申請、条項AI抽出、更新期限アラート | 高（承認・監査ログ・AI Gateway） | 中 |
-| **Phase 2** | 購買・調達 | 発注申請、サプライヤー管理、購買稟議 | 高（Phase0/1のワークフロー・帳票基盤） | 低〜中 |
-| **Phase 3** | 人事労務 | 勤怠管理、給与計算内製化、社保・年末調整 | 中（給与連携は既存、計算ロジックは新規） | 高（労働法制） |
-| **Phase 4** | 営業事務 | 見積書、契約更新連携、案件管理 | 高（請求書発行・契約管理の延長） | 低 |
-| **Phase 5** | 統合最適化 | 横断ダッシュボード、AIエージェントによる業務横断レコメンド | −（統合フェーズ） | 低 |
+| Phase | ドメイン | 主な機能 | 既存資産の再利用度 | 規制複雑度 | ステータス |
+|-------|----------|----------|---------------------|-------------|-----------|
+| **Phase 0** | 基盤汎用化 | 承認ワークフローエンジンの完全汎用化、汎用ドキュメント管理基盤 | −（投資フェーズ） | 低 | ✅ 完了（全5タスク） |
+| **Phase 1** | 総務・法務 | 契約書管理、稟議申請、条項AI抽出、更新期限アラート | 高（承認・監査ログ・AI Gateway） | 中 | ✅ 完了（全6タスク） |
+| **Phase 2** | 購買・調達 | 発注申請、サプライヤー管理、購買稟議 | 高（Phase0/1のワークフロー・帳票基盤） | 低〜中 | 🔵 着手中 |
+| **Phase 3** | 人事労務 | 勤怠管理、給与計算内製化、社保・年末調整 | 中（給与連携は既存、計算ロジックは新規） | 高（労働法制） | 未着手 |
+| **Phase 4** | 営業事務 | 見積書、契約更新連携、案件管理 | 高（請求書発行・契約管理の延長） | 低 | 未着手 |
+| **Phase 5** | 統合最適化 | 横断ダッシュボード、AIエージェントによる業務横断レコメンド | −（統合フェーズ） | 低 | 未着手 |
 
 > 各Phaseの詳細タスク分解と実装指示プロンプトは、**そのPhaseに着手するタイミングでClaudeが都度作成する**（Phase 2以降は直前Phaseの実装結果に依存するため、事前に確定させすぎない）。本計画書ではPhase 0とPhase 1（今回合意した優先領域）のみ、タスクレベルまで展開する。
 
@@ -708,7 +708,7 @@ Phase 0で汎用化した承認エンジン・添付ファイル基盤・AIゲ�
 | P1-T3 | 契約RBAC強制・AI提案ライフサイクル正式化 | ~~承認ワークフロー統合~~（P1-T1で先行実装済みのため統合済み）→ **スコープ変更**: (1) DEBT-005: contract permissionのAPI認可強制、(2) `ai_suggestions.target_type/target_id`のライフサイクル正式決定、(3) 状態遷移・SoDの最終確認 | P0-T1, P0-T4, P1-T1, P1-T2 | ✅ SO正式PASS（コミットb9a948d、DEBT-005/006/source_suggestion_id整合性を解消、DEBT-008を記録、mainマージ指示済み） |
 | P1-T4 | 契約期限アラート・バッチ | 満了/自動更新の一定日数前に通知を生成するバッチワーカー | P1-T1 | ✅ SO正式PASS（コミット、notification.batch_execute権限をowner限定で追加、DEBT-009を記録、mainマージ指示済み） |
 | P1-T5 | 稟議申請（汎用ワークフロー起票UI） | 契約以外の一般的な稟議（購買以外の申請）もこの画面から起票できる汎用フォーム | P0-T1, P1-T1, P1-T3 | ✅ SO正式PASS（コミット60a0724、fail-closed migration・DEBT-010を記録、mainマージ指示済み） |
-| P1-T6 | 契約書全文検索（pgvector活用） | 既存のjournal_entry_embeddingsと同様のパターンで契約書本文をベクトル化し類似契約検索を提供 | P1-T1, P1-T2 | ✅ SO正式PASS（コミット1750b21、検索対象をactiveのみに限定、DEBT-012を記録、mainマージ指示済み）— **Phase 1完了** |
+| P1-T6 | 契約書全文検索（pgvector活用） | 既存のjournal_entry_embeddingsと同様のパターンで契約書本文をベクトル化し類似契約検索を提供 | P1-T1, P1-T2 | ✅ SO正式PASS・mainマージ完了（マージコミット`bd697eb`、main上でE2E 97/97・Jest 102/102・typecheck/build全PASS再確認済み）— **Phase 1完了** |
 
 ### 3.3 Phase 1 実装指示プロンプト（Gemini向け）
 
@@ -1789,7 +1789,93 @@ migration運用ルール）をそのまま踏襲する形で、Claudeが次の�
 
 ---
 
-## 4. 既知の技術的負債・フォローアップ事項
+## 4. Phase 2: 購買・調達（発注申請・サプライヤー管理）
+
+### 4.1 目的
+
+Phase 0で`approval_rules`/`approval_requests`のtarget_typeに`purchase_request`を追加済み
+（P0-T1）であり、まだ実際のドメインテーブルは存在しない。Phase 1で確立した設計パターン
+（tenant整合性のDBトリガー、暗黙自動承認の防止、RBAC強制、Controller/Service二層防御、
+migrationのappend-only・fail-closed運用）をそのまま踏襲し、発注申請とサプライヤー管理を
+実装する。
+
+### 4.2 タスク分解
+
+| タスクID | タスク名 | 概要 | 依存 | ステータス |
+|----------|----------|------|------|-----------|
+| P2-T1 | `purchase_requests`テーブル設計・実装 | 発注申請本体（品目、数量、単価、サプライヤー、金額、納期、ステータス）、既存承認エンジン統合、RBAC強制 | P0-T1, P1-T1, P1-T3 | プロンプト発行済み・着手待ち |
+| P2-T2 | サプライヤー（取引先）マスタ管理 | サプライヤー登録・編集・検索、連絡先・支払条件等の管理、purchase_requestsとの関連付け | P0-T1 | 未着手 |
+| P2-T3 | 発注〜検収〜請求の連携 | purchase_requestsが承認完了した後の発注確定、検収記録、既存vendor_bills（請求書管理）との紐付け | P2-T1, P2-T2 | 未着手 |
+| P2-T4 | 購買ダッシュボード・レポート | テナント内の購買状況（申請中・承認済み・発注済み件数、サプライヤー別支出等）の可視化 | P2-T1, P2-T2, P2-T3 | 未着手 |
+
+P2-T2以降の詳細タスク分解・実装指示プロンプトは、P2-T1の実装結果（実際のテーブル定義・
+API形状）を踏まえてClaudeが都度作成する（Phase 0/1と同じ方針）。
+
+### 4.3 Phase 2 実装指示プロンプト（Gemini向け）
+
+#### 【指示プロンプト P2-T1】purchase_requestsテーブル設計・実装
+
+```
+# 背景・目的
+Phase 0（P0-T1）で承認エンジンのtarget_typeに'purchase_request'を追加済みだが、実際の
+発注申請ドメインテーブルはまだ存在しない。Phase 1のcontracts/general_requestsで確立した
+設計パターンをそのまま踏襲し、発注申請の中核テーブルとAPIを実装する。
+
+# 前提となる既存実装（必ず先に読むこと）
+- P0-T1: approval_requests/approval_rulesのtarget_type='purchase_request'（既にCHECK制約に
+  含まれている）
+- P1-T1: contractsのテーブル設計パターン（tenant整合性トリガー、状態遷移トリガー、
+  active後の主要項目改変禁止）
+- P1-T1-FIX: 「承認ルール未設定→エラー」「明示的0-step→即active」「1ステップ以上→通常フロー」
+  という自動承認の安全策
+- P1-T3: RBAC強制のパターン（PermissionsGuard + Controller + Service層の二重確認）
+- P1-T5: general_requestsの設計（amount非負制約、category enum、fail-closedなmigration）
+
+# やってはいけないこと
+- これまでPhase 1で繰り返し指摘・修正してきた問題（暗黙自動承認、tenant整合性のアプリ層のみ
+  でのチェック、RBAC未強制、amount等の数値列への非負制約忘れ、migrationの事後書き換え、
+  制約追加migrationでの既存データ自動改変）のいずれも再発させないこと。
+- 既存のcontracts/general_requests向けの承認・RLS実装を変更・破壊しない。
+
+# 実装対象
+1. 新規マイグレーションで purchase_requests テーブルを作成する
+   （id, tenant_id, request_no, supplier_name（P2-T2でsupplier_idへ置き換え予定、
+   現段階ではフリーテキストで可）, item_description, quantity, unit_price(numeric, CHECK >= 0),
+   total_amount(numeric, CHECK >= 0), currency, requested_delivery_date, status
+   (draft/pending_approval/active/rejected/terminated), created_by, approved_at,
+   attachment_id(nullable)等）。
+   RLS（ENABLE + FORCE）、tenant整合性トリガー（attachment_id/created_by、既存パターン踏襲）、
+   active後の主要項目改変禁止トリガーを実装する。
+2. 承認申請ロジックは、P1-T1-FIXで確立した「ルール未設定→エラー」「明示的0-step→即active」
+   「1ステップ以上→通常フロー」をそのまま適用する。
+3. purchase_request.create/view/edit/approve/terminate のpermissionをRBAC体系に追加し、
+   Controller・Service両層でチェックする（DEBT-005/P1-T3と同じ二重防御パターン）。
+4. フロントエンドに発注申請の起票・一覧・詳細画面を実装する。
+
+# 受け入れ基準（Definition of Done）
+- [ ] 発注申請を作成→承認申請→承認完了でactiveになる一連の動作を確認
+- [ ] 承認ルール未設定のテナントで申請するとエラーになり、自動activeにならないことを確認
+- [ ] unit_price/total_amountへの負数INSERTがDB CHECK制約で拒否される
+- [ ] 他テナントのattachment_id/created_byを指定するとDBトリガーで拒否される
+- [ ] purchase_request.*のpermissionを持たないロールでは操作できないことを確認
+- [ ] 他テナントから当該発注申請が一切見えないことをRLSで確認
+- [ ] migrationがappend-only・fail-closedの原則（本計画書0.4節）に従っている
+- [ ] Phase 0で確立した実DB E2E検証基盤で、上記すべてを実PostgreSQL上で確認し、
+      結果を報告に添付する
+- [ ] feature/p2-t1-purchase-requests ブランチにコミット・pushし、比較URLを報告に含める
+      （本計画書0.4節に従う）
+
+# ChatGPTレビュー時の確認観点
+- Phase 1で指摘・修正された問題（暗黙自動承認、tenant整合性のアプリ層依存、RBAC未強制、
+  数値列の非負制約忘れ、migration事後書き換え、fail-closedでないデータ検証）のいずれかが
+  再発していないか、重点的に確認してほしい
+- total_amountがquantity×unit_priceと整合しているか（アプリ層での計算だけでなく、
+  DB上で矛盾したデータが入り得る設計になっていないか）
+```
+
+---
+
+## 5. 既知の技術的負債・フォローアップ事項
 
 タスク完了時にSOが「修正不要だが記録すべき」と判定した事項を追跡する。将来の関連タスク着手時に必ず参照すること。
 
@@ -1797,7 +1883,7 @@ migration運用ルール）をそのまま踏襲する形で、Claudeが次の�
 |----|-----------|------|--------|----------|-----------|
 | DEBT-001 | P0-T2 | `AttachmentsService.upload()` がファイル実体をディスクへ書き込んだ後にDB transactionを実行しており、DB rollback時に孤児ファイルが残り得る（原子性がない）。MVP・ローカルディスク保存の間は許容するが、S3等のオブジェクトストレージへ移行する際は、DB transaction・object storage・補償処理(transactional outbox等)を含めた整合性設計を正式に行う。 | MEDIUM | Phase 5（統合最適化）またはストレージ本格化タイミングで再評価 | 🔴 未対応 |
 | DEBT-002 | P0-T3 | `suggested_fields.*.confidence` および `confidenceScore` に0〜1の範囲制約がTypeScript型・Zod入力・JSONB内部のいずれでも実行時に保証されていない。DB制約はJSONB内部までは及ばないため、異常値（例: 1.5, -0.3）が保存され得る。共通スキーマに`z.number().min(0).max(1)`等のruntime validationを追加する必要がある。 | MEDIUM | AIゲートウェイ正式化（複数プロバイダ対応）タイミングで対応 | 🔴 未対応 |
-| DEBT-003 | P0-T3 | 契約書条項抽出（`extractContractTerms()`）は現状ルールエンジン（正規表現ベース）だが、`generateContractSuggestion()`の`model_name`デフォルト値が`claude-3-5-sonnet-20241022`になっており、実際にはLLMを呼んでいないのに監査データ上はClaudeが生成したように見える。`provider='rule_engine'`, `model_name='contract-extractor-v1'`等、実態に即した値に修正し、将来的にはAI Provider/Gateway抽象化（Claude/Gemini/OpenAI/Rule Engineを共通payloadで扱う設計）を正式化する。 | MEDIUM（会計SaaSとして監査追跡性に影響） | Phase 1でAI条項抽出を本格実装するタイミングで対応必須（それまでの暫定値として認識しておく） | 🔴 未対応（**P1-T2で必須対応**） |
+| DEBT-003 | P0-T3 | 契約書条項抽出（`extractContractTerms()`）は現状ルールエンジン（正規表現ベース）だが、`generateContractSuggestion()`の`model_name`デフォルト値が`claude-3-5-sonnet-20241022`になっており、実際にはLLMを呼んでいないのに監査データ上はClaudeが生成したように見える。`provider='rule_engine'`, `model_name='contract-extractor-v1'`等、実態に即した値に修正し、将来的にはAI Provider/Gateway抽象化（Claude/Gemini/OpenAI/Rule Engineを共通payloadで扱う設計）を正式化する。 | MEDIUM（会計SaaSとして監査追跡性に影響） | Phase 1でAI条項抽出を本格実装するタイミングで対応必須（それまでの暫定値として認識しておく） | ✅ 解消（P1-T2-FIX、model_name='contract-extractor-v1'・provider='rule_engine'として実装済み） |
 | DEBT-004 | P0-T4 | 開発・レビュー環境に`psql`クライアントが存在せず、`npm run db:migrate` / `verify_schema.py`のDB接続を伴う実行（実DB E2E検証）が未実施のまま。SQLの静的な安全性（migration runnerの実行順序等）は確認済みだが、実DBに対する動作確認ができていない。CI環境またはローカル開発環境に`psql`（またはコンテナ経由のPostgreSQLクライアント）を整備し、今後のmigrationタスクで実DB E2E確認を標準化する。 | MEDIUM（開発環境整備） | Phase 1のP1-T1（contractsテーブル実装、実DB検証が必須）着手前に対応推奨 | ✅ 解消（P0-T5、実DB E2E 34/34 PASS確認済み） |
 | DEBT-005 | P1-T1 | ContractsControllerのCRUD/承認申請APIが`TenantAuthGuard`は通しているが、P0-T4で整備した`contract.create/view/edit/approve/terminate`のpermission（RBAC）を明示的にチェックしていない（既存vendor-bills等と同じパターンを踏襲した結果）。`legal_viewer`が閲覧専用のはずが、現状のAPI実装だけでは書き込み系エンドポイントを呼べてしまう可能性がある。 | MEDIUM〜HIGH（権限外操作の防止に直結） | **P1-T3（契約承認ワークフロー統合）着手時に対応必須** | ✅ 解消（P1-T3、PermissionsGuard導入・Service層でも二重確認済み） |
 | DEBT-006 | P1-T1-FIX | `is_explicit_auto_approve=true`の0-stepルールと、1ステップ以上の通常承認ルールが同一ルールセット内に混在していても、現状のロジックは自動承認ルールを優先して選択してしまう（この組み合わせ自体を防ぐ制約がない）。承認ルール管理API/UIを実装する際に、「0-step自動承認ルールは他のstepと同一ルールセットに共存させない」という制約を追加する必要がある。 | LOW〜MEDIUM | 承認ルール管理API/UIの実装タイミング（Phase 1後半、または P1-T3の一部として） | ✅ 解消（P1-T3-FIX、pg_advisory_xact_lockによる並行実行耐性を実DBで確認済み） |
@@ -1810,15 +1896,17 @@ migration運用ルール）をそのまま踏襲する形で、Claudeが次の�
 
 ---
 
-## 5. 次のアクション
+## 6. 次のアクション
 
-1. 本計画書の内容で問題なければ、**P0-T1から順にGeminiへ指示プロンプトを渡して実装開始**。
-2. Phase 0が完了し次第、Phase 1のP1-T2以降のプロンプトを実際のコード状態を踏まえてClaudeが作成する。
-3. Phase 2（購買・調達）以降のタスク分解は、Phase 1完了後にあらためて計画書へ追記する。
+1. 【P2-T1】のプロンプトをGeminiに渡し、Phase 2（購買・調達）を開始する。
+2. P2-T1完了後、実際のテーブル定義・API形状を踏まえてP2-T2以降のタスク分解・実装指示
+   プロンプトをClaudeが作成する（Phase 0/1と同じ方針）。
+3. 未解決DEBT（5節）は都度解消の方針。次のタスクに直接関係するもの（例: 数値列の非負制約
+   忘れ防止）は各実装指示プロンプトのレビュー観点に反映済み。
 
 ---
 
-## 6. 変更履歴
+## 7. 変更履歴
 
 | バージョン | 日付 | 内容 |
 |------------|------|------|
@@ -1851,3 +1939,4 @@ migration運用ルール）をそのまま踏襲する形で、Claudeが次の�
 | 3.6.0 | P1-T5-FIX3が正式PASS（GitHub実体とも一致、既存データ自動改変の完全撤廃、fail-closed migrationを85/85で確認）。マージ指示プロンプト（P1-T5-MERGE）を追加しP1-T5を完了扱いに更新。**P1-T6（契約書全文検索：pgvector活用）の実装指示プロンプトを新規作成**。これでPhase 1の全6タスクの指示プロンプトが出揃った |
 | 3.7.0 | P1-T6がSO判定REQUEST CHANGES（DB/RLS/tenant整合性/RBACは良好だが、検索対象がdraft/pending/rejectedの契約まで含んでしまい「確定済み契約のみ検索」という仕様境界に違反）。フォローアップ指示プロンプト（P1-T6-FIX、検索対象ステータスの明示的な絞り込み）を追加。DEBT-011（疑似embeddingの精度限界、MVPとして意図的に許容）を記録 |
 | 4.0.0 | P1-T6-FIXが正式PASS（検索対象をactiveのみのallowlistに限定、自然文検索・ID類似検索の両方に適用、実DB E2E 97/97）。DEBT-012（terminated/expired契約が検索対象外）を記録。マージ指示プロンプト（P1-T6-MERGE）とPhase 1クローズのサマリ（往復回数、確立された恒久ルール、DEBT棚卸し）を追加。**Phase 1（総務・法務）が全6タスク完了** |
+| 4.1.0 | P1-T6-MERGE完了報告を反映（マージコミットbd697eb、main上での再検証結果全PASS）。DEBT-003のステータスを解消済みに修正（P1-T2-FIXで実際には対応済みだった）。ロードマップ表(1節)にステータス列を追加しPhase 0/1を完了に更新。**Phase 2（購買・調達）のセクションを新設**し、タスク分解（P2-T1〜T4）とP2-T1（purchase_requestsテーブル設計・実装）の実装指示プロンプトを追加。以降のセクション番号を1つずつ繰り下げ |

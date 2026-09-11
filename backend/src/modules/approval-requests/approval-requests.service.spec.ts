@@ -183,13 +183,15 @@ describe('ApprovalRequestsService', () => {
           },
         ],
       });
-      // 2. assertAssignedApprover
+      // 2. assertAssignedApprover: purchase_request.approve 権限チェック
       mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ '?column?': 1 }] });
-      // 3. INSERT INTO approval_history
+      // 3. assertAssignedApprover: 割当承認者チェック
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ '?column?': 1 }] });
+      // 4. INSERT INTO approval_history
       mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [] });
-      // 4. UPDATE approval_requests SET current_step = 2
+      // 5. UPDATE approval_requests SET current_step = 2
       mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [] });
-      // 5. fetchDetail
+      // 6. fetchDetail
       mockClient.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [
@@ -213,6 +215,58 @@ describe('ApprovalRequestsService', () => {
       expect(mockClient.query).toHaveBeenCalledWith(
         expect.stringContaining('UPDATE approval_requests SET current_step = $2'),
         [REQUEST_ID, 2],
+      );
+    });
+
+    it('target_type = "purchase_request" の最終承認で status = "active" に遷移する', async () => {
+      // 1. fetchPendingRequest
+      mockClient.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [
+          {
+            id: REQUEST_ID,
+            target_type: 'purchase_request',
+            target_id: TARGET_ID,
+            submitted_by: SUBMITTER_USER_ID,
+            total_steps: 1,
+            current_step: 1,
+            status: 'pending',
+          },
+        ],
+      });
+      // 2. assertAssignedApprover: purchase_request.approve 権限チェック
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ '?column?': 1 }] });
+      // 3. assertAssignedApprover: 割当承認者チェック
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ '?column?': 1 }] });
+      // 4. INSERT INTO approval_history
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [] });
+      // 5. UPDATE approval_requests SET status = 'approved'
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [] });
+      // 6. UPDATE purchase_requests SET status = 'active'
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [] });
+      // 7. fetchDetail
+      mockClient.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [
+          {
+            id: REQUEST_ID,
+            target_type: 'purchase_request',
+            target_id: TARGET_ID,
+            submitted_by: SUBMITTER_USER_ID,
+            total_steps: 1,
+            current_step: 1,
+            status: 'approved',
+          },
+        ],
+      });
+      mockClient.query.mockResolvedValueOnce({ rows: [] });
+
+      const res = await service.approve(TENANT_ID, APPROVER_USER_ID, REQUEST_ID, {});
+
+      expect(res.status).toBe('approved');
+      expect(mockClient.query).toHaveBeenCalledWith(
+        expect.stringContaining('UPDATE purchase_requests SET status = \'active\''),
+        [TENANT_ID, TARGET_ID],
       );
     });
   });
@@ -276,6 +330,69 @@ describe('ApprovalRequestsService', () => {
         expect.objectContaining({
           action: 'contract.rejected',
           targetType: 'contract',
+          targetId: TARGET_ID,
+        }),
+      );
+    });
+
+    it('target_type = "purchase_request" で正常に却下できる', async () => {
+      // 1. fetchPendingRequest
+      mockClient.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [
+          {
+            id: REQUEST_ID,
+            target_type: 'purchase_request',
+            target_id: TARGET_ID,
+            submitted_by: SUBMITTER_USER_ID,
+            total_steps: 1,
+            current_step: 1,
+            status: 'pending',
+          },
+        ],
+      });
+      // 2. assertAssignedApprover: purchase_request.approve 権限チェック
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ '?column?': 1 }] });
+      // 3. assertAssignedApprover: 割当承認者チェック
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ '?column?': 1 }] });
+      // 4. INSERT INTO approval_history
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [] });
+      // 5. UPDATE approval_requests SET status = 'rejected'
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [] });
+      // 6. UPDATE purchase_requests SET status = 'rejected'
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [] });
+      // 7. fetchDetail: approval_requests
+      mockClient.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [
+          {
+            id: REQUEST_ID,
+            target_type: 'purchase_request',
+            target_id: TARGET_ID,
+            submitted_by: SUBMITTER_USER_ID,
+            total_steps: 1,
+            current_step: 1,
+            status: 'rejected',
+          },
+        ],
+      });
+      // 8. fetchDetail: approval_history
+      mockClient.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [],
+      });
+
+      const res = await service.reject(TENANT_ID, APPROVER_USER_ID, REQUEST_ID, {
+        comment: '予算超過のため却下',
+      });
+
+      expect(res.status).toBe('rejected');
+      expect(mockAuditLogs.record).toHaveBeenCalledWith(
+        mockClient,
+        TENANT_ID,
+        expect.objectContaining({
+          action: 'purchase_request.rejected',
+          targetType: 'purchase_request',
           targetId: TARGET_ID,
         }),
       );

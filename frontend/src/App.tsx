@@ -122,6 +122,15 @@ const GeneralRequestFormPage = lazy(() =>
 const GeneralRequestDetailPage = lazy(() =>
   import('./pages/general-requests/GeneralRequestDetailPage').then((m) => ({ default: m.GeneralRequestDetailPage })),
 );
+const PurchaseRequestListPage = lazy(() =>
+  import('./pages/purchase-requests/PurchaseRequestListPage').then((m) => ({ default: m.PurchaseRequestListPage })),
+);
+const PurchaseRequestFormPage = lazy(() =>
+  import('./pages/purchase-requests/PurchaseRequestFormPage').then((m) => ({ default: m.PurchaseRequestFormPage })),
+);
+const PurchaseRequestDetailPage = lazy(() =>
+  import('./pages/purchase-requests/PurchaseRequestDetailPage').then((m) => ({ default: m.PurchaseRequestDetailPage })),
+);
 const SettingsPage = lazy(() => import('./pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
 const MobileExpenseApplyPage = lazy(() =>
   import('./pages/mobile/MobileExpenseApplyPage').then((m) => ({ default: m.MobileExpenseApplyPage })),
@@ -204,6 +213,10 @@ export default function App() {
             <Route path="/general-requests/new" element={<GeneralRequestFormPage />} />
             <Route path="/general-requests/:id" element={<GeneralRequestDetailPage />} />
             <Route path="/general-requests/:id/edit" element={<GeneralRequestFormPage />} />
+            <Route path="/purchase-requests" element={<PurchaseRequestListPage />} />
+            <Route path="/purchase-requests/new" element={<PurchaseRequestFormPage />} />
+            <Route path="/purchase-requests/:id" element={<PurchaseRequestDetailPage />} />
+            <Route path="/purchase-requests/:id/edit" element={<PurchaseRequestFormPage />} />
             <Route path="/forbidden" element={<ForbiddenPage />} />
 
             {/* 職務分掌(SoD)RBAC: 財務諸表は ADMIN / ACCOUNTANT のみ */}
