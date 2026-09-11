@@ -707,7 +707,7 @@ Phase 0で汎用化した承認エンジン・添付ファイル基盤・AIゲ�
 | P1-T2 | 契約書アップロード〜AI条項抽出フロー | PDFアップロード→AIゲートウェイでの条項抽出提案→人間確認画面（DEBT-002/DEBT-003をあわせて解消） | P0-T3, P1-T1 | ✅ SO正式PASS（コミット923ccfd修正後、実PDF内容依存性をE2Eで確認済み、DEBT-007を記録・mainマージ指示済み） |
 | P1-T3 | 契約RBAC強制・AI提案ライフサイクル正式化 | ~~承認ワークフロー統合~~（P1-T1で先行実装済みのため統合済み）→ **スコープ変更**: (1) DEBT-005: contract permissionのAPI認可強制、(2) `ai_suggestions.target_type/target_id`のライフサイクル正式決定、(3) 状態遷移・SoDの最終確認 | P0-T1, P0-T4, P1-T1, P1-T2 | ✅ SO正式PASS（コミットb9a948d、DEBT-005/006/source_suggestion_id整合性を解消、DEBT-008を記録、mainマージ指示済み） |
 | P1-T4 | 契約期限アラート・バッチ | 満了/自動更新の一定日数前に通知を生成するバッチワーカー | P1-T1 | ✅ SO正式PASS（コミット、notification.batch_execute権限をowner限定で追加、DEBT-009を記録、mainマージ指示済み） |
-| P1-T5 | 稟議申請（汎用ワークフロー起票UI） | 契約以外の一般的な稟議（購買以外の申請）もこの画面から起票できる汎用フォーム | P0-T1, P1-T1, P1-T3 | ⚠️ SO判定REQUEST CHANGES（コミット28812ec、015が既存データ違反時に無断で自動クレンジング(UPDATE)している。migration不変原則は解消済み。修正指示済み・再レビュー待ち） |
+| P1-T5 | 稟議申請（汎用ワークフロー起票UI） | 契約以外の一般的な稟議（購買以外の申請）もこの画面から起票できる汎用フォーム | P0-T1, P1-T1, P1-T3 | ⚠️ SO判定REQUEST CHANGES（コミット28812ec = FIX2相当のまま。FIX3の内容が報告されているがGitHubに未反映。設計自体はPASS見込み、push状態の確認・修正を指示済み） |
 | P1-T6 | 契約書全文検索（pgvector活用） | 既存のjournal_entry_embeddingsと同様のパターンで契約書本文をベクトル化し類似契約検索を提供 | P1-T1 | 未着手 |
 
 ### 3.3 Phase 1 実装指示プロンプト（Gemini向け）
@@ -1556,6 +1556,44 @@ append-only原則違反）は完全に解消されている。今回の指摘は
 
 ---
 
+#### 【フォローアップ指示プロンプト P1-T5-FIX3-VERIFY】push状態の確認・是正（設計は承認済み）
+
+ChatGPT(SO)より、P1-T5-FIX3の**設計自体はfail-closed原則に合致しており問題ない**と判定された。
+ただし、報告内容とGitHub上の実コミット（28812ec）が一致しておらず、報告されたUPDATE削除・
+RAISE EXCEPTION化がまだリモートに反映されていない状態が確認された。これは本計画書0.4節
+「push前の報告のみの完了通知は受け付けない」というルールに関わる問題であるため、
+実装内容の再検討ではなく、push状態の確認と是正を最優先で行う。
+
+```
+# 指示
+以下を確認し、必要な対応を行ってください。設計自体は前回提示された内容（UPDATE削除、
+DO $$ ... RAISE EXCEPTION ... END $$ によるfail-closed化）で問題ないため、再設計は不要です。
+
+1. git status / git log でローカルの変更状態とコミット履歴を確認する。
+   前回報告したFIX3の変更（015からのUPDATE削除、RAISE EXCEPTION追加）が
+   実際にコミットされているか確認する。
+2. コミットされていない場合は、コミットした上でfeature/p1-t5-general-requests ブランチへpushする。
+   コミットはされているがpushされていない場合は、pushする。
+3. git diff --name-only <直前のFIX2コミット>...HEAD を実行し、実際に変更されたファイルの
+   一覧を報告に含める。
+4. push後、GitHub上の sql/015_general_request_constraints.sql を直接確認し、
+   UPDATE文が存在しないこと、RAISE EXCEPTIONによるfail-closad化が反映されていることを
+   目視でも確認する。
+5. 改めてクリーンDB・段階的アップグレード（違反データあり/なし）の実DB E2Eを実行し、
+   結果を報告に添付する。
+6. 今回のpush漏れがなぜ起きたか（コミットし忘れ、別ブランチへのpush、push自体の失敗等）を
+   一言報告してください。今後の再発防止のため記録します。
+
+# 受け入れ基準（Definition of Done）
+- [ ] GitHub上のfeature/p1-t5-general-requests HEADで、015からUPDATE文が完全に削除されている
+- [ ] GitHub上のfeature/p1-t5-general-requests HEADで、RAISE EXCEPTIONによるfail-closed化が
+      確認できる
+- [ ] 新しいコミットSHAを報告に明記する
+- [ ] 実DB E2E（違反データあり/なし両方のケースを含む）の結果を報告に添付する
+```
+
+---
+
 ## 3.4 決定事項: ロール・権限の粒度方針
 
 - **方針**: 権限を細分化し、権限外の領域は閲覧も含めて不可とする（deny-by-default）。既存のRLSが「fail-closed（未設定・不一致時は0件返却）」の原則を採っているため、この方針とも整合的。
@@ -1620,3 +1658,4 @@ append-only原則違反）は完全に解消されている。今回の指摘は
 | 3.2.0 | P1-T5がSO判定REQUEST CHANGES（general_requests.amountに非負DB制約が欠落。category制約も推奨事項として指摘）。フォローアップ指示プロンプト（P1-T5-FIX）を追加。DEBT-010（起票者本人以外もdraft稟議を編集・削除できる、仕様未確定）を記録 |
 | 3.3.0 | P1-T5-FIXがSO判定REQUEST CHANGES（重大: 既存migration 014を事後的に書き換えたため、適用済みDBには制約が反映されない）。フォローアップ指示プロンプト（P1-T5-FIX2、新規migration 015への切替＋既存DB段階的アップグレードのE2E追加）を追加。**0.4節にmigration不変（append-only）の原則を新設** |
 | 3.4.0 | P1-T5-FIX2がSO判定REQUEST CHANGES（migration append-only原則は解消済みだが、015が既存データを無断でUPDATE/自動クレンジングしていた）。フォローアップ指示プロンプト（P1-T5-FIX3、fail-closedなDO $$ EXCEPTIONブロックへの置き換え）を追加。**0.4節に「制約追加migrationは既存データを自動改変せずfail-closedで停止する」原則を新設** |
+| 3.5.0 | P1-T5-FIX3がSO判定REQUEST CHANGES（設計自体は承認、ただし報告内容とGitHub実コミットが不一致。push漏れ）。フォローアップ指示プロンプト（P1-T5-FIX3-VERIFY）を追加し、push状態の確認・是正を指示（0.4節の既存ルールの再徹底） |
