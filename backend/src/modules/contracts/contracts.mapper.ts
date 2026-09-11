@@ -5,6 +5,7 @@ export type ContractDto = components['schemas']['Contract'];
 export type ContractDetailDto = components['schemas']['ContractDetail'];
 export type ContractAttachmentDto = NonNullable<ContractDetailDto['attachment']>;
 export type ContractApprovalHistoryEntryDto = components['schemas']['ApprovalHistoryEntry'];
+export type SimilarContractDto = components['schemas']['SimilarContract'];
 
 export interface ContractRow {
   id: string;
@@ -22,6 +23,7 @@ export interface ContractRow {
   attachment_id: string | null;
   source_suggestion_id: string | null;
   description: string | null;
+  extracted_text: string | null;
   approved_at: Date | null;
   created_by: string;
   created_at: Date;
@@ -44,6 +46,7 @@ export const SQL_CONTRACT_COLUMNS = `
   c.attachment_id,
   c.source_suggestion_id,
   c.description,
+  c.extracted_text,
   c.approved_at,
   c.created_by,
   c.created_at,
@@ -67,9 +70,39 @@ export function mapContractRow(row: ContractRow): ContractDto {
     attachment_id: row.attachment_id,
     source_suggestion_id: row.source_suggestion_id,
     description: row.description,
+    extracted_text: row.extracted_text ?? null,
     approved_at: row.approved_at ? row.approved_at.toISOString() : null,
     created_by: row.created_by,
     created_at: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
     updated_at: row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at),
   };
 }
+
+export interface SimilarContractRow {
+  id: string;
+  contract_no: string;
+  title: string;
+  counterparty_name: string;
+  contract_type: string;
+  contract_amount: string | null;
+  status: string;
+  similarity_score: string | number;
+  matched_chunk_index: number | null;
+  matched_chunk_text: string | null;
+}
+
+export function mapSimilarContractRow(row: SimilarContractRow): SimilarContractDto {
+  return {
+    id: row.id,
+    contract_no: row.contract_no,
+    title: row.title,
+    counterparty_name: row.counterparty_name,
+    contract_type: row.contract_type as ContractType,
+    contract_amount: row.contract_amount !== null ? Number(row.contract_amount) : null,
+    status: row.status as ContractStatus,
+    similarity_score: Math.round(Number(row.similarity_score) * 1000) / 1000,
+    matched_chunk_index: row.matched_chunk_index !== null ? Number(row.matched_chunk_index) : null,
+    matched_chunk_text: row.matched_chunk_text ?? null,
+  };
+}
+

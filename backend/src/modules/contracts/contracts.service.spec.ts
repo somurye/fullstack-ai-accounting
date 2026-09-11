@@ -1,7 +1,7 @@
 import { AppException } from '../../common/exceptions/app.exception';
 import type { DatabaseService } from '../../database/database.service';
 import type { AuditLogsService } from '../audit-logs/audit-logs.service';
-import { ContractsService } from './contracts.service';
+import { CONFIRMED_SEARCH_CONTRACT_STATUSES, ContractsService } from './contracts.service';
 
 describe('ContractsService', () => {
   let service: ContractsService;
@@ -482,6 +482,149 @@ describe('ContractsService', () => {
       await expect(
         service.extractTerms(TENANT_ID, USER_ID, { attachment_id: ATTACHMENT_ID }),
       ).rejects.toThrow(AppException);
+    });
+  });
+
+  describe('contract embeddings & similarity search (P1-T6)', () => {
+    const OTHER_CONTRACT_ID = '55555555-5555-5555-5555-555555555555';
+
+    it('extracted_text を指定して契約書を作成した場合、チャンク分割され contract_embeddings に保存される', async () => {
+      const contractText = '第1条 (目的) 甲および乙は...\n第2条 (秘密保持) 業務上知り得た秘密情報を保持する。';
+      mockClient.query
+        .mockResolvedValueOnce({ rows: [] }) // advisory lock
+        .mockResolvedValueOnce({ rows: [{ count: '0' }] }) // count for contract_no
+        .mockResolvedValueOnce({
+          rows: [{ ...sampleContractRow, extracted_text: contractText }],
+        }) // insert returning
+        .mockResolvedValueOnce({ rowCount: 0 }) // delete existing embeddings
+        .mockResolvedValueOnce({ rowCount: 1 }); // insert embedding chunks
+
+      const result = await service.create(TENANT_ID, USER_ID, {
+        title: '機密保持契約書',
+        counterparty_name: '株式会社テスト相手',
+        contract_type: 'nda',
+        currency: 'JPY',
+        start_date: '2026-05-01',
+        auto_renewal: false,
+        renewal_notice_days: 30,
+        extracted_text: contractText,
+      });
+
+      expect(result.id).toBe(CONTRACT_ID);
+      expect(result.extracted_text).toBe(contractText);
+      // delete existing embeddings が呼ばれること
+      expect(mockClient.query).toHaveBeenCalledWith(
+        expect.stringContaining('DELETE FROM contract_embeddings'),
+        [TENANT_ID, CONTRACT_ID],
+      );
+      // insert embeddings が呼ばれ、tenant_id と contract_id がバインドされていること
+      expect(mockClient.query).toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO contract_embeddings'),
+        expect.arrayContaining([TENANT_ID, CONTRACT_ID, 0]),
+      );
+    });
+
+    it('findSimilarContractsById: 類似契約とマッチした条項チャンクを類似度スコア降順で取得できる', async () => {
+      // 1. 対象契約存在確認
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ id: CONTRACT_ID }] });
+      // 2. 対象契約のチャンク存在確認
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ id: '1' }] });
+      // 3. 類似検索クエリ結果
+      mockClient.query.mockResolvedValueOnce({
+        rows: [
+          {
+            id: OTHER_CONTRACT_ID,
+            contract_no: 'CNT-2026-0002',
+            title: '秘密保持覚書',
+            counterparty_name: '株式会社パートナーB',
+            contract_type: 'nda',
+            contract_amount: '0',
+            status: 'active',
+            similarity_score: '0.8850',
+            matched_chunk_index: 1,
+            matched_chunk_text: '第3条 秘密情報の目的外使用を禁ずる。',
+          },
+        ],
+      });
+
+      const results = await service.findSimilarContractsById(
+        TENANT_ID,
+        USER_ID,
+        CONTRACT_ID,
+        { limit: 5, threshold: 0.5 },
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0].id).toBe(OTHER_CONTRACT_ID);
+      expect(results[0].contract_no).toBe('CNT-2026-0002');
+      expect(results[0].similarity_score).toBe(0.885);
+      expect(results[0].matched_chunk_text).toContain('秘密情報の目的外使用');
+
+      // クエリパラメータに自テナントIDおよび確定済みステータス群が渡され、未確定契約が除外されること
+      expect(mockClient.query).toHaveBeenLastCalledWith(
+        expect.stringContaining('c.status = ANY($5)'),
+        [TENANT_ID, CONTRACT_ID, 0.5, 5, [...CONFIRMED_SEARCH_CONTRACT_STATUSES]],
+      );
+    });
+
+    it('findSimilarContractsById: 対象契約が存在しない場合はnotFound例外を投げる', async () => {
+      mockClient.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
+
+      await expect(
+        service.findSimilarContractsById(TENANT_ID, USER_ID, 'non-existent', {
+          limit: 5,
+          threshold: 0.5,
+        }),
+      ).rejects.toThrow(AppException);
+    });
+
+    it('findSimilarContractsById: 対象契約に本文・embeddingが存在しない場合は空配列を返す', async () => {
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ id: CONTRACT_ID }] });
+      mockClient.query.mockResolvedValueOnce({ rowCount: 0, rows: [] }); // チャンクなし
+
+      const results = await service.findSimilarContractsById(
+        TENANT_ID,
+        USER_ID,
+        CONTRACT_ID,
+        { limit: 5, threshold: 0.5 },
+      );
+      expect(results).toEqual([]);
+    });
+
+    it('searchSimilarContractsByText: 自然文クエリからベクトル近傍探索で類似契約を取得できる', async () => {
+      mockClient.query.mockResolvedValueOnce({
+        rows: [
+          {
+            id: OTHER_CONTRACT_ID,
+            contract_no: 'CNT-2026-0003',
+            title: 'システム保守業務委託契約書',
+            counterparty_name: '株式会社インフラサービス',
+            contract_type: 'outsourcing',
+            contract_amount: '500000.00',
+            status: 'active',
+            similarity_score: '0.9200',
+            matched_chunk_index: 0,
+            matched_chunk_text: 'SLA保証: 月間稼働率99.9%を下回った場合の減額規定。',
+          },
+        ],
+      });
+
+      const results = await service.searchSimilarContractsByText(
+        TENANT_ID,
+        USER_ID,
+        { q: 'SLA 稼働率 保証 減額', limit: 10, threshold: 0.3 },
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0].id).toBe(OTHER_CONTRACT_ID);
+      expect(results[0].similarity_score).toBe(0.92);
+      expect(results[0].matched_chunk_text).toContain('SLA保証');
+
+      // クエリパラメータに自テナントIDおよび確定済みステータス群が渡されていること
+      expect(mockClient.query).toHaveBeenCalledWith(
+        expect.stringContaining('c.status = ANY($5)'),
+        [TENANT_ID, expect.any(String), 0.3, 10, [...CONFIRMED_SEARCH_CONTRACT_STATUSES]],
+      );
     });
   });
 });

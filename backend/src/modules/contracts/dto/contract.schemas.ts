@@ -48,6 +48,7 @@ export const contractCreateSchema = z
     attachment_id: z.string().uuid().nullable().optional(),
     source_suggestion_id: z.string().uuid().nullable().optional(),
     description: z.string().nullable().optional(),
+    extracted_text: z.string().nullable().optional(),
   })
   .refine(
     (v) => {
@@ -75,6 +76,7 @@ export const contractUpdateSchema = z
     attachment_id: z.string().uuid().nullable().optional(),
     source_suggestion_id: z.string().uuid().nullable().optional(),
     description: z.string().nullable().optional(),
+    extracted_text: z.string().nullable().optional(),
   })
   .refine(
     (v) => {
@@ -108,3 +110,17 @@ export const extractContractTermsSchema = z.object({
   raw_text: z.string().optional(),
 });
 export type ExtractContractTermsInput = z.infer<typeof extractContractTermsSchema>;
+
+export const similarContractsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(20).default(5),
+  threshold: z.coerce.number().min(0).max(1).default(0.1),
+});
+export type SimilarContractsQuery = z.infer<typeof similarContractsQuerySchema>;
+
+export const searchSimilarContractsQuerySchema = z.object({
+  q: z.string().min(1, '検索テキストは必須です'),
+  limit: z.coerce.number().int().min(1).max(20).default(5),
+  threshold: z.coerce.number().min(0).max(1).default(0.1),
+});
+export type SearchSimilarContractsQuery = z.infer<typeof searchSimilarContractsQuerySchema>;
+

@@ -2,6 +2,7 @@ import {
   BarChart3,
   BookOpen,
   Building2,
+  FileCheck,
   FileStack,
   FileText,
   Landmark,
@@ -76,6 +77,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: '経費精算', to: '/expense-reports', icon: Wallet },
       { label: '稟議申請', to: '/general-requests', icon: FileText },
+      { label: '契約書管理', to: '/contracts', icon: FileCheck },
       { label: '承認待ち', to: '/approval-requests', icon: ScrollText },
     ],
   },
