@@ -1755,6 +1755,107 @@ def run_verification(dsn: str) -> int:
     r.ok("発注申請E2E: RBAC二重防御・DB CHECK整合性・暗黙自動承認防止・明示的0-step・多段階SoD自己承認拒否・WORM改ざん防止・完全テナント分離が動作する (P2-T1)",
          pr_run.returncode == 0)
 
+    # ------------------------------------------------------------------
+    print("\n--- 15. サプライヤーマスタ (P2-T2) の検証 ---")
+
+    # 15-1. 018_suppliers.sql の段階的適用
+    sql_018_path = SQL_DIR / "018_suppliers.sql"
+    with open(sql_018_path, "r", encoding="utf-8") as f:
+        sql_018 = f.read()
+
+    conn = psycopg2.connect(dsn)
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql_018)
+    finally:
+        conn.close()
+    print("[schema] 018_suppliers.sql を適用しました")
+
+    # 15-2. suppliers テーブル存在確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute(
+            """SELECT EXISTS (
+                   SELECT 1 FROM information_schema.tables
+                   WHERE table_schema = 'public' AND table_name = 'suppliers'
+               ) AS table_exists"""
+        )
+        sup_table_exists = cur.fetchone()["table_exists"]
+    r.ok("suppliers テーブルが正常に作成されている", sup_table_exists)
+
+    # 15-3. suppliers テーブルのユニーク制約確認 (uq_suppliers_tenant_name)
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute(
+            """SELECT conname FROM pg_constraint
+               WHERE conrelid = 'suppliers'::regclass AND contype = 'u'"""
+        )
+        u_constraints = {row["conname"] for row in cur.fetchall()}
+    r.ok("suppliers にテナント内ユニーク制約 (uq_suppliers_tenant_name) が存在する",
+         "uq_suppliers_tenant_name" in u_constraints)
+
+    # 15-4. RLS (ENABLE + FORCE) & テナント分離ポリシー確認 (suppliers)
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute(
+            """SELECT relrowsecurity, relforcerowsecurity
+               FROM pg_class WHERE relname = 'suppliers'"""
+        )
+        rls_sup = cur.fetchone()
+        cur.execute(
+            """SELECT policyname FROM pg_policies
+               WHERE tablename = 'suppliers' AND policyname = 'tenant_isolation_suppliers'"""
+        )
+        pol_sup = cur.fetchone()
+    r.ok("suppliers で RLS が有効化かつ FORCE されている (バイパス不可)",
+         rls_sup is not None and rls_sup["relrowsecurity"] and rls_sup["relforcerowsecurity"])
+    r.ok("suppliers に tenant_isolation ポリシーが適用されている", pol_sup is not None)
+
+    # 15-5. purchase_requests への supplier_id 列追加確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute(
+            """SELECT EXISTS (
+                   SELECT 1 FROM information_schema.columns
+                   WHERE table_name = 'purchase_requests' AND column_name = 'supplier_id'
+               ) AS col_exists"""
+        )
+        col_sup_id_exists = cur.fetchone()["col_exists"]
+    r.ok("purchase_requests に supplier_id 列が追加されている", col_sup_id_exists)
+
+    # 15-5b. 参照中サプライヤー名前変更防止トリガー確認 (trg_prevent_supplier_name_change_if_referenced)
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute(
+            """SELECT tgname FROM pg_trigger
+               WHERE tgrelid = 'suppliers'::regclass
+                 AND tgname = 'trg_prevent_supplier_name_change_if_referenced'"""
+        )
+        trg_name_change = cur.fetchone()
+    r.ok("suppliers に参照中サプライヤー名前変更防止トリガー (trg_prevent_supplier_name_change_if_referenced) が存在する (BLOCKER-01)",
+         trg_name_change is not None)
+
+    # 15-6. 冪等性保証: 018を2回連続適用してもエラーにならないこと
+    idempotent_018_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_018)
+        finally:
+            conn.close()
+    except Exception as e:
+        idempotent_018_ok = False
+        print(f"  [ERROR] 018 re-apply failed: {e}")
+    r.ok("段階的アップグレード検証 6: 018を2回連続適用してもエラーにならず正常終了する (ALTER TABLE / DDL 冪等性保証)",
+         idempotent_018_ok)
+
+    # 15-7. 【P2-T2実証】サプライヤーマスタ 実DB E2Eテスト (RBAC二重防御・テナント整合性トリガー・名前不整合防止・後方互換性・RLS)
+    cmd_sup = f"npx ts-node src/scripts/verify-suppliers-e2e.ts \"{dsn}\""
+    sup_run = subprocess.run(cmd_sup, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
+    if sup_run.returncode != 0:
+        err_msg = f"\n[SUPPLIERS E2E ERROR STDOUT]:\n{sup_run.stdout}\n[SUPPLIERS E2E ERROR STDERR]:\n{sup_run.stderr}"
+        print(err_msg.encode("cp932", errors="replace").decode("cp932"))
+    r.ok("サプライヤーマスタE2E: RBAC二重防御・テナント整合性トリガー・名前不整合防止・フリーテキスト後方互換性・完全テナント分離が動作する (P2-T2)",
+         sup_run.returncode == 0)
+
     return r.summary()
 
 
@@ -1783,12 +1884,12 @@ def main() -> int:
 
         # 1. まず 001〜014 までを適用 (P1-T5マージ直後の既存DB状態を再現)
         apply_schema(dsn, max_file="014_general_requests.sql")
-        # 2. 検証実行 (セクション12で015段階適用、セクション13で016段階適用、セクション14で017段階適用 -> E2E実行)
+        # 2. 検証実行 (セクション12で015段階適用、セクション13で016段階適用、セクション14で017段階適用、セクション15で018段階適用 -> E2E実行)
         exit_code = run_verification(dsn)
 
-        # 3. クリーンDBに最初から001〜017を一括適用した場合の回帰なし確認
+        # 3. クリーンDBに最初から001〜018を一括適用した場合の回帰なし確認
         if exit_code == 0:
-            fresh_db_name = "keiri_kaikei_fresh_017"
+            fresh_db_name = "keiri_kaikei_fresh_018"
             conn_raw = psycopg2.connect(dsn)
             conn_raw.autocommit = True
             try:
@@ -1799,9 +1900,9 @@ def main() -> int:
                 conn_raw.close()
 
             dsn_fresh = dsn.rsplit("/", 1)[0] + f"/{fresh_db_name}"
-            print("\n--- クリーンDBへの001〜017一括適用検証 (新規環境回帰なし確認) ---")
+            print("\n--- クリーンDBへの001〜018一括適用検証 (新規環境回帰なし確認) ---")
             apply_schema(dsn_fresh)
-            print("[schema] クリーンDBへの001〜017一括適用が正常終了しました (回帰なし確認完了)")
+            print("[schema] クリーンDBへの001〜018一括適用が正常終了しました (回帰なし確認完了)")
     finally:
         if args.use_docker and not args.keep_docker:
             docker_stop()

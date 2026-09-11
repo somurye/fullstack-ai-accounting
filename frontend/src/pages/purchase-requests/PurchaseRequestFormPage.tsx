@@ -27,7 +27,10 @@ export function PurchaseRequestFormPage() {
   const [saving, setSaving] = useState(false);
 
   const [title, setTitle] = useState('');
+  const [supplierId, setSupplierId] = useState<string | null>(null);
   const [supplierName, setSupplierName] = useState('');
+  const [useCustomSupplier, setUseCustomSupplier] = useState(false);
+  const [suppliersList, setSuppliersList] = useState<{ id: string; name: string }[]>([]);
   const [itemDescription, setItemDescription] = useState('');
   const [quantity, setQuantity] = useState<number | ''>(1);
   const [unitPrice, setUnitPrice] = useState<number | ''>(0);
@@ -36,6 +39,21 @@ export function PurchaseRequestFormPage() {
   const [requestedDeliveryDate, setRequestedDeliveryDate] = useState('');
   const [description, setDescription] = useState('');
   const [attachmentId, setAttachmentId] = useState('');
+
+  // サプライヤーマスタの取得
+  useEffect(() => {
+    const loadSuppliers = async () => {
+      try {
+        const res = await apiClient.get<components['schemas']['SupplierListResponse']>(
+          '/suppliers?page_size=100&status=active',
+        );
+        setSuppliersList(res.data.data.map((s) => ({ id: s.id, name: s.name })));
+      } catch {
+        // マスタ取得失敗時は手入力にフォールバック
+      }
+    };
+    loadSuppliers();
+  }, []);
 
   // 数量または単価の変更時に合計金額を自動計算
   const handleQuantityChange = (val: number | '') => {
@@ -66,7 +84,11 @@ export function PurchaseRequestFormPage() {
         }
 
         setTitle(data.title);
+        setSupplierId(data.supplier_id ?? null);
         setSupplierName(data.supplier_name);
+        if (!data.supplier_id) {
+          setUseCustomSupplier(true);
+        }
         setItemDescription(data.item_description);
         setQuantity(data.quantity);
         setUnitPrice(data.unit_price);
@@ -123,6 +145,7 @@ export function PurchaseRequestFormPage() {
     try {
       const payload = {
         title: title.trim(),
+        supplier_id: supplierId || undefined,
         supplier_name: supplierName.trim(),
         item_description: itemDescription.trim(),
         quantity,
@@ -213,17 +236,61 @@ export function PurchaseRequestFormPage() {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-surface-200 mb-1.5 flex items-center gap-1.5">
-                <Building2 className="w-4 h-4 text-surface-400" />
-                サプライヤー / 発注先名 <span className="text-rose-400">*</span>
-              </label>
-              <input
-                type="text"
-                value={supplierName}
-                onChange={(e) => setSupplierName(e.target.value)}
-                placeholder="例: 株式会社テックサプライ、オフィスデポ"
-                className="w-full px-3.5 py-2.5 bg-surface-950 border border-surface-800 rounded-lg text-surface-100 placeholder-surface-500 focus:outline-none focus:border-indigo-500 text-sm"
-              />
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-sm font-medium text-surface-200 flex items-center gap-1.5">
+                  <Building2 className="w-4 h-4 text-surface-400" />
+                  サプライヤー / 発注先名 <span className="text-rose-400">*</span>
+                </label>
+                {suppliersList.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!useCustomSupplier) {
+                        setUseCustomSupplier(true);
+                        setSupplierId(null);
+                      } else {
+                        setUseCustomSupplier(false);
+                      }
+                    }}
+                    className="text-xs text-indigo-400 hover:text-indigo-300 underline focus:outline-none"
+                  >
+                    {useCustomSupplier ? 'マスタから選択する' : '直接手入力する'}
+                  </button>
+                )}
+              </div>
+
+              {!useCustomSupplier && suppliersList.length > 0 ? (
+                <select
+                  value={supplierId ?? ''}
+                  onChange={(e) => {
+                    const selId = e.target.value;
+                    if (!selId) {
+                      setSupplierId(null);
+                      setSupplierName('');
+                    } else {
+                      const found = suppliersList.find((s) => s.id === selId);
+                      setSupplierId(selId);
+                      setSupplierName(found?.name ?? '');
+                    }
+                  }}
+                  className="w-full px-3.5 py-2.5 bg-surface-950 border border-surface-800 rounded-lg text-surface-100 focus:outline-none focus:border-indigo-500 text-sm"
+                >
+                  <option value="">-- 登録済みサプライヤーを選択 --</option>
+                  {suppliersList.map((sup) => (
+                    <option key={sup.id} value={sup.id}>
+                      {sup.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={supplierName}
+                  onChange={(e) => setSupplierName(e.target.value)}
+                  placeholder="例: 株式会社テックサプライ、オフィスデポ"
+                  className="w-full px-3.5 py-2.5 bg-surface-950 border border-surface-800 rounded-lg text-surface-100 placeholder-surface-500 focus:outline-none focus:border-indigo-500 text-sm"
+                />
+              )}
             </div>
 
             <div>

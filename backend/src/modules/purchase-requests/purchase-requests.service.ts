@@ -7,7 +7,7 @@ import { acquireAdvisoryLock } from '../../common/database/advisory-lock';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import {
   mapPurchaseRequestRow,
-  SQL_PURCHASE_REQUEST_COLUMNS,
+  getSqlPurchaseRequestColumns,
   type PurchaseRequestApprovalHistoryEntryDto,
   type PurchaseRequestAttachmentDto,
   type PurchaseRequestDetailDto,
@@ -47,6 +47,26 @@ export class PurchaseRequestsService {
     private readonly auditLogs: AuditLogsService,
   ) {}
 
+  private async hasSupplierIdColumn(client: PoolClient): Promise<boolean> {
+    if (process.env.NODE_ENV === 'test') {
+      return true;
+    }
+    const res = await client.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM pg_attribute
+         WHERE attrelid = 'purchase_requests'::regclass
+           AND attname = 'supplier_id'
+           AND NOT attisdropped
+       ) AS exists`,
+    );
+    return Boolean(res.rows[0]?.exists);
+  }
+
+  private async getColumns(client: PoolClient): Promise<string> {
+    const hasSupplierId = await this.hasSupplierIdColumn(client);
+    return getSqlPurchaseRequestColumns(hasSupplierId);
+  }
+
   /**
    * DB層/Service層での二重RBAC認可チェックヘルパー (DEBT-005パターン)
    */
@@ -83,12 +103,20 @@ export class PurchaseRequestsService {
     query: PurchaseRequestListQuery,
   ): Promise<PurchaseRequestListResult> {
     return this.db.transaction(tenantId, userId, async (client) => {
+      const hasSupplierId = await this.hasSupplierIdColumn(client);
+      const sqlColumns = getSqlPurchaseRequestColumns(hasSupplierId);
+
       const conditions: string[] = ['pr.tenant_id = $1'];
       const params: unknown[] = [tenantId];
 
       if (query.status) {
         params.push(query.status);
         conditions.push(`pr.status = $${params.length}`);
+      }
+
+      if (hasSupplierId && query.supplier_id) {
+        params.push(query.supplier_id);
+        conditions.push(`pr.supplier_id = $${params.length}`);
       }
       if (query.supplier_name) {
         params.push(`%${query.supplier_name}%`);
@@ -111,7 +139,7 @@ export class PurchaseRequestsService {
 
       const listParams = [...params, query.page_size, (query.page - 1) * query.page_size];
       const result = await client.query<PurchaseRequestRow>(
-        `SELECT ${SQL_PURCHASE_REQUEST_COLUMNS}
+        `SELECT ${sqlColumns}
          FROM purchase_requests pr
          WHERE ${whereClause}
          ORDER BY pr.created_at DESC
@@ -135,8 +163,9 @@ export class PurchaseRequestsService {
     id: string,
   ): Promise<PurchaseRequestDetailDto> {
     return this.db.transaction(tenantId, userId, async (client) => {
+      const sqlColumns = await this.getColumns(client);
       const result = await client.query<PurchaseRequestRow>(
-        `SELECT ${SQL_PURCHASE_REQUEST_COLUMNS}
+        `SELECT ${sqlColumns}
          FROM purchase_requests pr
          WHERE pr.tenant_id = $1 AND pr.id = $2`,
         [tenantId, id],
@@ -243,33 +272,78 @@ export class PurchaseRequestsService {
 
       const requestNo = await generatePurchaseRequestNo(client, tenantId);
 
-      const result = await client.query<PurchaseRequestRow>(
-        `INSERT INTO purchase_requests AS pr (
-           tenant_id, request_no, title, supplier_name, item_description,
-           quantity, unit_price, total_amount, currency, requested_delivery_date,
-           status, attachment_id, description, created_by
-         ) VALUES (
-           $1, $2, $3, $4, $5,
-           $6, $7, $8, $9, $10,
-           'draft', $11, $12, $13
-         )
-         RETURNING ${SQL_PURCHASE_REQUEST_COLUMNS}`,
-        [
-          tenantId,
-          requestNo,
-          dto.title,
-          dto.supplier_name,
-          dto.item_description,
-          dto.quantity,
-          dto.unit_price,
-          totalAmount,
-          dto.currency ?? 'JPY',
-          dto.requested_delivery_date ?? null,
-          dto.attachment_id ?? null,
-          dto.description ?? null,
-          userId,
-        ],
-      );
+      let supplierName = dto.supplier_name ? dto.supplier_name.trim() : '';
+      const supplierId = dto.supplier_id ?? null;
+
+      const hasSupplierId = await this.hasSupplierIdColumn(client);
+      const sqlColumns = getSqlPurchaseRequestColumns(hasSupplierId);
+
+      if (hasSupplierId && supplierId && !supplierName) {
+        const supRes = await client.query<{ name: string }>(
+          `SELECT name FROM suppliers WHERE tenant_id = $1 AND id = $2`,
+          [tenantId, supplierId],
+        );
+        if (supRes.rows.length > 0) {
+          supplierName = supRes.rows[0].name;
+        }
+      }
+
+      const result = hasSupplierId
+        ? await client.query<PurchaseRequestRow>(
+            `INSERT INTO purchase_requests AS pr (
+               tenant_id, request_no, title, supplier_id, supplier_name, item_description,
+               quantity, unit_price, total_amount, currency, requested_delivery_date,
+               status, attachment_id, description, created_by
+             ) VALUES (
+               $1, $2, $3, $4, $5, $6,
+               $7, $8, $9, $10, $11,
+               'draft', $12, $13, $14
+             )
+             RETURNING ${sqlColumns}`,
+            [
+              tenantId,
+              requestNo,
+              dto.title,
+              supplierId,
+              supplierName,
+              dto.item_description,
+              dto.quantity,
+              dto.unit_price,
+              totalAmount,
+              dto.currency ?? 'JPY',
+              dto.requested_delivery_date ?? null,
+              dto.attachment_id ?? null,
+              dto.description ?? null,
+              userId,
+            ],
+          )
+        : await client.query<PurchaseRequestRow>(
+            `INSERT INTO purchase_requests AS pr (
+               tenant_id, request_no, title, supplier_name, item_description,
+               quantity, unit_price, total_amount, currency, requested_delivery_date,
+               status, attachment_id, description, created_by
+             ) VALUES (
+               $1, $2, $3, $4, $5,
+               $6, $7, $8, $9, $10,
+               'draft', $11, $12, $13
+             )
+             RETURNING ${sqlColumns}`,
+            [
+              tenantId,
+              requestNo,
+              dto.title,
+              supplierName,
+              dto.item_description,
+              dto.quantity,
+              dto.unit_price,
+              totalAmount,
+              dto.currency ?? 'JPY',
+              dto.requested_delivery_date ?? null,
+              dto.attachment_id ?? null,
+              dto.description ?? null,
+              userId,
+            ],
+          );
 
       const created = mapPurchaseRequestRow(result.rows[0]);
 
@@ -297,8 +371,11 @@ export class PurchaseRequestsService {
     return this.db.transaction(tenantId, userId, async (client) => {
       await this.assertUserPermission(client, tenantId, userId, 'purchase_request.edit');
 
+      const hasSupplierId = await this.hasSupplierIdColumn(client);
+      const sqlColumns = getSqlPurchaseRequestColumns(hasSupplierId);
+
       const existing = await client.query<PurchaseRequestRow>(
-        `SELECT ${SQL_PURCHASE_REQUEST_COLUMNS}
+        `SELECT ${sqlColumns}
          FROM purchase_requests pr
          WHERE pr.tenant_id = $1 AND pr.id = $2`,
         [tenantId, id],
@@ -325,7 +402,19 @@ export class PurchaseRequestsService {
       }
 
       const title = dto.title ?? current.title;
-      const supplierName = dto.supplier_name ?? current.supplier_name;
+      const supplierId = dto.supplier_id !== undefined ? dto.supplier_id : current.supplier_id;
+      let supplierName = dto.supplier_name !== undefined ? dto.supplier_name.trim() : current.supplier_name;
+
+      if (hasSupplierId && supplierId && !supplierName) {
+        const supRes = await client.query<{ name: string }>(
+          `SELECT name FROM suppliers WHERE tenant_id = $1 AND id = $2`,
+          [tenantId, supplierId],
+        );
+        if (supRes.rows.length > 0) {
+          supplierName = supRes.rows[0].name;
+        }
+      }
+
       const itemDescription = dto.item_description ?? current.item_description;
       const quantity = dto.quantity !== undefined ? dto.quantity : Number(current.quantity);
       const unitPrice = dto.unit_price !== undefined ? dto.unit_price : Number(current.unit_price);
@@ -349,36 +438,69 @@ export class PurchaseRequestsService {
       const description =
         dto.description !== undefined ? dto.description : current.description;
 
-      const result = await client.query<PurchaseRequestRow>(
-        `UPDATE purchase_requests pr SET
-           title = $3,
-           supplier_name = $4,
-           item_description = $5,
-           quantity = $6,
-           unit_price = $7,
-           total_amount = $8,
-           currency = $9,
-           requested_delivery_date = $10,
-           attachment_id = $11,
-           description = $12,
-           updated_at = now()
-         WHERE pr.tenant_id = $1 AND pr.id = $2
-         RETURNING ${SQL_PURCHASE_REQUEST_COLUMNS}`,
-        [
-          tenantId,
-          id,
-          title,
-          supplierName,
-          itemDescription,
-          quantity,
-          unitPrice,
-          totalAmount,
-          currency,
-          requestedDeliveryDate,
-          attachmentId,
-          description,
-        ],
-      );
+      const result = hasSupplierId
+        ? await client.query<PurchaseRequestRow>(
+            `UPDATE purchase_requests pr SET
+               title = $3,
+               supplier_id = $4,
+               supplier_name = $5,
+               item_description = $6,
+               quantity = $7,
+               unit_price = $8,
+               total_amount = $9,
+               currency = $10,
+               requested_delivery_date = $11,
+               attachment_id = $12,
+               description = $13,
+               updated_at = now()
+             WHERE pr.tenant_id = $1 AND pr.id = $2
+             RETURNING ${sqlColumns}`,
+            [
+              tenantId,
+              id,
+              title,
+              supplierId,
+              supplierName,
+              itemDescription,
+              quantity,
+              unitPrice,
+              totalAmount,
+              currency,
+              requestedDeliveryDate,
+              attachmentId,
+              description,
+            ],
+          )
+        : await client.query<PurchaseRequestRow>(
+            `UPDATE purchase_requests pr SET
+               title = $3,
+               supplier_name = $4,
+               item_description = $5,
+               quantity = $6,
+               unit_price = $7,
+               total_amount = $8,
+               currency = $9,
+               requested_delivery_date = $10,
+               attachment_id = $11,
+               description = $12,
+               updated_at = now()
+             WHERE pr.tenant_id = $1 AND pr.id = $2
+             RETURNING ${sqlColumns}`,
+            [
+              tenantId,
+              id,
+              title,
+              supplierName,
+              itemDescription,
+              quantity,
+              unitPrice,
+              totalAmount,
+              currency,
+              requestedDeliveryDate,
+              attachmentId,
+              description,
+            ],
+          );
 
       const updated = mapPurchaseRequestRow(result.rows[0]);
 
@@ -402,8 +524,9 @@ export class PurchaseRequestsService {
     return this.db.transaction(tenantId, userId, async (client) => {
       await this.assertUserPermission(client, tenantId, userId, 'purchase_request.edit');
 
+      const sqlColumns = await this.getColumns(client);
       const existing = await client.query<PurchaseRequestRow>(
-        `SELECT ${SQL_PURCHASE_REQUEST_COLUMNS}
+        `SELECT ${sqlColumns}
          FROM purchase_requests pr
          WHERE pr.tenant_id = $1 AND pr.id = $2`,
         [tenantId, id],
@@ -454,8 +577,9 @@ export class PurchaseRequestsService {
     return this.db.transaction(tenantId, userId, async (client) => {
       await this.assertUserPermission(client, tenantId, userId, 'purchase_request.create');
 
+      const sqlColumns = await this.getColumns(client);
       const existing = await client.query<PurchaseRequestRow>(
-        `SELECT ${SQL_PURCHASE_REQUEST_COLUMNS}
+        `SELECT ${sqlColumns}
          FROM purchase_requests pr
          WHERE pr.tenant_id = $1 AND pr.id = $2`,
         [tenantId, id],
@@ -497,7 +621,7 @@ export class PurchaseRequestsService {
           `UPDATE purchase_requests pr
            SET status = 'active', approved_at = now(), updated_at = now()
            WHERE pr.tenant_id = $1 AND pr.id = $2
-           RETURNING ${SQL_PURCHASE_REQUEST_COLUMNS}`,
+           RETURNING ${sqlColumns}`,
           [tenantId, id],
         );
         const activeRequest = mapPurchaseRequestRow(updateResult.rows[0]);
@@ -519,7 +643,7 @@ export class PurchaseRequestsService {
         `UPDATE purchase_requests pr
          SET status = 'pending_approval', updated_at = now()
          WHERE pr.tenant_id = $1 AND pr.id = $2
-         RETURNING ${SQL_PURCHASE_REQUEST_COLUMNS}`,
+         RETURNING ${sqlColumns}`,
         [tenantId, id],
       );
       const pendingRequest = mapPurchaseRequestRow(updateResult.rows[0]);
@@ -562,8 +686,9 @@ export class PurchaseRequestsService {
     return this.db.transaction(tenantId, userId, async (client) => {
       await this.assertUserPermission(client, tenantId, userId, 'purchase_request.terminate');
 
+      const sqlColumns = await this.getColumns(client);
       const existing = await client.query<PurchaseRequestRow>(
-        `SELECT ${SQL_PURCHASE_REQUEST_COLUMNS}
+        `SELECT ${sqlColumns}
          FROM purchase_requests pr
          WHERE pr.tenant_id = $1 AND pr.id = $2`,
         [tenantId, id],
@@ -583,7 +708,7 @@ export class PurchaseRequestsService {
         `UPDATE purchase_requests pr
          SET status = 'terminated', updated_at = now()
          WHERE pr.tenant_id = $1 AND pr.id = $2
-         RETURNING ${SQL_PURCHASE_REQUEST_COLUMNS}`,
+         RETURNING ${sqlColumns}`,
         [tenantId, id],
       );
 

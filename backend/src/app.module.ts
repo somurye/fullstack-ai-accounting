@@ -40,6 +40,7 @@ import { ContractsModule } from './modules/contracts/contracts.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { GeneralRequestsModule } from './modules/general-requests/general-requests.module';
 import { PurchaseRequestsModule } from './modules/purchase-requests/purchase-requests.module';
+import { SuppliersModule } from './modules/suppliers/suppliers.module';
 
 /**
  * AppModule
@@ -97,6 +98,7 @@ import { PurchaseRequestsModule } from './modules/purchase-requests/purchase-req
     NotificationsModule,
     GeneralRequestsModule,
     PurchaseRequestsModule,
+    SuppliersModule,
   ],
   controllers: [],
   providers: [

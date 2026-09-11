@@ -251,7 +251,18 @@ export function PurchaseRequestDetailPage() {
               </div>
 
               <div className="p-3 bg-surface-950 border border-surface-800/80 rounded-lg">
-                <span className="text-xs text-surface-400">サプライヤー / 発注先</span>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-surface-400">サプライヤー / 発注先</span>
+                  {detail.supplier_id ? (
+                    <span className="text-[10px] font-medium text-indigo-400 bg-indigo-950/60 border border-indigo-800/60 px-1.5 py-0.5 rounded">
+                      マスタ登録済
+                    </span>
+                  ) : (
+                    <span className="text-[10px] font-medium text-surface-400 bg-surface-800/60 px-1.5 py-0.5 rounded">
+                      手入力
+                    </span>
+                  )}
+                </div>
                 <div className="font-medium text-surface-100 mt-1 flex items-center gap-1.5">
                   <Building2 className="w-4 h-4 text-surface-400 shrink-0" />
                   {detail.supplier_name}
