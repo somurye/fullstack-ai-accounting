@@ -57,6 +57,7 @@ ChatGPT（SO）は実コードとの差分照合を前提にレビューする�
 4. push前の「報告のみ」の完了通知は受け付けない。実装が終わっていてもpushされていなければタスクは「未完了」として扱う。
 5. **テストが全件PASSしていることは、機能が実際に意図通り動作していることの証明にはならない。** 特に外部入力（PDF、ユーザー入力ファイル等）を扱うタスクでは、固定のfixtureやモックデータだけでなく、実際の入力データを使ったE2E検証をDoDに含めること（P1-T2で、テストは56/56 PASSしていたにもかかわらずPDF本文が実際には読み込まれず固定テキストで代替されていた事例を教訓とする）。
 6. **一度作成・適用済みのmigrationファイルは事後的に書き換えない（migrationはappend-onlyとする）。** スキーマ変更が必要になった場合は、既存ファイルを編集するのではなく必ず新しい番号のmigrationファイルを追加すること。`CREATE TABLE IF NOT EXISTS`等の冪等な記法は、新規DBの構築時にしか効かず、既に該当テーブルが存在する（＝そのタスクが一度でもmainへマージされた）DBには変更が反映されない。実DB E2Eが「クリーンDBに全migrationを最初から適用した場合」のみを検証しており、「既存DBへの段階的アップグレード」を検証していない場合、この問題を検出できない点にも注意する（P1-T5-FIXで、既存014マイグレーションを直接書き換えたためこの問題が発生した事例を教訓とする）。
+7. **既存データに対して制約を後から追加するmigrationは、違反データを自動的に修正・削除してはならない。** 違反データを検出した場合はmigration自体をfail-closedで停止し、人間が内容を確認・修正した上で再実行する設計にすること。業務データ（金額、区分等）の意味を無断で変更する自動クレンジングは、会計・バックオフィス系システムでは特に避けること（P1-T5-FIX2で、負の金額を自動的にNULLへ、無効なcategoryを自動的にdefault値へ書き換える処理が発見された事例を教訓とする）。
 
 ---
 
@@ -706,7 +707,7 @@ Phase 0で汎用化した承認エンジン・添付ファイル基盤・AIゲ�
 | P1-T2 | 契約書アップロード〜AI条項抽出フロー | PDFアップロード→AIゲートウェイでの条項抽出提案→人間確認画面（DEBT-002/DEBT-003をあわせて解消） | P0-T3, P1-T1 | ✅ SO正式PASS（コミット923ccfd修正後、実PDF内容依存性をE2Eで確認済み、DEBT-007を記録・mainマージ指示済み） |
 | P1-T3 | 契約RBAC強制・AI提案ライフサイクル正式化 | ~~承認ワークフロー統合~~（P1-T1で先行実装済みのため統合済み）→ **スコープ変更**: (1) DEBT-005: contract permissionのAPI認可強制、(2) `ai_suggestions.target_type/target_id`のライフサイクル正式決定、(3) 状態遷移・SoDの最終確認 | P0-T1, P0-T4, P1-T1, P1-T2 | ✅ SO正式PASS（コミットb9a948d、DEBT-005/006/source_suggestion_id整合性を解消、DEBT-008を記録、mainマージ指示済み） |
 | P1-T4 | 契約期限アラート・バッチ | 満了/自動更新の一定日数前に通知を生成するバッチワーカー | P1-T1 | ✅ SO正式PASS（コミット、notification.batch_execute権限をowner限定で追加、DEBT-009を記録、mainマージ指示済み） |
-| P1-T5 | 稟議申請（汎用ワークフロー起票UI） | 契約以外の一般的な稟議（購買以外の申請）もこの画面から起票できる汎用フォーム | P0-T1, P1-T1, P1-T3 | ⚠️ SO判定REQUEST CHANGES（コミットa0476111、既存migration(014)を事後的に書き換えたため既存DBに制約が反映されない。修正指示済み・再レビュー待ち） |
+| P1-T5 | 稟議申請（汎用ワークフロー起票UI） | 契約以外の一般的な稟議（購買以外の申請）もこの画面から起票できる汎用フォーム | P0-T1, P1-T1, P1-T3 | ⚠️ SO判定REQUEST CHANGES（コミット28812ec、015が既存データ違反時に無断で自動クレンジング(UPDATE)している。migration不変原則は解消済み。修正指示済み・再レビュー待ち） |
 | P1-T6 | 契約書全文検索（pgvector活用） | 既存のjournal_entry_embeddingsと同様のパターンで契約書本文をベクトル化し類似契約検索を提供 | P1-T1 | 未着手 |
 
 ### 3.3 Phase 1 実装指示プロンプト（Gemini向け）
@@ -1497,6 +1498,64 @@ amount/categoryのCHECK制約を追加していますが、これは本番相当
 
 ---
 
+#### 【フォローアップ指示プロンプト P1-T5-FIX3】REQUEST CHANGES対応（015が既存データを無断で自動クレンジングしている）
+
+ChatGPT(SO)よりP1-T5-FIX2が「REQUEST CHANGES」と判定された。前回のBLOCKER（migration
+append-only原則違反）は完全に解消されている。今回の指摘は、新設した015自体の設計に
+関するものに限定される。本計画書0.4節にfail-closed migrationの原則を新設した。
+
+```
+# SOレビュー結果：P1-T5-FIX2 REQUEST CHANGES
+015_general_request_constraints.sql の冒頭に、以下の自動クレンジング処理があります。
+  UPDATE general_requests SET amount = NULL WHERE amount < 0;
+  UPDATE general_requests SET category = 'general' WHERE category NOT IN (...);
+これは制約追加前に違反データを検出して人間に知らせるのではなく、migration自身が
+既存の業務データ（金額・区分）を無断で書き換えてから制約を追加する設計になっており、
+会計・バックオフィス系システムとしては危険です。amount=NULLへの変更は「金額が負だった」
+という情報を、category='general'への変更は「元は別の区分だった」という情報を、
+それぞれ復元不可能な形で消去します。
+
+# 修正方針
+1. 015冒頭のUPDATE文（自動クレンジング処理）を削除する。
+2. 代わりに、制約追加前にDO $$ ... $$ブロックで違反データの存在を検出し、
+   存在すればRAISE EXCEPTIONでmigration自体を停止する（fail-closed）よう変更する。
+   例:
+   DO $$
+   BEGIN
+       IF EXISTS (SELECT 1 FROM general_requests WHERE amount < 0) THEN
+           RAISE EXCEPTION 'general_requests contains negative amount values; manual remediation required';
+       END IF;
+       IF EXISTS (SELECT 1 FROM general_requests WHERE category NOT IN
+           ('general','equipment','rule_change','business_trip','other')) THEN
+           RAISE EXCEPTION 'general_requests contains invalid category values; manual remediation required';
+       END IF;
+   END $$;
+   （categoryはNOT NULL制約があるためNULLチェックは不要、amountはNULL許容のため
+   amount < 0のみで判定すれば十分。NULLはamount < 0の比較でfalseになるため
+   誤って引っかからないことを確認する）
+3. 既存の段階的アップグレードE2Eテストを、以下のように更新する。
+   - 違反データが存在しない状態で015を適用 → 成功し、制約が追加される（従来通り）
+   - 意図的に違反データ（負の金額または無効なcategory）を投入した状態で015を適用
+     → migrationがエラーで停止し、データが変更されていないことを確認する新規テストケースを追加
+
+# 受け入れ基準（Definition of Done）
+- [ ] 015から自動クレンジング(UPDATE)処理が完全に削除されている
+- [ ] 違反データが存在する状態で015を適用するとエラーで停止し、元データが一切変更されない
+- [ ] 違反データが存在しない状態では、従来通り015が正常に適用され制約が追加される
+- [ ] 015の冪等性（既存制約がある場合はスキップ）に回帰がない
+- [ ] 修正後、クリーンDB・段階的アップグレード（違反データあり/なし両方）の実DB E2Eを再実行し、
+      全件PASSの結果を報告に添付する
+- [ ] feature/p1-t5-general-requests ブランチに追加コミット・pushし、比較URLを報告に含める
+
+# ChatGPTレビュー時の確認観点
+- RAISE EXCEPTIONによるmigration停止時、部分的にALTER TABLEが適用されて中途半端な状態に
+  ならないか（DOブロックをトランザクション内の適切な位置に置けているか）
+- エラーメッセージが、実際に対応する担当者（Gemini/開発者）にとって次に何をすべきか
+  分かる内容になっているか
+```
+
+---
+
 ## 3.4 決定事項: ロール・権限の粒度方針
 
 - **方針**: 権限を細分化し、権限外の領域は閲覧も含めて不可とする（deny-by-default）。既存のRLSが「fail-closed（未設定・不一致時は0件返却）」の原則を採っているため、この方針とも整合的。
@@ -1560,3 +1619,4 @@ amount/categoryのCHECK制約を追加していますが、これは本番相当
 | 3.1.0 | P1-T4-FIXが正式APPROVE（notification.batch_executeをowner限定に設定、cross-tenant情報のレスポンス秘匿を確認、実DB E2E 73/73）。マージ指示プロンプト（P1-T4-MERGE）を追加しP1-T4を完了扱いに更新。**P1-T5（稟議申請：汎用ワークフロー起票UI）の実装指示プロンプトを新規作成**。過去に繰り返し指摘された問題（暗黙自動承認・tenant整合性のアプリ層依存・RBAC未強制）を新ドメインで再発させないことをレビュー観点として明記 |
 | 3.2.0 | P1-T5がSO判定REQUEST CHANGES（general_requests.amountに非負DB制約が欠落。category制約も推奨事項として指摘）。フォローアップ指示プロンプト（P1-T5-FIX）を追加。DEBT-010（起票者本人以外もdraft稟議を編集・削除できる、仕様未確定）を記録 |
 | 3.3.0 | P1-T5-FIXがSO判定REQUEST CHANGES（重大: 既存migration 014を事後的に書き換えたため、適用済みDBには制約が反映されない）。フォローアップ指示プロンプト（P1-T5-FIX2、新規migration 015への切替＋既存DB段階的アップグレードのE2E追加）を追加。**0.4節にmigration不変（append-only）の原則を新設** |
+| 3.4.0 | P1-T5-FIX2がSO判定REQUEST CHANGES（migration append-only原則は解消済みだが、015が既存データを無断でUPDATE/自動クレンジングしていた）。フォローアップ指示プロンプト（P1-T5-FIX3、fail-closedなDO $$ EXCEPTIONブロックへの置き換え）を追加。**0.4節に「制約追加migrationは既存データを自動改変せずfail-closedで停止する」原則を新設** |

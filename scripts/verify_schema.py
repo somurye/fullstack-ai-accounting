@@ -1355,7 +1355,7 @@ def run_verification(dsn: str) -> int:
     r.ok("approval_rules / approval_requests の target_type に 'general_request' が追加され有効に機能する",
          invalid_blocked)
 
-    # 4. 【P1-T5-FIX2実証】段階的アップグレード検証 (014旧状態 -> 015適用 -> 制約機能 -> 冪等性)
+    # 4. 【P1-T5-FIX3実証】段階的アップグレード & fail-closed検証 (014旧状態 -> 違反時エラー停止 -> 015正常適用 -> 制約機能 -> 冪等性)
     # 4-1. 014適用直後(旧状態): amount = -1 の INSERT が成功すること (制約未適用状態の再現確認)
     upgrade_pre_check = False
     try:
@@ -1375,8 +1375,61 @@ def run_verification(dsn: str) -> int:
     r.ok("段階的アップグレード検証 1: 014適用直後(旧状態)は amount = -1 の INSERT が成功する (未制約状態の再現確認)",
          upgrade_pre_check)
 
-    # 4-2. 015_general_request_constraints.sql の適用 (段階的アップグレード)
+    # 4-2. 【P1-T5-FIX3】違反データ存在時に015を適用すると fail-closed (RAISE EXCEPTION) で停止し、
+    #      かつデータが一切書き換えられていないことの検証
+    fail_closed_stopped = False
+    data_intact = False
+    constraint_not_applied = False
     migration_015_path = SQL_DIR / "015_general_request_constraints.sql"
+
+    # 違反データを意図的に投入 (負の金額 & 無効なcategory)
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute(
+            """INSERT INTO general_requests (tenant_id, request_no, title, description, category, amount, status, created_by)
+               VALUES (%s, 'REQ-VIOLATE-001', '違反データ金額', '説明', 'general', -500, 'draft', %s),
+                      (%s, 'REQ-VIOLATE-002', '違反データ区分', '説明', 'unauthorized_category', 1000, 'draft', %s)""",
+            (t1, owner, t1, owner),
+        )
+
+    # 違反データがある状態で 015 を適用 -> RAISE EXCEPTION で失敗することを確認
+    conn_fail_test = psycopg2.connect(dsn)
+    try:
+        apply_single_sql(conn_fail_test, migration_015_path)
+    except Exception as e:
+        if "manual remediation required" in str(e):
+            fail_closed_stopped = True
+    finally:
+        conn_fail_test.close()
+
+    # 停止後、既存データが無断改変 (自動クレンジング) されていないことを検証
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute("SELECT amount FROM general_requests WHERE request_no = 'REQ-VIOLATE-001'")
+        row_amount = cur.fetchone()
+        cur.execute("SELECT category FROM general_requests WHERE request_no = 'REQ-VIOLATE-002'")
+        row_category = cur.fetchone()
+        if (
+            row_amount and float(row_amount["amount"]) == -500.0 and
+            row_category and row_category["category"] == "unauthorized_category"
+        ):
+            data_intact = True
+
+        # 制約が中途半端に追加されていないことも確認
+        cur.execute(
+            """SELECT 1 FROM pg_constraint
+               WHERE conname IN ('ck_general_requests_amount_nonnegative', 'ck_general_requests_category')
+                 AND conrelid = 'general_requests'::regclass"""
+        )
+        constraints_found = cur.fetchall()
+        if len(constraints_found) == 0:
+            constraint_not_applied = True
+
+        # 手動修復に相当するクリーンアップ (テスト用違反データの削除)
+        cur.execute("DELETE FROM general_requests WHERE request_no IN ('REQ-VIOLATE-001', 'REQ-VIOLATE-002')")
+
+    r.ok("段階的アップグレード検証 2: 違反データ存在時は015がfail-closedでエラー停止し、元データが改変されず制約も未適用に保たれる (P1-T5-FIX3)",
+         fail_closed_stopped and data_intact and constraint_not_applied)
+
+    # 4-3. 違反データが存在しない状態で 015_general_request_constraints.sql を適用 (段階的アップグレード)
     conn_mig = psycopg2.connect(dsn)
     conn_mig.autocommit = True
     try:
@@ -1385,7 +1438,7 @@ def run_verification(dsn: str) -> int:
         conn_mig.close()
     print("[schema] 015_general_request_constraints.sql 適用完了 (段階的アップグレード)")
 
-    # 4-3. 015適用後: amount = -1 の直接 INSERT が CHECK 制約で拒否されること
+    # 4-4. 015適用後: amount = -1 の直接 INSERT が CHECK 制約で拒否されること
     neg_amount_blocked = False
     try:
         with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
@@ -1396,10 +1449,10 @@ def run_verification(dsn: str) -> int:
             )
     except psycopg2.errors.CheckViolation:
         neg_amount_blocked = True
-    r.ok("段階的アップグレード検証 2: 015適用後 amount = -1 は非負CHECK制約で拒否される (BLOCKER-01)",
+    r.ok("段階的アップグレード検証 3: 015適用後 amount = -1 は非負CHECK制約で拒否される (BLOCKER-01)",
          neg_amount_blocked)
 
-    # 4-4. 015適用後: 無効な category の直接 INSERT が CHECK 制約で拒否されること
+    # 4-5. 015適用後: 無効な category の直接 INSERT が CHECK 制約で拒否されること
     inv_category_blocked = False
     try:
         with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
@@ -1410,10 +1463,10 @@ def run_verification(dsn: str) -> int:
             )
     except psycopg2.errors.CheckViolation:
         inv_category_blocked = True
-    r.ok("段階的アップグレード検証 3: 015適用後 無効な category は CHECK 制約で拒否される",
+    r.ok("段階的アップグレード検証 4: 015適用後 無効な category は CHECK 制約で拒否される",
          inv_category_blocked)
 
-    # 4-5. 015を2回連続適用してもエラーにならないこと (ALTER TABLE 冪等性・IF NOT EXISTS相当の確認)
+    # 4-6. 015を2回連続適用してもエラーにならないこと (ALTER TABLE 冪等性・IF NOT EXISTS相当の確認)
     idempotent_ok = False
     try:
         conn_mig2 = psycopg2.connect(dsn)
@@ -1424,10 +1477,10 @@ def run_verification(dsn: str) -> int:
     except Exception as e:
         print(f"冪等性エラー: {e}")
         idempotent_ok = False
-    r.ok("段階的アップグレード検証 4: 015を2回連続適用してもエラーにならず正常終了する (ALTER TABLE 冪等性保証)",
+    r.ok("段階的アップグレード検証 5: 015を2回連続適用してもエラーにならず正常終了する (ALTER TABLE 冪等性保証)",
          idempotent_ok)
 
-    # 4-6. 正常系: amount IS NULL または amount >= 0、有効なカテゴリが正常に INSERT できること
+    # 4-7. 正常系: amount IS NULL または amount >= 0、有効なカテゴリが正常に INSERT できること
     with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
         cur.execute(
             """INSERT INTO general_requests (tenant_id, request_no, title, description, category, amount, status, created_by)
