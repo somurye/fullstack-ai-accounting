@@ -1804,7 +1804,7 @@ migrationのappend-only・fail-closed運用）をそのまま踏襲し、発注�
 | タスクID | タスク名 | 概要 | 依存 | ステータス |
 |----------|----------|------|------|-----------|
 | P2-T1 | `purchase_requests`テーブル設計・実装 | 発注申請本体（品目、数量、単価、サプライヤー、金額、納期、ステータス）、既存承認エンジン統合、RBAC強制 | P0-T1, P1-T1, P1-T3 | ✅ SO正式PASS（コミット9e4fe21、初回レビューでPASS。DEBT-013を記録、mainマージ指示済み） |
-| P2-T2 | サプライヤー（取引先）マスタ管理 | サプライヤー登録・編集・検索、連絡先・支払条件等の管理、purchase_requestsとの関連付け | P0-T1, P2-T1 | ⚠️ SO判定REQUEST CHANGES（コミット0fb1951、参照済みsupplier.name変更で既存purchase_requestと不整合が生じる経路、DBエラーをfalseに握り潰すcatch。修正指示済み・再レビュー待ち） |
+| P2-T2 | サプライヤー（取引先）マスタ管理 | サプライヤー登録・編集・検索、連絡先・支払条件等の管理、purchase_requestsとの関連付け | P0-T1, P2-T1 | ⚠️ SO判定REQUEST CHANGES（コミット40698a3、前回2点は解消済み。supplier.name変更とpurchase_request作成の同時実行時にrace conditionが残る。修正指示済み・再レビュー待ち） |
 | P2-T3 | 発注〜検収〜請求の連携 | purchase_requestsが承認完了した後の発注確定、検収記録、既存vendor_bills（請求書管理）との紐付け | P2-T1, P2-T2 | 未着手 |
 | P2-T4 | 購買ダッシュボード・レポート | テナント内の購買状況（申請中・承認済み・発注済み件数、サプライヤー別支出等）の可視化 | P2-T1, P2-T2, P2-T3 | 未着手 |
 
@@ -2022,6 +2022,67 @@ catchブロックで無条件にfalseを返すのをやめ、pg_attributeへの�
 
 ---
 
+#### 【フォローアップ指示プロンプト P2-T2-FIX2】REQUEST CHANGES対応（supplier名変更の同時実行race condition）
+
+ChatGPT(SO)よりP2-T2-FIXが「REQUEST CHANGES」と判定された。前回の2つのBLOCKER
+（supplier名変更の逐次防御、DBエラーの握り潰し）はいずれも正しく解消されている。
+今回の指摘は、その防御が並行実行下では破れるという、P1-T3のDEBT-006と同型の問題である。
+
+```
+# SOレビュー結果：P2-T2-FIX REQUEST CHANGES
+main...feature/p2-t2-suppliers の実差分（コミット40698a3）を確認した結果、現状はマージ不可
+です。前回追加したsuppliers.name変更禁止トリガーは、purchase_requests側のsupplier参照
+チェックと相互にロックしていないため、以下の競合が成立します。
+  Transaction A: suppliers.name変更（purchase_requestsにS1の参照がないことを確認 → OK）
+  Transaction B: 同時にsupplier_id=S1のpurchase_request作成
+    （Aの変更が未commitのため、Bはsuppliers.nameの変更前の値を見て整合すると判定 → OK）
+  A commit, B commit
+  → 結果: suppliers.nameは変更後、purchase_requests.supplier_nameは変更前の値のまま
+    という、まさに防止しようとしていた不整合が成立する
+これはP1-T3のDEBT-006（自動承認ルールの混在防止）で発生したものと同型の並行実行問題です。
+
+# 修正方針
+suppliers.nameの変更トリガーと、purchase_requestsへのsupplier_id設定（INSERT/UPDATE）の
+両方で、同一のsupplier_idをキーとしたtransaction advisory lockを取得し、直列化してください。
+例:
+  PERFORM pg_advisory_xact_lock(hashtextextended('supplier:' || <supplier_id>::text, 0));
+を、
+  1. suppliers.nameの変更前チェック（既存の参照確認トリガー内）
+  2. purchase_requestsへのsupplier_id設定時のsupplier名整合性チェック（既存トリガー内）
+の両方の冒頭で実行し、同じsupplier_idに対する処理を直列化する。
+このロックはトランザクション終了時に自動解放されるため、明示的なUNLOCKは不要です。
+
+# 追加すべき実DB E2E（必須）
+2つのDB接続/トランザクションを用いた並行実行テストを追加し、以下を確認してください。
+  Transaction A: 既存supplierのname変更
+  Transaction B: 同じsupplierを参照するpurchase_request作成
+を同時に実行し、両方がcommitされた後で、suppliers.nameとpurchase_requests.supplier_nameの
+間に不整合が生じていないこと（片方が拒否される、または両方が同じ最終状態に収束すること）を
+確認する。逐次実行のテストだけでは今回の指摘の解消とはみなしません。
+
+# 修正不要（今回は対応済みとして扱う）
+- 前回のBLOCKER-01（supplier.name変更の逐次防御）、BLOCKER-02（DBエラーの握り潰し）は
+  今回のレビューで解消済みと判定されています。再度手を入れる必要はありません。
+
+# 受け入れ基準（Definition of Done）
+- [x] supplier.name変更とpurchase_request作成の並行実行テストで、最終的にsuppliers.nameと
+      purchase_requests.supplier_nameの不整合が発生しないことを確認する
+- [x] advisory lockの導入によって、既存の逐次実行テスト（前回追加分）に回帰がない
+- [x] advisory lockのキー設計が、異なるsupplier_id間で不要な直列化を起こしていない
+- [x] 修正後、クリーンDBでverify_schema.pyを含む実DB E2Eを再実行し、並行実行テストを含めて
+      全件PASSの結果を添付する
+- [x] 完了報告に実際のコミットSHA（git rev-parse HEAD）を正確に記載する
+- [x] feature/p2-t2-suppliers ブランチに追加コミット・pushし、比較URLを報告に含める
+
+# ChatGPTレビュー時の確認観点
+- advisory lockのキーがP1-T3のDEBT-006対応（tenant_id + target_type）と衝突しない、
+  独立したキー空間になっているか（'supplier:'のようなプレフィックスで区別されているか）
+- purchase_requests側のロック取得位置が、既存のtenant整合性トリガーの実行順序と
+  矛盾しないか（デッドロックの可能性がないか）
+```
+
+---
+
 ## 5. 既知の技術的負債・フォローアップ事項
 
 タスク完了時にSOが「修正不要だが記録すべき」と判定した事項を追跡する。将来の関連タスク着手時に必ず参照すること。
@@ -2090,3 +2151,4 @@ catchブロックで無条件にfalseを返すのをやめ、pg_attributeへの�
 | 4.1.0 | P1-T6-MERGE完了報告を反映（マージコミットbd697eb、main上での再検証結果全PASS）。DEBT-003のステータスを解消済みに修正（P1-T2-FIXで実際には対応済みだった）。ロードマップ表(1節)にステータス列を追加しPhase 0/1を完了に更新。**Phase 2（購買・調達）のセクションを新設**し、タスク分解（P2-T1〜T4）とP2-T1（purchase_requestsテーブル設計・実装）の実装指示プロンプトを追加。以降のセクション番号を1つずつ繰り下げ |
 | 4.2.0 | P2-T1が初回レビューでSO正式PASS（金額整合性・tenant整合性・状態遷移・暗黙自動承認防止・RBAC三層防御をすべてDB最終防御まで確認）。DEBT-013（request_noの採番方式）を記録。マージ指示プロンプト（P2-T1-MERGE）を追加しP2-T1を完了扱いに更新。**P2-T2（サプライヤー：取引先マスタ管理）の実装指示プロンプトを新規作成** |
 | 4.3.0 | P2-T2がSO判定REQUEST CHANGES（参照済みsupplier.name変更で既存purchase_requestとの不整合が生じる経路が未防御、DBエラーをfalseに握り潰すcatchあり、完了報告のコミットSHA誤り）。フォローアップ指示プロンプト（P2-T2-FIX）を追加 |
+| 4.4.0 | P2-T2-FIXがSO判定REQUEST CHANGES（前回2 BLOCKERは解消。ただしsupplier.name変更とpurchase_request作成の同時実行にrace conditionが残る、P1-T3のDEBT-006と同型の問題）。フォローアップ指示プロンプト（P2-T2-FIX2、pg_advisory_xact_lockによる直列化）を追加 |

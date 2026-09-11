@@ -380,6 +380,167 @@ async function run() {
     expect(updatedC.name).toBe('未参照テストサプライヤー (社名変更後)');
     console.log('   -> [PASS] 未参照のサプライヤーであれば通常通り名前変更できることを確認');
 
+    // (8) 【P2-T2-FIX2実証】並行実行下での advisory lock による race condition 防止検証
+    // Transaction A: 既存supplierの名前変更
+    // Transaction B: 同じsupplierを参照するpurchase_request作成
+    // を並行実行し、advisory lockにより直列化され、最終状態に不整合が生じないことを実証。
+    console.log('   -> 並行実行テスト 1: supplier.name変更 (Tx A先行) vs purchase_request作成 (Tx B)...');
+    const supplierRace = await suppliersService.create(tenantA, userA_Owner, {
+      name: 'レース検証サプライヤー1',
+      status: 'active',
+    });
+
+    const clientA = await pool.connect();
+    const clientB = await pool.connect();
+
+    try {
+      await clientA.query('BEGIN');
+      await clientB.query('BEGIN');
+
+      // Tx A: 名前変更を実行 (advisory lock を取得)
+      await clientA.query(
+        `UPDATE suppliers SET name = 'レース検証サプライヤー1 (変更後A)' WHERE id = $1`,
+        [supplierRace.id],
+      );
+
+      // Tx B: 同一 supplier_id を参照する purchase_request の INSERT を非同期で開始
+      // advisory lock により Tx A が COMMIT/ROLLBACK するまでブロックされる
+      let bFinished = false;
+      let bError: any = null;
+      const bPromise = clientB
+        .query(
+          `INSERT INTO purchase_requests (
+             tenant_id, request_no, title, supplier_id, supplier_name, item_description,
+             quantity, unit_price, total_amount, currency, status, created_by
+           ) VALUES (
+             $1, 'PR-RACE-001', 'レース検証申請', $2, 'レース検証サプライヤー1', '品目',
+             1, 1000, 1000, 'JPY', 'draft', $3
+           )`,
+          [tenantA, supplierRace.id, userA_Owner],
+        )
+        .then(() => {
+          bFinished = true;
+        })
+        .catch((err) => {
+          bError = err;
+          bFinished = true;
+        });
+
+      // Tx A がロックを保持している間、Tx B が完了していない（待機中である）ことを確認
+      await new Promise((r) => setTimeout(r, 100));
+      expect(bFinished).toBe(false);
+
+      // Tx A を COMMIT してロックを解放
+      await clientA.query('COMMIT');
+
+      // Tx B の完了を待機
+      await bPromise;
+      if (bError) {
+        await clientB.query('ROLLBACK');
+      } else {
+        await clientB.query('COMMIT');
+      }
+
+      // 検証: Tx B は Tx A の変更後名称 ('... (変更後A)') との不一致を検知して 23514 で拒否されること
+      expect(bError).not.toBeNull();
+      expect(bError.code).toBe('23514');
+      console.log('      [PASS] Tx A先行時: Tx Bが直列化され、新名称との不一致を検知して23514で安全に遮断された');
+
+      // 最終状態の整合性確認: 不整合が一切存在しないこと
+      const { rows: raceSupRows } = await pool.query<{ name: string }>(
+        `SELECT name FROM suppliers WHERE id = $1`,
+        [supplierRace.id],
+      );
+      const { rows: racePrRows } = await pool.query<{ supplier_name: string }>(
+        `SELECT supplier_name FROM purchase_requests WHERE supplier_id = $1`,
+        [supplierRace.id],
+      );
+      expect(raceSupRows[0].name).toBe('レース検証サプライヤー1 (変更後A)');
+      expect(racePrRows).toHaveLength(0); // Tx B は rollback されている
+    } finally {
+      clientA.release();
+      clientB.release();
+    }
+
+    // パターン 2: purchase_request作成 (Tx B) が先行し、未commit中に supplier.name変更 (Tx A) が実行された場合
+    console.log('   -> 並行実行テスト 2: purchase_request作成 (Tx B先行) vs supplier.name変更 (Tx A)...');
+    const supplierRace2 = await suppliersService.create(tenantA, userA_Owner, {
+      name: 'レース検証サプライヤー2',
+      status: 'active',
+    });
+
+    const clientA2 = await pool.connect();
+    const clientB2 = await pool.connect();
+
+    try {
+      await clientA2.query('BEGIN');
+      await clientB2.query('BEGIN');
+
+      // Tx B: purchase_request を INSERT (advisory lock を取得)
+      await clientB2.query(
+        `INSERT INTO purchase_requests (
+           tenant_id, request_no, title, supplier_id, supplier_name, item_description,
+           quantity, unit_price, total_amount, currency, status, created_by
+         ) VALUES (
+           $1, 'PR-RACE-002', 'レース検証申請2', $2, 'レース検証サプライヤー2', '品目',
+           1, 1000, 1000, 'JPY', 'draft', $3
+         )`,
+        [tenantA, supplierRace2.id, userA_Owner],
+      );
+
+      // Tx A: suppliers の名前変更を非同期で開始 (Tx B が保持する advisory lock により待機)
+      let aFinished = false;
+      let aError: any = null;
+      const aPromise = clientA2
+        .query(
+          `UPDATE suppliers SET name = 'レース検証サプライヤー2 (変更後)' WHERE id = $1`,
+          [supplierRace2.id],
+        )
+        .then(() => {
+          aFinished = true;
+        })
+        .catch((err) => {
+          aError = err;
+          aFinished = true;
+        });
+
+      // Tx B が未commitの間、Tx A は待機中であること
+      await new Promise((r) => setTimeout(r, 100));
+      expect(aFinished).toBe(false);
+
+      // Tx B を COMMIT して確定 & ロック解放
+      await clientB2.query('COMMIT');
+
+      // Tx A の完了を待機
+      await aPromise;
+      if (aError) {
+        await clientA2.query('ROLLBACK');
+      } else {
+        await clientA2.query('COMMIT');
+      }
+
+      // 検証: Tx A はブロック解除後に purchase_requests の存在を検知し、23514 で拒否されること
+      expect(aError).not.toBeNull();
+      expect(aError.code).toBe('23514');
+      console.log('      [PASS] Tx B先行時: Tx Aが直列化され、確定した参照を検知して名前変更が23514で安全に遮断された');
+
+      // 最終状態の整合性確認: suppliers.name と purchase_requests.supplier_name が一致していること
+      const { rows: race2SupRows } = await pool.query<{ name: string }>(
+        `SELECT name FROM suppliers WHERE id = $1`,
+        [supplierRace2.id],
+      );
+      const { rows: race2PrRows } = await pool.query<{ supplier_name: string }>(
+        `SELECT supplier_name FROM purchase_requests WHERE supplier_id = $1`,
+        [supplierRace2.id],
+      );
+      expect(race2SupRows[0].name).toBe('レース検証サプライヤー2'); // 変更は遮断された
+      expect(race2PrRows[0].supplier_name).toBe('レース検証サプライヤー2'); // 変更前名称のまま両者一致！
+      console.log('      [PASS] 最終状態: suppliers.name と purchase_requests.supplier_name が完全に一致していることを確認');
+    } finally {
+      clientA2.release();
+      clientB2.release();
+    }
+
     // --------------------------------------------------------------------------
     // 5. 完全テナント分離 (RLS)
     // --------------------------------------------------------------------------

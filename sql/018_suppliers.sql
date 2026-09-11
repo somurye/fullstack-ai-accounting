@@ -94,11 +94,15 @@ CREATE TRIGGER trg_validate_supplier_tenant_consistency
 -- 4.2 サプライヤー名変更不整合防止トリガー (参照中サプライヤーの名称変更禁止)
 --     発注申請 (purchase_requests) で参照されている supplier の名前変更を DB レベルで遮断し、
 --     過去の確定伝票当時の取引先名とマスタ名との不整合を防ぐ (BLOCKER-01)。
+--     並行実行時の race condition を防ぐため、同一 supplier_id に対する transaction advisory lock を取得する (P2-T2-FIX2)。
 CREATE OR REPLACE FUNCTION fn_prevent_supplier_name_change_if_referenced()
 RETURNS TRIGGER AS $$
 BEGIN
     -- name 列が変更されている場合のみ検証 (他の列、contact情報等の変更は許可)
     IF NEW.name IS DISTINCT FROM OLD.name THEN
+        -- 同一 supplier_id に対する並行 purchase_request 作成との競合を防ぐため transaction advisory lock を取得
+        PERFORM pg_advisory_xact_lock(hashtextextended('supplier:' || OLD.id::text, 0));
+
         IF EXISTS (
             SELECT 1 FROM purchase_requests
             WHERE supplier_id = OLD.id
@@ -174,6 +178,9 @@ BEGIN
     -- 6.3 supplier_id が指定されている場合、参照先 suppliers の tenant_id と一致することを検証 (23503)
     --     および supplier_name との整合性を検証 (23514 / 自動補完)
     IF NEW.supplier_id IS NOT NULL THEN
+        -- 同一 supplier_id に対する並行 supplier.name 変更との競合を防ぐため transaction advisory lock を取得 (P2-T2-FIX2)
+        PERFORM pg_advisory_xact_lock(hashtextextended('supplier:' || NEW.supplier_id::text, 0));
+
         SELECT tenant_id, name INTO v_supplier_tenant, v_supplier_name
         FROM suppliers
         WHERE id = NEW.supplier_id;
