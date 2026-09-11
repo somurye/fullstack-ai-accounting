@@ -14,7 +14,8 @@ export type PurchaseRequestStatus = z.infer<typeof purchaseRequestStatusSchema>;
 export const createPurchaseRequestSchema = z
   .object({
     title: z.string().min(1, '件名を入力してください').max(200, '件名は200文字以内で入力してください'),
-    supplier_name: z.string().min(1, 'サプライヤー・取引先名を入力してください').max(200, 'サプライヤー名は200文字以内で入力してください'),
+    supplier_id: z.string().uuid('サプライヤーIDはUUID形式で指定してください').nullable().optional(),
+    supplier_name: z.string().max(200, 'サプライヤー名は200文字以内で入力してください').optional(),
     item_description: z.string().min(1, '品目・仕様説明を入力してください'),
     quantity: z.number().positive('数量は0より大きい数値を入力してください'),
     unit_price: z.number().min(0, '単価は0以上で入力してください'),
@@ -28,6 +29,18 @@ export const createPurchaseRequestSchema = z
     attachment_id: z.string().uuid('添付ファイルIDはUUID形式で指定してください').nullable().optional(),
     description: z.string().nullable().optional(),
   })
+  .refine(
+    (val) => {
+      // supplier_id があるか、または supplier_name が1文字以上あること
+      const hasId = Boolean(val.supplier_id);
+      const hasName = Boolean(val.supplier_name && val.supplier_name.trim().length > 0);
+      return hasId || hasName;
+    },
+    {
+      message: 'サプライヤーを選択するか、サプライヤー名を入力してください',
+      path: ['supplier_name'],
+    },
+  )
   .transform((val) => {
     const calculated = Math.round(val.quantity * val.unit_price * 100) / 100;
     return {
@@ -49,7 +62,8 @@ export const createPurchaseRequestSchema = z
 export const updatePurchaseRequestSchema = z
   .object({
     title: z.string().min(1, '件名を入力してください').max(200, '件名は200文字以内で入力してください').optional(),
-    supplier_name: z.string().min(1, 'サプライヤー・取引先名を入力してください').max(200, 'サプライヤー名は200文字以内で入力してください').optional(),
+    supplier_id: z.string().uuid('サプライヤーIDはUUID形式で指定してください').nullable().optional(),
+    supplier_name: z.string().max(200, 'サプライヤー名は200文字以内で入力してください').optional(),
     item_description: z.string().min(1, '品目・仕様説明を入力してください').optional(),
     quantity: z.number().positive('数量は0より大きい数値を入力してください').optional(),
     unit_price: z.number().min(0, '単価は0以上で入力してください').optional(),
@@ -67,6 +81,7 @@ export const updatePurchaseRequestSchema = z
 export const purchaseRequestListQuerySchema = z.object({
   status: purchaseRequestStatusSchema.optional(),
   search: z.string().optional(),
+  supplier_id: z.string().uuid().optional(),
   supplier_name: z.string().optional(),
   page: z.coerce.number().int().min(1).default(1),
   page_size: z.coerce.number().int().min(1).max(100).default(20),

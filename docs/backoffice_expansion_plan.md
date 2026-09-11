@@ -1936,15 +1936,15 @@ P2-T1では purchase_requests.supplier_name をフリーテキストとして実
    整合性を保つ）。
 
 # 受け入れ基準（Definition of Done）
-- [ ] サプライヤーを登録・編集・検索できる
-- [ ] 他テナントのサプライヤーが一切見えないことをRLSで確認
-- [ ] 他テナントのsupplier_idを指定したpurchase_requestsのINSERT/UPDATEがDBトリガーで拒否される
-- [ ] supplier.*のpermissionを持たないロールでは操作できないことを確認
-- [ ] 既存のsupplier_nameフリーテキストのpurchase_requestsに回帰がない（後方互換性の確認）
-- [ ] migrationがappend-only・fail-closedの原則（本計画書0.4節）に従っている
-- [ ] Phase 0で確立した実DB E2E検証基盤で、上記すべてを実PostgreSQL上で確認し、
+- [x] サプライヤーを登録・編集・検索できる
+- [x] 他テナントのサプライヤーが一切見えないことをRLSで確認
+- [x] 他テナントのsupplier_idを指定したpurchase_requestsのINSERT/UPDATEがDBトリガーで拒否される
+- [x] supplier.*のpermissionを持たないロールでは操作できないことを確認
+- [x] 既存のsupplier_nameフリーテキストのpurchase_requestsに回帰がない（後方互換性の確認）
+- [x] migrationがappend-only・fail-closedの原則（本計画書0.4節）に従っている
+- [x] Phase 0で確立した実DB E2E検証基盤で、上記すべてを実PostgreSQL上で確認し、
       結果を報告に添付する
-- [ ] feature/p2-t2-suppliers ブランチにコミット・pushし、比較URLを報告に含める
+- [x] feature/p2-t2-suppliers ブランチにコミット・pushし、比較URLを報告に含める
       （本計画書0.4節に従う）
 
 # ChatGPTレビュー時の確認観点

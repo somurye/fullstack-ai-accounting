@@ -22,6 +22,7 @@ export interface PurchaseRequestDto {
   tenant_id: string;
   request_no: string;
   title: string;
+  supplier_id: string | null;
   supplier_name: string;
   item_description: string;
   quantity: number;
@@ -48,6 +49,7 @@ export interface PurchaseRequestRow {
   tenant_id: string;
   request_no: string;
   title: string;
+  supplier_id: string | null;
   supplier_name: string;
   item_description: string;
   quantity: string | number;
@@ -64,11 +66,13 @@ export interface PurchaseRequestRow {
   updated_at: Date;
 }
 
-export const SQL_PURCHASE_REQUEST_COLUMNS = `
+export function getSqlPurchaseRequestColumns(hasSupplierId: boolean = true): string {
+  return `
   pr.id,
   pr.tenant_id,
   pr.request_no,
   pr.title,
+  ${hasSupplierId ? 'pr.supplier_id' : 'NULL::uuid AS supplier_id'},
   pr.supplier_name,
   pr.item_description,
   pr.quantity,
@@ -84,6 +88,9 @@ export const SQL_PURCHASE_REQUEST_COLUMNS = `
   pr.created_at,
   pr.updated_at
 `;
+}
+
+export const SQL_PURCHASE_REQUEST_COLUMNS = getSqlPurchaseRequestColumns(true);
 
 export function mapPurchaseRequestRow(row: PurchaseRequestRow): PurchaseRequestDto {
   return {
@@ -91,6 +98,7 @@ export function mapPurchaseRequestRow(row: PurchaseRequestRow): PurchaseRequestD
     tenant_id: row.tenant_id,
     request_no: row.request_no,
     title: row.title,
+    supplier_id: row.supplier_id,
     supplier_name: row.supplier_name,
     item_description: row.item_description,
     quantity: Number(row.quantity),

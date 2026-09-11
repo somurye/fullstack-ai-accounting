@@ -86,6 +86,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: '購買・調達 (Phase 2)',
     items: [
       { label: '発注申請', to: '/purchase-requests', icon: ShoppingCart },
+      { label: 'サプライヤーマスタ', to: '/suppliers', icon: Building2 },
     ],
   },
   {

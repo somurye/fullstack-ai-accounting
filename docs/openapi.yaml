@@ -3221,6 +3221,10 @@ paths:
             enum: [draft, pending_approval, active, rejected, terminated]
           description: ステータス絞り込み
         - in: query
+          name: supplier_id
+          schema: { type: string, format: uuid }
+          description: サプライヤーID絞り込み
+        - in: query
           name: search
           schema: { type: string }
           description: 発注番号・タイトル・サプライヤー名・品目説明の検索キーワード
@@ -3347,6 +3351,89 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /suppliers:
+    get:
+      tags: [Suppliers]
+      summary: サプライヤー（取引先）一覧を取得する
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [active, inactive]
+          description: ステータス絞り込み
+        - in: query
+          name: search
+          schema: { type: string }
+          description: サプライヤー名・担当者名・メールアドレスの検索キーワード
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+      responses:
+        "200":
+          description: サプライヤー一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SupplierListResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Suppliers]
+      summary: サプライヤー（取引先）を新規登録する
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SupplierCreate" }
+      responses:
+        "201":
+          description: 登録成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SupplierResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /suppliers/{id}:
+    get:
+      tags: [Suppliers]
+      summary: サプライヤー（取引先）の詳細を取得する
+      parameters:
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: サプライヤー詳細
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SupplierResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Suppliers]
+      summary: サプライヤー（取引先）情報を更新する
+      parameters:
+        - $ref: "#/components/parameters/IdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SupplierUpdate" }
+      responses:
+        "200":
+          description: 更新成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SupplierResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
 
 # ==============================================================================
@@ -5437,6 +5524,7 @@ components:
         tenant_id: { type: string, format: uuid }
         request_no: { type: string }
         title: { type: string }
+        supplier_id: { type: string, format: uuid, nullable: true }
         supplier_name: { type: string }
         item_description: { type: string }
         quantity: { type: number, minimum: 0.0001 }
@@ -5481,14 +5569,14 @@ components:
       type: object
       required:
         - title
-        - supplier_name
         - item_description
         - quantity
         - unit_price
         - total_amount
       properties:
         title: { type: string, minLength: 1 }
-        supplier_name: { type: string, minLength: 1 }
+        supplier_id: { type: string, format: uuid, nullable: true }
+        supplier_name: { type: string }
         item_description: { type: string, minLength: 1 }
         quantity: { type: number, minimum: 0.0001 }
         unit_price: { type: number, minimum: 0 }
@@ -5502,7 +5590,8 @@ components:
       type: object
       properties:
         title: { type: string, minLength: 1 }
-        supplier_name: { type: string, minLength: 1 }
+        supplier_id: { type: string, format: uuid, nullable: true }
+        supplier_name: { type: string }
         item_description: { type: string, minLength: 1 }
         quantity: { type: number, minimum: 0.0001 }
         unit_price: { type: number, minimum: 0 }
@@ -5535,6 +5624,74 @@ components:
           type: array
           items: { $ref: "#/components/schemas/PurchaseRequest" }
         meta: { $ref: "#/components/schemas/Meta" }
+
+    # ---- Suppliers (Phase 2: サプライヤーマスタ) ----
+    SupplierStatus:
+      type: string
+      enum: [active, inactive]
+
+    Supplier:
+      type: object
+      required:
+        - id
+        - tenant_id
+        - name
+        - status
+        - created_by
+        - created_at
+        - updated_at
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        name: { type: string }
+        contact_name: { type: string, nullable: true }
+        contact_email: { type: string, nullable: true }
+        contact_phone: { type: string, nullable: true }
+        payment_terms: { type: string, nullable: true }
+        status: { $ref: "#/components/schemas/SupplierStatus" }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    SupplierCreate:
+      type: object
+      required:
+        - name
+      properties:
+        name: { type: string, minLength: 1, maxLength: 255 }
+        contact_name: { type: string, maxLength: 100, nullable: true }
+        contact_email: { type: string, format: email, maxLength: 255, nullable: true }
+        contact_phone: { type: string, maxLength: 50, nullable: true }
+        payment_terms: { type: string, maxLength: 255, nullable: true }
+        status: { $ref: "#/components/schemas/SupplierStatus", default: "active" }
+
+    SupplierUpdate:
+      type: object
+      properties:
+        name: { type: string, minLength: 1, maxLength: 255 }
+        contact_name: { type: string, maxLength: 100, nullable: true }
+        contact_email: { type: string, format: email, maxLength: 255, nullable: true }
+        contact_phone: { type: string, maxLength: 50, nullable: true }
+        payment_terms: { type: string, maxLength: 255, nullable: true }
+        status: { $ref: "#/components/schemas/SupplierStatus" }
+
+    SupplierResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/Supplier" }
+
+    SupplierListResponse:
+      type: object
+      required: [success, data, meta]
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Supplier" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
 
 
 

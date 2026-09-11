@@ -6324,6 +6324,8 @@ export interface paths {
                 query?: {
                     /** @description ステータス絞り込み */
                     status?: "draft" | "pending_approval" | "active" | "rejected" | "terminated";
+                    /** @description サプライヤーID絞り込み */
+                    supplier_id?: string;
                     /** @description 発注番号・タイトル・サプライヤー名・品目説明の検索キーワード */
                     search?: string;
                     page?: components["parameters"]["PageParam"];
@@ -6570,6 +6572,153 @@ export interface paths {
                 422: components["responses"]["UnprocessableEntity"];
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/suppliers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** サプライヤー（取引先）一覧を取得する */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description ステータス絞り込み */
+                    status?: "active" | "inactive";
+                    /** @description サプライヤー名・担当者名・メールアドレスの検索キーワード */
+                    search?: string;
+                    page?: components["parameters"]["PageParam"];
+                    page_size?: components["parameters"]["PageSizeParam"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description サプライヤー一覧 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SupplierListResponse"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+            };
+        };
+        put?: never;
+        /** サプライヤー（取引先）を新規登録する */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SupplierCreate"];
+                };
+            };
+            responses: {
+                /** @description 登録成功 */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SupplierResponse"];
+                    };
+                };
+                400: components["responses"]["BadRequest"];
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                409: components["responses"]["Conflict"];
+                422: components["responses"]["UnprocessableEntity"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/suppliers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** サプライヤー（取引先）の詳細を取得する */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description サプライヤー詳細 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SupplierResponse"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                404: components["responses"]["NotFound"];
+            };
+        };
+        /** サプライヤー（取引先）情報を更新する */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SupplierUpdate"];
+                };
+            };
+            responses: {
+                /** @description 更新成功 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SupplierResponse"];
+                    };
+                };
+                400: components["responses"]["BadRequest"];
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                404: components["responses"]["NotFound"];
+                409: components["responses"]["Conflict"];
+                422: components["responses"]["UnprocessableEntity"];
+            };
+        };
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -8425,6 +8574,8 @@ export interface components {
             tenant_id: string;
             request_no: string;
             title: string;
+            /** Format: uuid */
+            supplier_id?: string | null;
             supplier_name: string;
             item_description: string;
             quantity: number;
@@ -8468,7 +8619,9 @@ export interface components {
         };
         CreatePurchaseRequestInput: {
             title: string;
-            supplier_name: string;
+            /** Format: uuid */
+            supplier_id?: string | null;
+            supplier_name?: string;
             item_description: string;
             quantity: number;
             unit_price: number;
@@ -8483,6 +8636,8 @@ export interface components {
         };
         UpdatePurchaseRequestInput: {
             title?: string;
+            /** Format: uuid */
+            supplier_id?: string | null;
             supplier_name?: string;
             item_description?: string;
             quantity?: number;
@@ -8509,6 +8664,56 @@ export interface components {
             /** @constant */
             success: true;
             data: components["schemas"]["PurchaseRequest"][];
+            meta: components["schemas"]["Meta"];
+        };
+        /** @enum {string} */
+        SupplierStatus: "active" | "inactive";
+        Supplier: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            tenant_id: string;
+            name: string;
+            contact_name?: string | null;
+            contact_email?: string | null;
+            contact_phone?: string | null;
+            payment_terms?: string | null;
+            status: components["schemas"]["SupplierStatus"];
+            /** Format: uuid */
+            created_by: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        SupplierCreate: {
+            name: string;
+            contact_name?: string | null;
+            /** Format: email */
+            contact_email?: string | null;
+            contact_phone?: string | null;
+            payment_terms?: string | null;
+            /** @default active */
+            status: components["schemas"]["SupplierStatus"];
+        };
+        SupplierUpdate: {
+            name?: string;
+            contact_name?: string | null;
+            /** Format: email */
+            contact_email?: string | null;
+            contact_phone?: string | null;
+            payment_terms?: string | null;
+            status?: components["schemas"]["SupplierStatus"];
+        };
+        SupplierResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["Supplier"];
+        };
+        SupplierListResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["Supplier"][];
             meta: components["schemas"]["Meta"];
         };
     };
