@@ -8,7 +8,8 @@ export type ApprovalTargetType =
   | 'expense_report'
   | 'vendor_bill'
   | 'contract'
-  | 'purchase_request';
+  | 'purchase_request'
+  | 'general_request';
 
 export interface ApprovalRequestListParams {
   page?: number;
@@ -24,4 +25,6 @@ export const TARGET_TYPE_LABEL: Record<ApprovalTargetType, string> = {
   vendor_bill: '仕入請求書',
   contract: '契約書',
   purchase_request: '購買稟議',
+  general_request: '汎用稟議',
 };
+

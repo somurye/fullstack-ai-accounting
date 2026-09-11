@@ -140,13 +140,29 @@ def docker_stop() -> None:
 # スキーマ適用
 # ----------------------------------------------------------------------------
 
-def apply_schema(dsn: str) -> None:
+def apply_single_sql(conn, sql_file: Path) -> None:
+    sql = sql_file.read_text(encoding="utf-8")
+    print(f"[schema] {sql_file.name} を適用中 ({len(sql):,} bytes)...")
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+    except psycopg2.errors.UnsafeNewEnumValueUsage:
+        # ENUM追加直後に同一ファイル内で使用されている場合、ステートメントごとに分割実行
+        statements = [s.strip() for s in sql.split(";") if s.strip()]
+        for stmt in statements:
+            with conn.cursor() as cur:
+                cur.execute(stmt)
+
+
+def apply_schema(dsn: str, max_file: str | None = None) -> None:
     if not SQL_DIR.exists():
         raise FileNotFoundError(f"SQLディレクトリが見つかりません: {SQL_DIR}")
     sql_files = sorted(
         [f for f in SQL_DIR.iterdir() if f.suffix == ".sql"],
         key=lambda p: p.name,
     )
+    if max_file:
+        sql_files = [f for f in sql_files if f.name <= max_file]
     if not sql_files:
         raise FileNotFoundError(f"SQLファイルが見つかりません: {SQL_DIR}")
 
@@ -154,18 +170,8 @@ def apply_schema(dsn: str) -> None:
     conn.autocommit = True
     try:
         for sql_file in sql_files:
-            sql = sql_file.read_text(encoding="utf-8")
-            print(f"[schema] {sql_file.name} を適用中 ({len(sql):,} bytes)...")
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(sql)
-            except psycopg2.errors.UnsafeNewEnumValueUsage:
-                # ENUM追加直後に同一ファイル内で使用されている場合、ステートメントごとに分割実行
-                statements = [s.strip() for s in sql.split(";") if s.strip()]
-                for stmt in statements:
-                    with conn.cursor() as cur:
-                        cur.execute(stmt)
-        print("[schema] 全マイグレーション適用完了")
+            apply_single_sql(conn, sql_file)
+        print("[schema] マイグレーション適用完了")
     finally:
         conn.close()
 
@@ -596,7 +602,7 @@ def run_verification(dsn: str) -> int:
             """SELECT p.code FROM role_permissions rp
                JOIN roles r ON r.id = rp.role_id
                JOIN permissions p ON p.id = rp.permission_id
-               WHERE r.code = 'legal_viewer'"""
+               WHERE r.code = 'legal_viewer' AND p.code LIKE 'contract.%'"""
         )
         legal_viewer_perms = {r["code"] for r in cur.fetchall()}
         r.ok("legal_viewer は contract.view のみを持ち作成・承認権限を持たない",
@@ -1289,6 +1295,233 @@ def run_verification(dsn: str) -> int:
     r.ok("契約期限アラートE2E: 全テナント横断バッチ(RLS非バイパス)・認可強制(403)・情報秘匿化・auto_renewal文面分岐・未読重複防止・既読化・障害隔離が動作する (P1-T4-FIX)",
          batch_run.returncode == 0)
 
+    # ------------------------------------------------------------------------
+    # 12. 汎用稟議申請・ワークフロー起票 (Phase 1: P1-T5)
+    # ------------------------------------------------------------------------
+    print("\n--- 12. 汎用稟議申請・ワークフロー起票 (P1-T5) ---")
+
+    # 1. general_requests テーブルとカラムの存在確認
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute(
+            """SELECT column_name, data_type
+               FROM information_schema.columns
+               WHERE table_name = 'general_requests' AND column_name IN ('request_no', 'category', 'status', 'attachment_id', 'created_by')"""
+        )
+        cols = {row["column_name"] for row in cur.fetchall()}
+        r.ok("general_requests テーブルに必要なカラム群が存在する",
+             {'request_no', 'category', 'status', 'attachment_id', 'created_by'}.issubset(cols))
+
+    # 2. general_requests RLS (ENABLE + FORCE) の確認
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute(
+            """SELECT relrowsecurity, relforcerowsecurity
+               FROM pg_class
+               WHERE relname = 'general_requests'"""
+        )
+        row = cur.fetchone()
+        r.ok("general_requests テーブルで RLS が ENABLE かつ FORCE されている",
+             row is not None and row["relrowsecurity"] and row["relforcerowsecurity"])
+
+    # 3. approval_rules / approval_requests の target_type に 'general_request' が許可され、無効な値は拒否されること
+    test_rule_id = str(uuid.uuid4())
+    test_req_id = str(uuid.uuid4())
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute(
+            """INSERT INTO approval_rules (id, tenant_id, target_type, step_number, approver_user_id, is_active)
+               VALUES (%s, %s, 'general_request', 99, %s, TRUE)""",
+            (test_rule_id, t1, approver),
+        )
+        cur.execute(
+            """INSERT INTO approval_requests (id, tenant_id, target_type, target_id, submitted_by, total_steps)
+               VALUES (%s, %s, 'general_request', %s, %s, 1)""",
+            (test_req_id, t1, str(uuid.uuid4()), owner),
+        )
+
+    invalid_blocked = False
+    try:
+        with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+            cur.execute(
+                """INSERT INTO approval_rules (tenant_id, target_type, step_number, approver_user_id, is_active)
+                   VALUES (%s, 'invalid_target', 1, %s, TRUE)""",
+                (t1, approver),
+            )
+    except psycopg2.errors.CheckViolation:
+        invalid_blocked = True
+
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute("DELETE FROM approval_requests WHERE id = %s", (test_req_id,))
+        cur.execute("DELETE FROM approval_rules WHERE id = %s", (test_rule_id,))
+
+    r.ok("approval_rules / approval_requests の target_type に 'general_request' が追加され有効に機能する",
+         invalid_blocked)
+
+    # 4. 【P1-T5-FIX3実証】段階的アップグレード & fail-closed検証 (014旧状態 -> 違反時エラー停止 -> 015正常適用 -> 制約機能 -> 冪等性)
+    # 4-1. 014適用直後(旧状態): amount = -1 の INSERT が成功すること (制約未適用状態の再現確認)
+    upgrade_pre_check = False
+    try:
+        with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+            cur.execute(
+                """INSERT INTO general_requests (tenant_id, request_no, title, description, category, amount, status, created_by)
+                   VALUES (%s, 'REQ-PRE-001', '制約前負金額テスト', '説明', 'general', -1, 'draft', %s)
+                   RETURNING id""",
+                (t1, owner),
+            )
+            pre_row = cur.fetchone()
+            cur.execute("DELETE FROM general_requests WHERE id = %s", (pre_row["id"],))
+            upgrade_pre_check = True
+    except Exception as e:
+        print(f"014状態再現エラー: {e}")
+        upgrade_pre_check = False
+    r.ok("段階的アップグレード検証 1: 014適用直後(旧状態)は amount = -1 の INSERT が成功する (未制約状態の再現確認)",
+         upgrade_pre_check)
+
+    # 4-2. 【P1-T5-FIX3】違反データ存在時に015を適用すると fail-closed (RAISE EXCEPTION) で停止し、
+    #      かつデータが一切書き換えられていないことの検証
+    fail_closed_stopped = False
+    data_intact = False
+    constraint_not_applied = False
+    migration_015_path = SQL_DIR / "015_general_request_constraints.sql"
+
+    # 違反データを意図的に投入 (負の金額 & 無効なcategory)
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute(
+            """INSERT INTO general_requests (tenant_id, request_no, title, description, category, amount, status, created_by)
+               VALUES (%s, 'REQ-VIOLATE-001', '違反データ金額', '説明', 'general', -500, 'draft', %s),
+                      (%s, 'REQ-VIOLATE-002', '違反データ区分', '説明', 'unauthorized_category', 1000, 'draft', %s)""",
+            (t1, owner, t1, owner),
+        )
+
+    # 違反データがある状態で 015 を適用 -> RAISE EXCEPTION で失敗することを確認
+    conn_fail_test = psycopg2.connect(dsn)
+    try:
+        apply_single_sql(conn_fail_test, migration_015_path)
+    except Exception as e:
+        if "manual remediation required" in str(e):
+            fail_closed_stopped = True
+    finally:
+        conn_fail_test.close()
+
+    # 停止後、既存データが無断改変 (自動クレンジング) されていないことを検証
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute("SELECT amount FROM general_requests WHERE request_no = 'REQ-VIOLATE-001'")
+        row_amount = cur.fetchone()
+        cur.execute("SELECT category FROM general_requests WHERE request_no = 'REQ-VIOLATE-002'")
+        row_category = cur.fetchone()
+        if (
+            row_amount and float(row_amount["amount"]) == -500.0 and
+            row_category and row_category["category"] == "unauthorized_category"
+        ):
+            data_intact = True
+
+        # 制約が中途半端に追加されていないことも確認
+        cur.execute(
+            """SELECT 1 FROM pg_constraint
+               WHERE conname IN ('ck_general_requests_amount_nonnegative', 'ck_general_requests_category')
+                 AND conrelid = 'general_requests'::regclass"""
+        )
+        constraints_found = cur.fetchall()
+        if len(constraints_found) == 0:
+            constraint_not_applied = True
+
+        # 手動修復に相当するクリーンアップ (テスト用違反データの削除)
+        cur.execute("DELETE FROM general_requests WHERE request_no IN ('REQ-VIOLATE-001', 'REQ-VIOLATE-002')")
+
+    r.ok("段階的アップグレード検証 2: 違反データ存在時は015がfail-closedでエラー停止し、元データが改変されず制約も未適用に保たれる (P1-T5-FIX3)",
+         fail_closed_stopped and data_intact and constraint_not_applied)
+
+    # 4-3. 違反データが存在しない状態で 015_general_request_constraints.sql を適用 (段階的アップグレード)
+    conn_mig = psycopg2.connect(dsn)
+    conn_mig.autocommit = True
+    try:
+        apply_single_sql(conn_mig, migration_015_path)
+    finally:
+        conn_mig.close()
+    print("[schema] 015_general_request_constraints.sql 適用完了 (段階的アップグレード)")
+
+    # 4-4. 015適用後: amount = -1 の直接 INSERT が CHECK 制約で拒否されること
+    neg_amount_blocked = False
+    try:
+        with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+            cur.execute(
+                """INSERT INTO general_requests (tenant_id, request_no, title, description, category, amount, status, created_by)
+                   VALUES (%s, 'REQ-CHECK-001', '負の金額テスト', 'テスト', 'general', -1, 'draft', %s)""",
+                (t1, owner),
+            )
+    except psycopg2.errors.CheckViolation:
+        neg_amount_blocked = True
+    r.ok("段階的アップグレード検証 3: 015適用後 amount = -1 は非負CHECK制約で拒否される (BLOCKER-01)",
+         neg_amount_blocked)
+
+    # 4-5. 015適用後: 無効な category の直接 INSERT が CHECK 制約で拒否されること
+    inv_category_blocked = False
+    try:
+        with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+            cur.execute(
+                """INSERT INTO general_requests (tenant_id, request_no, title, description, category, amount, status, created_by)
+                   VALUES (%s, 'REQ-CHECK-002', '不正カテゴリテスト', 'テスト', 'invalid_cat', 1000, 'draft', %s)""",
+                (t1, owner),
+            )
+    except psycopg2.errors.CheckViolation:
+        inv_category_blocked = True
+    r.ok("段階的アップグレード検証 4: 015適用後 無効な category は CHECK 制約で拒否される",
+         inv_category_blocked)
+
+    # 4-6. 015を2回連続適用してもエラーにならないこと (ALTER TABLE 冪等性・IF NOT EXISTS相当の確認)
+    idempotent_ok = False
+    try:
+        conn_mig2 = psycopg2.connect(dsn)
+        conn_mig2.autocommit = True
+        apply_single_sql(conn_mig2, migration_015_path)
+        conn_mig2.close()
+        idempotent_ok = True
+    except Exception as e:
+        print(f"冪等性エラー: {e}")
+        idempotent_ok = False
+    r.ok("段階的アップグレード検証 5: 015を2回連続適用してもエラーにならず正常終了する (ALTER TABLE 冪等性保証)",
+         idempotent_ok)
+
+    # 4-7. 正常系: amount IS NULL または amount >= 0、有効なカテゴリが正常に INSERT できること
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute(
+            """INSERT INTO general_requests (tenant_id, request_no, title, description, category, amount, status, created_by)
+               VALUES (%s, 'REQ-CHECK-003', '正常申請', 'テスト', 'equipment', 50000, 'draft', %s)
+               RETURNING id""",
+            (t1, owner),
+        )
+        ok_req_id = cur.fetchone()["id"]
+        cur.execute("DELETE FROM general_requests WHERE id = %s", (ok_req_id,))
+    r.ok("general_requests は正の金額・有効カテゴリで正常に登録できる (正常系回帰なし)", True)
+
+    # 5. RBAC: general_request.* パーミッションの登録と employee ロールへの付与確認
+    with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+        cur.execute(
+            """SELECT code FROM permissions WHERE code LIKE 'general_request.%%' ORDER BY code"""
+        )
+        perms = [row["code"] for row in cur.fetchall()]
+        r.ok("general_request.create/view/edit/approve パーミッションが登録されている",
+             perms == ['general_request.approve', 'general_request.create', 'general_request.edit', 'general_request.view'])
+
+        cur.execute(
+            """SELECT p.code
+               FROM roles r
+               JOIN role_permissions rp ON r.id = rp.role_id
+               JOIN permissions p ON rp.permission_id = p.id
+               WHERE r.code = 'employee' AND p.code LIKE 'general_request.%%'
+               ORDER BY p.code"""
+        )
+        emp_perms = [row["code"] for row in cur.fetchall()]
+        r.ok("employee ロールに general_request.create, view, edit が付与されている (SoD維持)",
+             emp_perms == ['general_request.create', 'general_request.edit', 'general_request.view'])
+
+    # 5. 【P1-T5実証】汎用稟議実DB E2Eテスト (多段階承認・ルール未設定エラー・テナント整合性トリガー・改ざん防止・RLS分離)
+    cmd_gr = f"npx ts-node src/scripts/verify-general-requests-e2e.ts \"{dsn}\""
+    gr_run = subprocess.run(cmd_gr, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
+    if gr_run.returncode != 0:
+        err_msg = f"\n[GENERAL REQUESTS E2E ERROR STDOUT]:\n{gr_run.stdout}\n[GENERAL REQUESTS E2E ERROR STDERR]:\n{gr_run.stderr}"
+        print(err_msg.encode("cp932", errors="replace").decode("cp932"))
+    r.ok("汎用稟議E2E: 一連の起票〜承認完了(active)・未設定時安全エラー・テナント整合性トリガー・active改ざん防止・RLS分離が動作する (P1-T5)",
+         gr_run.returncode == 0)
+
     return r.summary()
 
 
@@ -1315,8 +1548,27 @@ def main() -> int:
         else:
             dsn = args.dsn
 
-        apply_schema(dsn)
+        # 1. まず 001〜014 までを適用 (P1-T5マージ直後の既存DB状態を再現)
+        apply_schema(dsn, max_file="014_general_requests.sql")
+        # 2. 検証実行 (セクション12内で 014旧状態確認 -> 015段階的適用 -> 制約確認 -> 冪等性確認 -> E2E実行)
         exit_code = run_verification(dsn)
+
+        # 3. クリーンDBに最初から001〜015を一括適用した場合の回帰なし確認
+        if exit_code == 0:
+            fresh_db_name = "keiri_kaikei_fresh_015"
+            conn_raw = psycopg2.connect(dsn)
+            conn_raw.autocommit = True
+            try:
+                with conn_raw.cursor() as cur:
+                    cur.execute(f"DROP DATABASE IF EXISTS {fresh_db_name}")
+                    cur.execute(f"CREATE DATABASE {fresh_db_name}")
+            finally:
+                conn_raw.close()
+
+            dsn_fresh = dsn.rsplit("/", 1)[0] + f"/{fresh_db_name}"
+            print("\n--- クリーンDBへの001〜015一括適用検証 (新規環境回帰なし確認) ---")
+            apply_schema(dsn_fresh)
+            print("[schema] クリーンDBへの001〜015一括適用が正常終了しました (回帰なし確認完了)")
     finally:
         if args.use_docker and not args.keep_docker:
             docker_stop()

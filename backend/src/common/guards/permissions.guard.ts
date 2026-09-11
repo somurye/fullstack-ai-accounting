@@ -16,6 +16,10 @@ export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     'contract.approve',
     'contract.terminate',
     'notification.batch_execute',
+    'general_request.create',
+    'general_request.view',
+    'general_request.edit',
+    'general_request.approve',
   ],
   legal_admin: [
     'contract.create',
@@ -23,22 +27,35 @@ export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     'contract.edit',
     'contract.approve',
     'contract.terminate',
+    'general_request.create',
+    'general_request.view',
+    'general_request.edit',
+    'general_request.approve',
   ],
   legal_viewer: [
     'contract.view',
+    'general_request.view',
   ],
   approver: [
     'contract.view',
     'contract.approve',
+    'general_request.view',
+    'general_request.approve',
   ],
   accounting_manager: [
     'contract.view',
+    'general_request.view',
   ],
   accountant: [
     'contract.view',
+    'general_request.view',
   ],
   bookkeeper: [],
-  employee: [],
+  employee: [
+    'general_request.create',
+    'general_request.view',
+    'general_request.edit',
+  ],
   payroll_admin: [],
   viewer_external: [],
 };

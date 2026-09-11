@@ -16,6 +16,7 @@ const TARGET_TYPE_QUERY_KEY: Record<ApprovalTargetType, string> = {
   vendor_bill: 'vendor-bills',
   contract: 'contracts',
   purchase_request: 'purchase-requests',
+  general_request: 'general-requests',
 };
 
 function invalidateApprovalSideEffects(

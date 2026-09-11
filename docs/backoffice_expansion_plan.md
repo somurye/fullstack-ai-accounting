@@ -56,6 +56,8 @@ ChatGPT（SO）は実コードとの差分照合を前提にレビューする�
 3. `main` へのマージは、ChatGPTレビューが正式PASSになってからClaudeが指示する（Geminiが独断でmainへマージしない）。
 4. push前の「報告のみ」の完了通知は受け付けない。実装が終わっていてもpushされていなければタスクは「未完了」として扱う。
 5. **テストが全件PASSしていることは、機能が実際に意図通り動作していることの証明にはならない。** 特に外部入力（PDF、ユーザー入力ファイル等）を扱うタスクでは、固定のfixtureやモックデータだけでなく、実際の入力データを使ったE2E検証をDoDに含めること（P1-T2で、テストは56/56 PASSしていたにもかかわらずPDF本文が実際には読み込まれず固定テキストで代替されていた事例を教訓とする）。
+6. **一度作成・適用済みのmigrationファイルは事後的に書き換えない（migrationはappend-onlyとする）。** スキーマ変更が必要になった場合は、既存ファイルを編集するのではなく必ず新しい番号のmigrationファイルを追加すること。`CREATE TABLE IF NOT EXISTS`等の冪等な記法は、新規DBの構築時にしか効かず、既に該当テーブルが存在する（＝そのタスクが一度でもmainへマージされた）DBには変更が反映されない。実DB E2Eが「クリーンDBに全migrationを最初から適用した場合」のみを検証しており、「既存DBへの段階的アップグレード」を検証していない場合、この問題を検出できない点にも注意する（P1-T5-FIXで、既存014マイグレーションを直接書き換えたためこの問題が発生した事例を教訓とする）。
+7. **既存データに対して制約を後から追加するmigrationは、違反データを自動的に修正・削除してはならない。** 違反データを検出した場合はmigration自体をfail-closedで停止し、人間が内容を確認・修正した上で再実行する設計にすること。業務データ（金額、区分等）の意味を無断で変更する自動クレンジングは、会計・バックオフィス系システムでは特に避けること（P1-T5-FIX2で、負の金額を自動的にNULLへ、無効なcategoryを自動的にdefault値へ書き換える処理が発見された事例を教訓とする）。
 
 ---
 
@@ -705,8 +707,8 @@ Phase 0で汎用化した承認エンジン・添付ファイル基盤・AIゲ�
 | P1-T2 | 契約書アップロード〜AI条項抽出フロー | PDFアップロード→AIゲートウェイでの条項抽出提案→人間確認画面（DEBT-002/DEBT-003をあわせて解消） | P0-T3, P1-T1 | ✅ SO正式PASS（コミット923ccfd修正後、実PDF内容依存性をE2Eで確認済み、DEBT-007を記録・mainマージ指示済み） |
 | P1-T3 | 契約RBAC強制・AI提案ライフサイクル正式化 | ~~承認ワークフロー統合~~（P1-T1で先行実装済みのため統合済み）→ **スコープ変更**: (1) DEBT-005: contract permissionのAPI認可強制、(2) `ai_suggestions.target_type/target_id`のライフサイクル正式決定、(3) 状態遷移・SoDの最終確認 | P0-T1, P0-T4, P1-T1, P1-T2 | ✅ SO正式PASS（コミットb9a948d、DEBT-005/006/source_suggestion_id整合性を解消、DEBT-008を記録、mainマージ指示済み） |
 | P1-T4 | 契約期限アラート・バッチ | 満了/自動更新の一定日数前に通知を生成するバッチワーカー | P1-T1 | ✅ SO正式PASS（コミット、notification.batch_execute権限をowner限定で追加、DEBT-009を記録、mainマージ指示済み） |
-| P1-T5 | 稟議申請（汎用ワークフロー起票UI） | 契約以外の一般的な稟議（購買以外の申請）もこの画面から起票できる汎用フォーム | P0-T1, P1-T1, P1-T3 | プロンプト発行済み・着手待ち |
-| P1-T6 | 契約書全文検索（pgvector活用） | 既存のjournal_entry_embeddingsと同様のパターンで契約書本文をベクトル化し類似契約検索を提供 | P1-T1 | 未着手 |
+| P1-T5 | 稟議申請（汎用ワークフロー起票UI） | 契約以外の一般的な稟議（購買以外の申請）もこの画面から起票できる汎用フォーム | P0-T1, P1-T1, P1-T3 | ✅ SO正式PASS（コミット60a0724、fail-closed migration・DEBT-010を記録、mainマージ指示済み） |
+| P1-T6 | 契約書全文検索（pgvector活用） | 既存のjournal_entry_embeddingsと同様のパターンで契約書本文をベクトル化し類似契約検索を提供 | P1-T1, P1-T2 | プロンプト発行済み・着手待ち（Phase 1最終タスク） |
 
 ### 3.3 Phase 1 実装指示プロンプト（Gemini向け）
 
@@ -1382,6 +1384,300 @@ DEBT-008（RBAC静的マップとDBの二重管理）、DEBT-009（通知が個�
 
 ---
 
+#### 【フォローアップ指示プロンプト P1-T5-FIX】REQUEST CHANGES対応（amountの非負制約欠落）
+
+ChatGPT(SO)よりP1-T5が「REQUEST CHANGES」と判定された。P1-T1〜P1-T3で確立した設計
+（tenant整合性のDBトリガー、暗黙自動承認の防止、RBAC強制、SoD維持）は正しく横展開できて
+おり、修正対象は金額制約の1点に限定される。
+
+```
+# SOレビュー結果：P1-T5 REQUEST CHANGES
+main...feature/p1-t5-general-requests の実差分（コミットda4bbca5）を確認した結果、
+現状はマージ不可です。以下を修正してください。
+
+# BLOCKER-01: amountのDB非負制約が欠落している
+general_requests.amount は NUMERIC(14,2) の型制約のみで、DB CHECK制約がありません。
+既存のcontracts.contract_amountには CHECK (contract_amount IS NULL OR contract_amount >= 0)
+が設定されているのに対し、general_requestsだけこの防御が抜けています。
+API側のZodスキーマにもmin(0)がなく、負の金額（例: -100000）がAPI経由でもDB直接操作でも
+登録できてしまいます。
+
+## 修正方針
+1. マイグレーションで general_requests.amount に
+   CHECK (amount IS NULL OR amount >= 0) を追加する。
+2. Backend Zodスキーマの amount を z.number().min(0).nullable().optional() に修正する。
+3. 実DB E2Eに、amount = -1 でのDB直接INSERTが拒否されることを確認するテストを追加する。
+
+# 推奨修正（今回まとめて対応することを推奨、必須ではない）
+categoryが、API側で定義済みのenumスキーマ（generalRequestCategorySchema）を実際には
+使用しておらず、任意の文字列を受け付けてしまっています。
+1. create/update/listのクエリスキーマで、category: generalRequestCategorySchema.optional()
+   .default('general') を実際に適用する。
+2. DBにも CHECK (category IN ('general','equipment','rule_change','business_trip','other'))
+   を追加する。
+3. 実DB E2Eに、無効なcategory値でのDB直接INSERTが拒否されることを確認するテストを追加する。
+
+# 修正不要（今回は記録のみ）
+- PUT/DELETEが created_by（起票者本人）を確認せず、general_request.edit権限があれば
+  同一テナントの誰でも他人のdraftを編集・削除できる点は、仕様として明記されていないため
+  今回は修正必須にしません。DEBT-010として計画書側で記録し、仕様を正式決定するまで
+  現状維持とします。
+
+# 受け入れ基準（Definition of Done）
+- [ ] amount = -1 でのDB直接INSERTがCHECK制約により拒否される
+- [ ] API経由でも負の金額がバリデーションエラーになる
+- [ ] （推奨対応を行った場合）無効なcategory値がDB直接INSERTでも拒否される
+- [ ] 既存の正常系（正の金額、有効なcategory）に回帰がない
+- [ ] 修正後、クリーンDBでverify_schema.pyを含む実DB E2Eを再実行し、追加テストを含めて
+      全件PASSの結果を報告に添付する
+- [ ] feature/p1-t5-general-requests ブランチに追加コミット・pushし、比較URLを報告に含める
+
+# ChatGPTレビュー時の確認観点
+- 追加したCHECK制約が、既存の正の金額データや金額未設定(NULL)のレコードに影響しないか
+- categoryのCHECK制約を追加した場合、フロントエンドの選択肢と完全に一致しているか
+```
+
+---
+
+#### 【フォローアップ指示プロンプト P1-T5-FIX2】REQUEST CHANGES対応（既存migrationの事後書き換え）
+
+ChatGPT(SO)よりP1-T5-FIXが「REQUEST CHANGES」と判定された。amount/categoryの制約実装
+そのものは適切だが、**適用方法に重大な問題**があるため修正する。本計画書0.4節に
+migration不変（append-only）の原則を新設した。
+
+```
+# SOレビュー結果：P1-T5-FIX REQUEST CHANGES
+コミットa0476111は、既に適用済みのsql/014_general_requests.sqlを直接書き換えて
+amount/categoryのCHECK制約を追加していますが、これは本番相当のDB運用として成立しません。
+014は `CREATE TABLE IF NOT EXISTS` を使っているため、既にgeneral_requestsテーブルが
+存在するDB（P1-T5が一度でもmainへマージされた環境）に対してmigrationを再実行しても、
+新しい制約は反映されません。今回の実DB E2E（82/82 PASS）は、クリーンDBに001から
+現在の014まで最初から適用した場合の結果であり、「既存DBへの段階的アップグレード」を
+証明していません。
+
+# 修正方針
+1. sql/014_general_requests.sql を、今回の変更前の内容（amount/category CHECKなし）に戻す。
+2. 新規マイグレーション sql/015_general_request_constraints.sql を作成し、
+   以下をALTER TABLEで追加する。
+   ALTER TABLE general_requests
+       ADD CONSTRAINT ck_general_requests_amount_nonnegative
+       CHECK (amount IS NULL OR amount >= 0);
+   ALTER TABLE general_requests
+       ADD CONSTRAINT ck_general_requests_category
+       CHECK (category IN ('general','equipment','rule_change','business_trip','other'));
+3. 今後、他のタスクで同様の「既存テーブルへの制約追加」が必要になった場合も、
+   必ずこのパターン（新規migrationでのALTER TABLE）に従うこと。
+
+# 追加すべき検証（最重要）
+「クリーンDBに全migrationを適用した場合のみ制約が効く」ことの確認では不十分です。
+以下の手順で、既存DBへの段階的アップグレードが正しく機能することを実DB E2Eで証明してください。
+1. クリーンなDBに対し、001から014（修正前の内容に戻したもの）までを適用する
+   （＝P1-T5適用直後、FIX前の状態を再現する）。
+2. この状態でamount=-1のINSERTが成功する（制約がまだない）ことを一度確認する
+   （既存状態の再現が正しいことの確認）。
+3. 続けて015を適用する。
+4. 015適用後、amount=-1のINSERTが拒否されることを確認する。
+5. 015適用後、無効なcategory値のINSERTが拒否されることを確認する。
+6. 015を2回適用してもエラーにならない、またはエラーが許容範囲であることを確認する
+   （ALTER TABLE ADD CONSTRAINTの冪等性、IF NOT EXISTS相当の考慮）。
+
+# 受け入れ基準（Definition of Done）
+- [ ] 014が変更前の内容に戻っている（amount/category制約を含まない）
+- [ ] 015が新規作成され、ALTER TABLEでamount/category制約を追加している
+- [ ] 「001〜014適用（旧状態）→ 015適用 → 制約が効く」という段階的アップグレードのE2Eが
+      追加され、PASSしている
+- [ ] クリーンDBに001〜015を最初から適用した場合も引き続き正しく動作する（回帰なし）
+- [ ] feature/p1-t5-general-requests ブランチに追加コミット・pushし、比較URLを報告に含める
+
+# ChatGPTレビュー時の確認観点
+- 014の内容が本当に「今回の変更前」に正確に戻っているか（差分で確認）
+- 015のALTER TABLEが、既存データに非負でない金額や無効なcategoryが万一含まれていた場合に
+  マイグレーション自体が失敗しないか（現状のデータ内容次第でこの問題が起こり得るため、
+  必要であれば事前のデータクレンジング方針も報告に含める）
+```
+
+---
+
+#### 【フォローアップ指示プロンプト P1-T5-FIX3】REQUEST CHANGES対応（015が既存データを無断で自動クレンジングしている）
+
+ChatGPT(SO)よりP1-T5-FIX2が「REQUEST CHANGES」と判定された。前回のBLOCKER（migration
+append-only原則違反）は完全に解消されている。今回の指摘は、新設した015自体の設計に
+関するものに限定される。本計画書0.4節にfail-closed migrationの原則を新設した。
+
+```
+# SOレビュー結果：P1-T5-FIX2 REQUEST CHANGES
+015_general_request_constraints.sql の冒頭に、以下の自動クレンジング処理があります。
+  UPDATE general_requests SET amount = NULL WHERE amount < 0;
+  UPDATE general_requests SET category = 'general' WHERE category NOT IN (...);
+これは制約追加前に違反データを検出して人間に知らせるのではなく、migration自身が
+既存の業務データ（金額・区分）を無断で書き換えてから制約を追加する設計になっており、
+会計・バックオフィス系システムとしては危険です。amount=NULLへの変更は「金額が負だった」
+という情報を、category='general'への変更は「元は別の区分だった」という情報を、
+それぞれ復元不可能な形で消去します。
+
+# 修正方針
+1. 015冒頭のUPDATE文（自動クレンジング処理）を削除する。
+2. 代わりに、制約追加前にDO $$ ... $$ブロックで違反データの存在を検出し、
+   存在すればRAISE EXCEPTIONでmigration自体を停止する（fail-closed）よう変更する。
+   例:
+   DO $$
+   BEGIN
+       IF EXISTS (SELECT 1 FROM general_requests WHERE amount < 0) THEN
+           RAISE EXCEPTION 'general_requests contains negative amount values; manual remediation required';
+       END IF;
+       IF EXISTS (SELECT 1 FROM general_requests WHERE category NOT IN
+           ('general','equipment','rule_change','business_trip','other')) THEN
+           RAISE EXCEPTION 'general_requests contains invalid category values; manual remediation required';
+       END IF;
+   END $$;
+   （categoryはNOT NULL制約があるためNULLチェックは不要、amountはNULL許容のため
+   amount < 0のみで判定すれば十分。NULLはamount < 0の比較でfalseになるため
+   誤って引っかからないことを確認する）
+3. 既存の段階的アップグレードE2Eテストを、以下のように更新する。
+   - 違反データが存在しない状態で015を適用 → 成功し、制約が追加される（従来通り）
+   - 意図的に違反データ（負の金額または無効なcategory）を投入した状態で015を適用
+     → migrationがエラーで停止し、データが変更されていないことを確認する新規テストケースを追加
+
+# 受け入れ基準（Definition of Done）
+- [ ] 015から自動クレンジング(UPDATE)処理が完全に削除されている
+- [ ] 違反データが存在する状態で015を適用するとエラーで停止し、元データが一切変更されない
+- [ ] 違反データが存在しない状態では、従来通り015が正常に適用され制約が追加される
+- [ ] 015の冪等性（既存制約がある場合はスキップ）に回帰がない
+- [ ] 修正後、クリーンDB・段階的アップグレード（違反データあり/なし両方）の実DB E2Eを再実行し、
+      全件PASSの結果を報告に添付する
+- [ ] feature/p1-t5-general-requests ブランチに追加コミット・pushし、比較URLを報告に含める
+
+# ChatGPTレビュー時の確認観点
+- RAISE EXCEPTIONによるmigration停止時、部分的にALTER TABLEが適用されて中途半端な状態に
+  ならないか（DOブロックをトランザクション内の適切な位置に置けているか）
+- エラーメッセージが、実際に対応する担当者（Gemini/開発者）にとって次に何をすべきか
+  分かる内容になっているか
+```
+
+---
+
+#### 【フォローアップ指示プロンプト P1-T5-FIX3-VERIFY】push状態の確認・是正（設計は承認済み）
+
+ChatGPT(SO)より、P1-T5-FIX3の**設計自体はfail-closed原則に合致しており問題ない**と判定された。
+ただし、報告内容とGitHub上の実コミット（28812ec）が一致しておらず、報告されたUPDATE削除・
+RAISE EXCEPTION化がまだリモートに反映されていない状態が確認された。これは本計画書0.4節
+「push前の報告のみの完了通知は受け付けない」というルールに関わる問題であるため、
+実装内容の再検討ではなく、push状態の確認と是正を最優先で行う。
+
+```
+# 指示
+以下を確認し、必要な対応を行ってください。設計自体は前回提示された内容（UPDATE削除、
+DO $$ ... RAISE EXCEPTION ... END $$ によるfail-closed化）で問題ないため、再設計は不要です。
+
+1. git status / git log でローカルの変更状態とコミット履歴を確認する。
+   前回報告したFIX3の変更（015からのUPDATE削除、RAISE EXCEPTION追加）が
+   実際にコミットされているか確認する。
+2. コミットされていない場合は、コミットした上でfeature/p1-t5-general-requests ブランチへpushする。
+   コミットはされているがpushされていない場合は、pushする。
+3. git diff --name-only <直前のFIX2コミット>...HEAD を実行し、実際に変更されたファイルの
+   一覧を報告に含める。
+4. push後、GitHub上の sql/015_general_request_constraints.sql を直接確認し、
+   UPDATE文が存在しないこと、RAISE EXCEPTIONによるfail-closad化が反映されていることを
+   目視でも確認する。
+5. 改めてクリーンDB・段階的アップグレード（違反データあり/なし）の実DB E2Eを実行し、
+   結果を報告に添付する。
+6. 今回のpush漏れがなぜ起きたか（コミットし忘れ、別ブランチへのpush、push自体の失敗等）を
+   一言報告してください。今後の再発防止のため記録します。
+
+# 受け入れ基準（Definition of Done）
+- [ ] GitHub上のfeature/p1-t5-general-requests HEADで、015からUPDATE文が完全に削除されている
+- [ ] GitHub上のfeature/p1-t5-general-requests HEADで、RAISE EXCEPTIONによるfail-closed化が
+      確認できる
+- [ ] 新しいコミットSHAを報告に明記する
+- [ ] 実DB E2E（違反データあり/なし両方のケースを含む）の結果を報告に添付する
+```
+
+---
+
+#### 【マージ指示プロンプト P1-T5-MERGE】mainへのマージ
+
+ChatGPT(SO)よりP1-T5-FIX3が正式PASS（migration append-only・fail-closed原則の両方を実リポジトリで確認済み）と判定された。
+
+```
+# 指示
+feature/p1-t5-general-requests を main へマージしてください。
+SO(ChatGPT)による正式PASS判定を得ています（既存migrationの事後変更なし、制約追加は新規015で
+fail-closedに実装、違反データがある既存DB/正常な既存DB/新規DBの3経路を実DB E2E 85/85で確認済み）。
+DEBT-010（起票者本人以外もdraft稟議を編集・削除できる、仕様未確定）は計画書側で追跡することとし、
+今回のマージをブロックするものではありません。
+マージ後、以下を確認し報告してください。
+- main上でクリーンDBに対しverify_schema.pyを含む実DB E2Eを再実行し、全件PASSを確認する
+- Backend/Frontendのテストを再実行して確認
+- マージコミットハッシュ
+- 作業ブランチ feature/p1-t5-general-requests の削除（マージ済み後）
+```
+
+これでP1-T5は完了。次はP1-T6（契約書全文検索：pgvector活用）へ進む。**これでPhase 1の全6タスクが出揃う。**
+
+---
+
+#### 【指示プロンプト P1-T6】契約書全文検索（pgvector活用）
+
+```
+# 背景・目的
+既存のjournal_entry_embeddings（仕訳の類似検索）と同様のパターンで、契約書本文をベクトル化し、
+「似た契約を探す」「キーワードでは見つからない類似条項の契約を探す」といった検索を可能にする。
+これがPhase 1の最後のタスクとなる。
+
+# 前提となる既存実装
+- P1-T2: PDFテキスト抽出（pdf-text-extractor.ts）。ただし現状、抽出したテキストは
+  AI提案生成に使われた後、永続化されていない可能性が高い（要確認）。
+- 既存のjournal_entry_embeddings テーブルとそのembedding生成パターン（使用モデル、
+  チャンク分割方針等）
+- P1-T1: contracts テーブル、tenant整合性トリガー
+
+# やってはいけないこと
+- embeddingや全文検索機能を、既存のAI提案（ai_suggestions）の隔離原則と混同しない。
+  全文検索はあくまで「確定済みcontractsの本文」に対する検索機能であり、
+  AI提案の生成・確定フローとは独立した機能として実装する。
+- 全文検索結果のAPIが、tenant境界を越えて類似契約を返さないようにする
+  （embedding検索であってもRLS/tenant_idでの絞り込みを必ず行う）。
+
+# 実装対象
+1. contracts に抽出済み本文を永続化する列（例: extracted_text TEXT）を追加するマイグレーションを
+   作成する（既存014方式ではなく新規番号のmigrationとして追加すること。本計画書0.4節の
+   migration不変原則に従う）。P1-T2のPDF抽出結果を、契約confirm時にcontractsへ保存するよう
+   ContractsServiceを更新する。
+2. contract_embeddings テーブルを新規作成する（id, tenant_id, contract_id, chunk_index,
+   chunk_text, embedding vector(次元数は既存journal_entry_embeddingsに合わせる)等）。
+   RLS（ENABLE + FORCE）、tenant整合性トリガー（contract_id経由でcontracts.tenant_idと
+   一致することをDBで保証、P1-T1/P1-T3で確立したパターンを踏襲）を実装する。
+3. 契約confirm時（またはバッチ処理として事後）に、extracted_textを適切なサイズでチャンク分割し、
+   既存のembedding生成パターンを再利用してcontract_embeddingsへ保存する処理を実装する。
+4. 類似契約検索API（例: GET /contracts/:id/similar、またはキーワード/自然文からの検索）を実装し、
+   pgvectorのコサイン類似度等で近傍探索を行う。検索結果は必ずtenant_idで絞り込む
+   （embeddingのインデックス自体がtenant境界を越えないことをRLSで保証しつつ、
+   アプリケーション側でも明示的にtenant_idを条件に含める）。
+5. contract.view権限がない場合はこの検索APIも利用できないようにする。
+
+# 受け入れ基準（Definition of Done）
+- [ ] 契約confirm時にPDF抽出テキストがcontracts.extracted_textへ保存される
+- [ ] contract_embeddingsが生成され、他テナントのembeddingを一切含まずに類似検索が行える
+- [ ] 他テナントのcontract_embeddingsが検索結果に一切混入しないことを実DB E2Eで確認する
+      （tenant越境した際の挙動を明示的にテストする）
+- [ ] contract.view権限がないユーザーは検索APIを利用できない
+- [ ] 既存のjournal_entry_embeddingsの動作に回帰がない
+- [ ] 新規migrationが本計画書0.4節の原則（append-only、fail-closedなデータ検証）に従っている
+- [ ] Phase 0で確立した実DB E2E検証基盤で、上記すべてを確認し結果を報告に添付する
+- [ ] feature/p1-t6-contract-fulltext-search ブランチにコミット・pushし、比較URLを報告に含める
+      （本計画書0.4節に従う）
+
+# ChatGPTレビュー時の確認観点
+- embedding生成のチャンク分割・モデル選択が既存のjournal_entry_embeddingsと一貫しているか
+  （車輪の再発明をしていないか）
+- 類似検索APIが、RLSに加えてアプリケーション層でも明示的にtenant_idを絞り込んでいるか
+  （pgvectorの近傍探索インデックスがRLSと正しく組み合わさっているかは要確認ポイント）
+- extracted_textの永続化によって、契約書本文という機微情報の保存範囲が広がることについて、
+  既存のattachments（ファイル実体）との重複や、アクセス制御の一貫性が保たれているか
+```
+
+---
+
 ## 3.4 決定事項: ロール・権限の粒度方針
 
 - **方針**: 権限を細分化し、権限外の領域は閲覧も含めて不可とする（deny-by-default）。既存のRLSが「fail-closed（未設定・不一致時は0件返却）」の原則を採っているため、この方針とも整合的。
@@ -1405,6 +1701,7 @@ DEBT-008（RBAC静的マップとDBの二重管理）、DEBT-009（通知が個�
 | DEBT-007 | P1-T2 | 現在のPDFテキスト抽出は、テキストが埋め込まれたPDFのみに対応しており、スキャン画像PDF・画像のみのPDFは本文抽出不能として400エラーを返す（フォールバックでダミー処理はしない、安全側の設計）。ただし実際の契約書運用ではスキャンPDFが一定割合存在するため、将来的にはOCR経路（文字なしPDF→OCR→抽出）を追加する必要がある。 | LOW（現状はfail-closedで安全、機能制約のみ） | 契約書アップロード運用の実績を見て、スキャンPDF比率が無視できない場合に対応 | 🔴 未対応（意図的な機能制約として現状維持） |
 | DEBT-008 | P1-T3 | `PermissionsGuard`がDBの`role_permissions`テーブルを直接参照せず、静的マップ（ROLE_PERMISSIONS）を独自に保持しており、DB側のRBAC定義とAPI側の権限マップが二重管理になっている。将来DBで新しいroleやpermissionを追加・変更した際に、Guard側の静的マップを更新し忘れる「RBACドリフト」のリスクがある。 | LOW〜MEDIUM（将来の変更時に権限不整合を生むリスク） | RBAC管理API/UIを作る際、またはロール定義の変更頻度が増えたタイミングでDB参照方式へ統一を検討 | 🔴 未対応 |
 | DEBT-009 | P1-T4 | notificationsテーブルにuser_id/recipient_idが存在せず、契約期限通知は「テナント内の全ユーザーが共有する通知」として実装されている（個人宛ではない）。そのため、あるユーザーが既読にすると同じテナントの他ユーザーからも既読として見える。MVPとしてテナント共通通知に割り切るのは許容範囲だが、将来「契約担当者・承認者・経理・法務」等への個別通知が必要になった場合は、recipient_user_id列の追加とAPIの見直しが必要。 | LOW（MVPとしては仕様として許容） | 個人宛通知の必要性が具体化したタイミングで対応（Phase 1後半〜Phase 2以降） | 🔴 未対応（仕様として現状維持） |
+| DEBT-010 | P1-T5 | `general_requests`のPUT/DELETEが`general_request.edit`権限のみで判定されており、`created_by`（起票者本人）かどうかを確認していない。そのため同一テナント内のemployee同士が互いの下書き稟議を編集・削除できてしまう。「テナント内で共同編集可能」なのか「起票者本人のみ編集可能」なのかの仕様が明文化されていない。 | LOW〜MEDIUM（仕様次第でセキュリティ上の意味合いが変わる） | 稟議機能の実運用が始まる前、または利用者からのフィードバックがあったタイミングで仕様を正式決定 | 🔴 未対応（仕様確認待ち） |
 
 ---
 
@@ -1442,3 +1739,8 @@ DEBT-008（RBAC静的マップとDBの二重管理）、DEBT-009（通知が個�
 | 2.9.0 | P1-T3-FIXが正式PASS（並行実行耐性をpg_advisory_xact_lockで実装、source_suggestion_idのtenant整合性トリガーを追加、実DB E2E 67/67）。DEBT-005/DEBT-006を解消済みに更新。マージ指示プロンプト（P1-T3-MERGE、マージ後の最終E2E含む）を追加しP1-T3を完了扱いに更新。**P1-T4（契約期限アラート・バッチ）の実装指示プロンプトを新規作成**（プロジェクト初の全テナント横断バッチとして、RLSバイパス禁止・テナントごとのSET LOCALを明示的に指示） |
 | 3.0.0 | P1-T4がSO判定REQUEST CHANGES（全テナント横断バッチAPIに認可がなく、ログイン済みなら誰でも実行可能。他テナント情報がエラーレスポンスに露出）。フォローアップ指示プロンプト（P1-T4-FIX、notification.batch_execute権限の新設）を追加。DEBT-009（通知が個人宛でなくテナント共有）を記録 |
 | 3.1.0 | P1-T4-FIXが正式APPROVE（notification.batch_executeをowner限定に設定、cross-tenant情報のレスポンス秘匿を確認、実DB E2E 73/73）。マージ指示プロンプト（P1-T4-MERGE）を追加しP1-T4を完了扱いに更新。**P1-T5（稟議申請：汎用ワークフロー起票UI）の実装指示プロンプトを新規作成**。過去に繰り返し指摘された問題（暗黙自動承認・tenant整合性のアプリ層依存・RBAC未強制）を新ドメインで再発させないことをレビュー観点として明記 |
+| 3.2.0 | P1-T5がSO判定REQUEST CHANGES（general_requests.amountに非負DB制約が欠落。category制約も推奨事項として指摘）。フォローアップ指示プロンプト（P1-T5-FIX）を追加。DEBT-010（起票者本人以外もdraft稟議を編集・削除できる、仕様未確定）を記録 |
+| 3.3.0 | P1-T5-FIXがSO判定REQUEST CHANGES（重大: 既存migration 014を事後的に書き換えたため、適用済みDBには制約が反映されない）。フォローアップ指示プロンプト（P1-T5-FIX2、新規migration 015への切替＋既存DB段階的アップグレードのE2E追加）を追加。**0.4節にmigration不変（append-only）の原則を新設** |
+| 3.4.0 | P1-T5-FIX2がSO判定REQUEST CHANGES（migration append-only原則は解消済みだが、015が既存データを無断でUPDATE/自動クレンジングしていた）。フォローアップ指示プロンプト（P1-T5-FIX3、fail-closedなDO $$ EXCEPTIONブロックへの置き換え）を追加。**0.4節に「制約追加migrationは既存データを自動改変せずfail-closedで停止する」原則を新設** |
+| 3.5.0 | P1-T5-FIX3がSO判定REQUEST CHANGES（設計自体は承認、ただし報告内容とGitHub実コミットが不一致。push漏れ）。フォローアップ指示プロンプト（P1-T5-FIX3-VERIFY）を追加し、push状態の確認・是正を指示（0.4節の既存ルールの再徹底） |
+| 3.6.0 | P1-T5-FIX3が正式PASS（GitHub実体とも一致、既存データ自動改変の完全撤廃、fail-closed migrationを85/85で確認）。マージ指示プロンプト（P1-T5-MERGE）を追加しP1-T5を完了扱いに更新。**P1-T6（契約書全文検索：pgvector活用）の実装指示プロンプトを新規作成**。これでPhase 1の全6タスクの指示プロンプトが出揃った |

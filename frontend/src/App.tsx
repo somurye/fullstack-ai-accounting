@@ -110,6 +110,15 @@ const ApprovalRequestListPage = lazy(() =>
 const ContractCreatePage = lazy(() =>
   import('./pages/contracts/ContractCreatePage').then((m) => ({ default: m.ContractCreatePage })),
 );
+const GeneralRequestListPage = lazy(() =>
+  import('./pages/general-requests/GeneralRequestListPage').then((m) => ({ default: m.GeneralRequestListPage })),
+);
+const GeneralRequestFormPage = lazy(() =>
+  import('./pages/general-requests/GeneralRequestFormPage').then((m) => ({ default: m.GeneralRequestFormPage })),
+);
+const GeneralRequestDetailPage = lazy(() =>
+  import('./pages/general-requests/GeneralRequestDetailPage').then((m) => ({ default: m.GeneralRequestDetailPage })),
+);
 const SettingsPage = lazy(() => import('./pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
 const MobileExpenseApplyPage = lazy(() =>
   import('./pages/mobile/MobileExpenseApplyPage').then((m) => ({ default: m.MobileExpenseApplyPage })),
@@ -188,6 +197,10 @@ export default function App() {
             <Route path="/consumption-tax-returns" element={<ConsumptionTaxReturnsPage />} />
             <Route path="/contracts/new" element={<ContractCreatePage />} />
             <Route path="/contracts" element={<ContractCreatePage />} />
+            <Route path="/general-requests" element={<GeneralRequestListPage />} />
+            <Route path="/general-requests/new" element={<GeneralRequestFormPage />} />
+            <Route path="/general-requests/:id" element={<GeneralRequestDetailPage />} />
+            <Route path="/general-requests/:id/edit" element={<GeneralRequestFormPage />} />
             <Route path="/forbidden" element={<ForbiddenPage />} />
 
             {/* 職務分掌(SoD)RBAC: 財務諸表は ADMIN / ACCOUNTANT のみ */}
