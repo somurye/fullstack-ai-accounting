@@ -140,13 +140,29 @@ def docker_stop() -> None:
 # スキーマ適用
 # ----------------------------------------------------------------------------
 
-def apply_schema(dsn: str) -> None:
+def apply_single_sql(conn, sql_file: Path) -> None:
+    sql = sql_file.read_text(encoding="utf-8")
+    print(f"[schema] {sql_file.name} を適用中 ({len(sql):,} bytes)...")
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+    except psycopg2.errors.UnsafeNewEnumValueUsage:
+        # ENUM追加直後に同一ファイル内で使用されている場合、ステートメントごとに分割実行
+        statements = [s.strip() for s in sql.split(";") if s.strip()]
+        for stmt in statements:
+            with conn.cursor() as cur:
+                cur.execute(stmt)
+
+
+def apply_schema(dsn: str, max_file: str | None = None) -> None:
     if not SQL_DIR.exists():
         raise FileNotFoundError(f"SQLディレクトリが見つかりません: {SQL_DIR}")
     sql_files = sorted(
         [f for f in SQL_DIR.iterdir() if f.suffix == ".sql"],
         key=lambda p: p.name,
     )
+    if max_file:
+        sql_files = [f for f in sql_files if f.name <= max_file]
     if not sql_files:
         raise FileNotFoundError(f"SQLファイルが見つかりません: {SQL_DIR}")
 
@@ -154,18 +170,8 @@ def apply_schema(dsn: str) -> None:
     conn.autocommit = True
     try:
         for sql_file in sql_files:
-            sql = sql_file.read_text(encoding="utf-8")
-            print(f"[schema] {sql_file.name} を適用中 ({len(sql):,} bytes)...")
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(sql)
-            except psycopg2.errors.UnsafeNewEnumValueUsage:
-                # ENUM追加直後に同一ファイル内で使用されている場合、ステートメントごとに分割実行
-                statements = [s.strip() for s in sql.split(";") if s.strip()]
-                for stmt in statements:
-                    with conn.cursor() as cur:
-                        cur.execute(stmt)
-        print("[schema] 全マイグレーション適用完了")
+            apply_single_sql(conn, sql_file)
+        print("[schema] マイグレーション適用完了")
     finally:
         conn.close()
 
@@ -1349,8 +1355,37 @@ def run_verification(dsn: str) -> int:
     r.ok("approval_rules / approval_requests の target_type に 'general_request' が追加され有効に機能する",
          invalid_blocked)
 
-    # 4. 【P1-T5-FIX実証】amount 非負 CHECK 制約 (BLOCKER-01) および category CHECK 制約
-    # 4-1. amount = -1 の直接 INSERT が CHECK 制約で拒否されること
+    # 4. 【P1-T5-FIX2実証】段階的アップグレード検証 (014旧状態 -> 015適用 -> 制約機能 -> 冪等性)
+    # 4-1. 014適用直後(旧状態): amount = -1 の INSERT が成功すること (制約未適用状態の再現確認)
+    upgrade_pre_check = False
+    try:
+        with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
+            cur.execute(
+                """INSERT INTO general_requests (tenant_id, request_no, title, description, category, amount, status, created_by)
+                   VALUES (%s, 'REQ-PRE-001', '制約前負金額テスト', '説明', 'general', -1, 'draft', %s)
+                   RETURNING id""",
+                (t1, owner),
+            )
+            pre_row = cur.fetchone()
+            cur.execute("DELETE FROM general_requests WHERE id = %s", (pre_row["id"],))
+            upgrade_pre_check = True
+    except Exception as e:
+        print(f"014状態再現エラー: {e}")
+        upgrade_pre_check = False
+    r.ok("段階的アップグレード検証 1: 014適用直後(旧状態)は amount = -1 の INSERT が成功する (未制約状態の再現確認)",
+         upgrade_pre_check)
+
+    # 4-2. 015_general_request_constraints.sql の適用 (段階的アップグレード)
+    migration_015_path = SQL_DIR / "015_general_request_constraints.sql"
+    conn_mig = psycopg2.connect(dsn)
+    conn_mig.autocommit = True
+    try:
+        apply_single_sql(conn_mig, migration_015_path)
+    finally:
+        conn_mig.close()
+    print("[schema] 015_general_request_constraints.sql 適用完了 (段階的アップグレード)")
+
+    # 4-3. 015適用後: amount = -1 の直接 INSERT が CHECK 制約で拒否されること
     neg_amount_blocked = False
     try:
         with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
@@ -1361,10 +1396,10 @@ def run_verification(dsn: str) -> int:
             )
     except psycopg2.errors.CheckViolation:
         neg_amount_blocked = True
-    r.ok("general_requests.amount に非負 CHECK 制約が設定されており amount = -1 は拒否される (BLOCKER-01)",
+    r.ok("段階的アップグレード検証 2: 015適用後 amount = -1 は非負CHECK制約で拒否される (BLOCKER-01)",
          neg_amount_blocked)
 
-    # 4-2. 無効な category の直接 INSERT が CHECK 制約で拒否されること
+    # 4-4. 015適用後: 無効な category の直接 INSERT が CHECK 制約で拒否されること
     inv_category_blocked = False
     try:
         with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
@@ -1375,10 +1410,24 @@ def run_verification(dsn: str) -> int:
             )
     except psycopg2.errors.CheckViolation:
         inv_category_blocked = True
-    r.ok("general_requests.category に CHECK 制約が設定されており未定義値は拒否される",
+    r.ok("段階的アップグレード検証 3: 015適用後 無効な category は CHECK 制約で拒否される",
          inv_category_blocked)
 
-    # 4-3. 正常系: amount IS NULL または amount >= 0、有効なカテゴリが正常に INSERT できること
+    # 4-5. 015を2回連続適用してもエラーにならないこと (ALTER TABLE 冪等性・IF NOT EXISTS相当の確認)
+    idempotent_ok = False
+    try:
+        conn_mig2 = psycopg2.connect(dsn)
+        conn_mig2.autocommit = True
+        apply_single_sql(conn_mig2, migration_015_path)
+        conn_mig2.close()
+        idempotent_ok = True
+    except Exception as e:
+        print(f"冪等性エラー: {e}")
+        idempotent_ok = False
+    r.ok("段階的アップグレード検証 4: 015を2回連続適用してもエラーにならず正常終了する (ALTER TABLE 冪等性保証)",
+         idempotent_ok)
+
+    # 4-6. 正常系: amount IS NULL または amount >= 0、有効なカテゴリが正常に INSERT できること
     with tx_as(dsn, role="app_runtime", tenant_id=t1) as cur:
         cur.execute(
             """INSERT INTO general_requests (tenant_id, request_no, title, description, category, amount, status, created_by)
@@ -1446,8 +1495,27 @@ def main() -> int:
         else:
             dsn = args.dsn
 
-        apply_schema(dsn)
+        # 1. まず 001〜014 までを適用 (P1-T5マージ直後の既存DB状態を再現)
+        apply_schema(dsn, max_file="014_general_requests.sql")
+        # 2. 検証実行 (セクション12内で 014旧状態確認 -> 015段階的適用 -> 制約確認 -> 冪等性確認 -> E2E実行)
         exit_code = run_verification(dsn)
+
+        # 3. クリーンDBに最初から001〜015を一括適用した場合の回帰なし確認
+        if exit_code == 0:
+            fresh_db_name = "keiri_kaikei_fresh_015"
+            conn_raw = psycopg2.connect(dsn)
+            conn_raw.autocommit = True
+            try:
+                with conn_raw.cursor() as cur:
+                    cur.execute(f"DROP DATABASE IF EXISTS {fresh_db_name}")
+                    cur.execute(f"CREATE DATABASE {fresh_db_name}")
+            finally:
+                conn_raw.close()
+
+            dsn_fresh = dsn.rsplit("/", 1)[0] + f"/{fresh_db_name}"
+            print("\n--- クリーンDBへの001〜015一括適用検証 (新規環境回帰なし確認) ---")
+            apply_schema(dsn_fresh)
+            print("[schema] クリーンDBへの001〜015一括適用が正常終了しました (回帰なし確認完了)")
     finally:
         if args.use_docker and not args.keep_docker:
             docker_stop()
