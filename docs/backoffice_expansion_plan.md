@@ -1804,8 +1804,8 @@ migrationのappend-only・fail-closed運用）をそのまま踏襲し、発注�
 | タスクID | タスク名 | 概要 | 依存 | ステータス |
 |----------|----------|------|------|-----------|
 | P2-T1 | `purchase_requests`テーブル設計・実装 | 発注申請本体（品目、数量、単価、サプライヤー、金額、納期、ステータス）、既存承認エンジン統合、RBAC強制 | P0-T1, P1-T1, P1-T3 | ✅ SO正式PASS（コミット9e4fe21、初回レビューでPASS。DEBT-013を記録、mainマージ指示済み） |
-| P2-T2 | サプライヤー（取引先）マスタ管理 | サプライヤー登録・編集・検索、連絡先・支払条件等の管理、purchase_requestsとの関連付け | P0-T1, P2-T1 | ⚠️ SO判定REQUEST CHANGES（コミット40698a3、前回2点は解消済み。supplier.name変更とpurchase_request作成の同時実行時にrace conditionが残る。修正指示済み・再レビュー待ち） |
-| P2-T3 | 発注〜検収〜請求の連携 | purchase_requestsが承認完了した後の発注確定、検収記録、既存vendor_bills（請求書管理）との紐付け | P2-T1, P2-T2 | 未着手 |
+| P2-T2 | サプライヤー（取引先）マスタ管理 | サプライヤー登録・編集・検索、連絡先・支払条件等の管理、purchase_requestsとの関連付け | P0-T1, P2-T1 | ✅ SO正式PASS（コミットbb43eae、3つのBLOCKER全解消、mainマージ指示済み） |
+| P2-T3 | 発注〜検収〜請求の連携 | purchase_requestsが承認完了した後の発注確定、検収記録、既存vendor_bills（請求書管理）との紐付け | P2-T1, P2-T2 | プロンプト発行済み・着手待ち |
 | P2-T4 | 購買ダッシュボード・レポート | テナント内の購買状況（申請中・承認済み・発注済み件数、サプライヤー別支出等）の可視化 | P2-T1, P2-T2, P2-T3 | 未着手 |
 
 P2-T2以降の詳細タスク分解・実装指示プロンプトは、P2-T1の実装結果（実際のテーブル定義・
@@ -2083,6 +2083,93 @@ suppliers.nameの変更トリガーと、purchase_requestsへのsupplier_id設�
 
 ---
 
+#### 【マージ指示プロンプト P2-T2-MERGE】mainへのマージ
+
+ChatGPT(SO)よりP2-T2-FIX2が正式PASS（3つのBLOCKER全解消、並行実行の両方向を実DBで確認済み）と判定された。
+
+```
+# 指示
+feature/p2-t2-suppliers を main へマージしてください。
+SO(ChatGPT)による正式PASS判定を得ています（参照済みsupplier名変更の逐次防御、DBエラーの
+握り潰し除去、advisory xact lockによる同時実行race conditionの解消の3点すべてを実DBで
+確認済み、Schema E2E 114/114・Jest 133/133）。
+マージ後、以下を確認し報告してください。
+- main上でクリーンDBに対しverify_schema.pyを含む実DB E2Eを再実行し、全件PASSを確認する
+- Backend/Frontendのテストを再実行して確認
+- マージコミットハッシュ
+- 作業ブランチ feature/p2-t2-suppliers の削除（マージ済み後）
+```
+
+これでP2-T2は完了。次はP2-T3（発注〜検収〜請求の連携）へ進む。
+
+---
+
+#### 【指示プロンプト P2-T3】発注〜検収〜請求の連携
+
+```
+# 背景・目的
+P2-T1でpurchase_requestsの承認（active化）まで、P2-T2でサプライヤーマスタとの正式な
+紐付けまで実装した。本タスクでは、activeになった発注申請に対する「検収（納品物の受領記録）」
+と、既存の経理会計基盤にある請求書管理（vendor_bills）との紐付けを実装し、
+発注から支払いまでの一連の業務フローを完成させる。
+
+# 前提となる既存実装
+- P2-T1: purchase_requests（active後は主要項目改変禁止のWORM）
+- P2-T2: suppliers、advisory lockによる同時実行対策のパターン
+- 既存の経理会計基盤: vendor_bills（請求書管理。詳細はdocs/03_database_design.mdを参照）
+- Phase 1/Phase 2で確立した設計パターン全般（tenant整合性トリガー、RLS、RBAC三層防御、
+  migrationのappend-only・fail-closed運用）
+
+# やってはいけないこと
+- vendor_billsの既存スキーマ・既存の経理処理ロジック（仕訳連携等）を変更・破壊しない。
+  purchase_requestsとの紐付けは、既存vendor_billsに新しい参照列を追加する形で行い、
+  vendor_bills側の確定済み処理ロジックには手を入れない。
+- purchase_requestsがactive化した後の主要項目（金額・数量等）の改変禁止（WORM）を、
+  検収記録の追加によって迂回できる設計にしない。
+
+# 実装対象
+1. 新規マイグレーションで purchase_receipts テーブル（検収記録）を作成する
+   （id, tenant_id, purchase_request_id, received_quantity, received_date, notes,
+   received_by, created_at等）。RLS（ENABLE + FORCE）、tenant整合性トリガー
+   （purchase_request_id経由でpurchase_requests.tenant_idと一致することをDB保証、
+   received_by経由でのユーザーtenant整合性も同様に保証）を実装する。
+   検収は複数回に分けて行われ得る（部分納品）ことを考慮し、1つのpurchase_requestに対して
+   複数のpurchase_receiptsレコードを許容する設計とする。
+2. vendor_bills に purchase_request_id（nullable, purchase_requests(id)への参照）を追加する
+   新規migrationを作成し、tenant整合性トリガーを追加する（既存vendor_billsのtenant整合性
+   検証パターンがあればそれに倣う、なければP2-T1/P2-T2と同じパターンで新規実装）。
+3. purchase_request.receive（検収記録の権限）、purchase_request.link_bill（請求書紐付けの権限）
+   のpermissionをRBAC体系に追加し、Controller・Service両層でチェックする。
+4. purchase_requestの詳細画面に、検収記録の追加・一覧表示、紐付けられたvendor_billsへの
+   リンク表示を実装する。
+
+# 受け入れ基準（Definition of Done）
+- [ ] activeな発注申請に対して検収記録を追加できる（部分納品による複数回の検収を含む）
+- [ ] draft/pending_approval状態の発注申請には検収記録を追加できない
+      （状態遷移の一貫性を維持する）
+- [ ] 他テナントのpurchase_request_id/received_byを指定した場合にDBトリガーで拒否される
+- [ ] vendor_billsとpurchase_requestsの紐付けが、他テナントのレコードを跨いで
+      成立しないことをDBトリガーで確認する
+- [ ] permissionを持たないロールでは検収記録・請求書紐付けができないことを確認
+- [ ] 既存のvendor_bills関連機能（仕訳連携等）に回帰がない
+- [ ] migrationがappend-only・fail-closedの原則（本計画書0.4節）に従っている
+- [ ] Phase 0で確立した実DB E2E検証基盤で、上記すべてを実PostgreSQL上で確認し、
+      結果を報告に添付する
+- [ ] feature/p2-t3-purchase-receipts-billing ブランチにコミット・pushし、比較URLを
+      報告に含める（本計画書0.4節に従う）
+
+# ChatGPTレビュー時の確認観点
+- 部分納品（複数回の検収）が、発注数量の合計を超えて記録されることを防ぐ制約があるか
+  （なければDEBT候補として記録することを推奨）
+- vendor_billsという確定済み会計処理の中核テーブルに新しい参照列を追加することで、
+  既存の仕訳連携・決算処理等に意図しない影響が出ていないか、特に慎重に確認してほしい
+- Phase 1/Phase 2で繰り返し指摘された問題（暗黙自動承認、tenant整合性のアプリ層依存、
+  RBAC未強制、同時実行race condition、migration事後書き換え）のいずれかが
+  再発していないか
+```
+
+---
+
 ## 5. 既知の技術的負債・フォローアップ事項
 
 タスク完了時にSOが「修正不要だが記録すべき」と判定した事項を追跡する。将来の関連タスク着手時に必ず参照すること。
@@ -2152,3 +2239,4 @@ suppliers.nameの変更トリガーと、purchase_requestsへのsupplier_id設�
 | 4.2.0 | P2-T1が初回レビューでSO正式PASS（金額整合性・tenant整合性・状態遷移・暗黙自動承認防止・RBAC三層防御をすべてDB最終防御まで確認）。DEBT-013（request_noの採番方式）を記録。マージ指示プロンプト（P2-T1-MERGE）を追加しP2-T1を完了扱いに更新。**P2-T2（サプライヤー：取引先マスタ管理）の実装指示プロンプトを新規作成** |
 | 4.3.0 | P2-T2がSO判定REQUEST CHANGES（参照済みsupplier.name変更で既存purchase_requestとの不整合が生じる経路が未防御、DBエラーをfalseに握り潰すcatchあり、完了報告のコミットSHA誤り）。フォローアップ指示プロンプト（P2-T2-FIX）を追加 |
 | 4.4.0 | P2-T2-FIXがSO判定REQUEST CHANGES（前回2 BLOCKERは解消。ただしsupplier.name変更とpurchase_request作成の同時実行にrace conditionが残る、P1-T3のDEBT-006と同型の問題）。フォローアップ指示プロンプト（P2-T2-FIX2、pg_advisory_xact_lockによる直列化）を追加 |
+| 4.5.0 | P2-T2-FIX2が正式PASS（3つのBLOCKER全解消、並行実行の両方向を実DBで確認、Schema E2E 114/114・Jest 133/133）。マージ指示プロンプト（P2-T2-MERGE）を追加しP2-T2を完了扱いに更新。**P2-T3（発注〜検収〜請求の連携）の実装指示プロンプトを新規作成** |
