@@ -1803,8 +1803,8 @@ migrationのappend-only・fail-closed運用）をそのまま踏襲し、発注�
 
 | タスクID | タスク名 | 概要 | 依存 | ステータス |
 |----------|----------|------|------|-----------|
-| P2-T1 | `purchase_requests`テーブル設計・実装 | 発注申請本体（品目、数量、単価、サプライヤー、金額、納期、ステータス）、既存承認エンジン統合、RBAC強制 | P0-T1, P1-T1, P1-T3 | プロンプト発行済み・着手待ち |
-| P2-T2 | サプライヤー（取引先）マスタ管理 | サプライヤー登録・編集・検索、連絡先・支払条件等の管理、purchase_requestsとの関連付け | P0-T1 | 未着手 |
+| P2-T1 | `purchase_requests`テーブル設計・実装 | 発注申請本体（品目、数量、単価、サプライヤー、金額、納期、ステータス）、既存承認エンジン統合、RBAC強制 | P0-T1, P1-T1, P1-T3 | ✅ SO正式PASS（コミット9e4fe21、初回レビューでPASS。DEBT-013を記録、mainマージ指示済み） |
+| P2-T2 | サプライヤー（取引先）マスタ管理 | サプライヤー登録・編集・検索、連絡先・支払条件等の管理、purchase_requestsとの関連付け | P0-T1, P2-T1 | プロンプト発行済み・着手待ち |
 | P2-T3 | 発注〜検収〜請求の連携 | purchase_requestsが承認完了した後の発注確定、検収記録、既存vendor_bills（請求書管理）との紐付け | P2-T1, P2-T2 | 未着手 |
 | P2-T4 | 購買ダッシュボード・レポート | テナント内の購買状況（申請中・承認済み・発注済み件数、サプライヤー別支出等）の可視化 | P2-T1, P2-T2, P2-T3 | 未着手 |
 
@@ -1875,6 +1875,87 @@ Phase 0（P0-T1）で承認エンジンのtarget_typeに'purchase_request'を追
 
 ---
 
+#### 【マージ指示プロンプト P2-T1-MERGE】mainへのマージ
+
+ChatGPT(SO)よりP2-T1が初回レビューで正式PASS（金額整合性・tenant整合性・状態遷移・暗黙自動承認防止・RBAC三層防御のすべてがDB最終防御まで落とし込まれていることを実コード確認済み）と判定された。
+
+```
+# 指示
+feature/p2-t1-purchase-requests を main へマージしてください。
+SO(ChatGPT)による正式PASS判定を得ています（total_amount = round(quantity * unit_price, 2)の
+DB CHECK、tenant整合性トリガー、状態遷移・WORM、暗黙自動承認防止、RBAC三層防御(Controller/
+Service/DB)、migrationのappend-only運用を実コード確認済み）。
+DEBT-013（request_noの採番方式、現仕様では実害なし）は計画書側で追跡することとし、
+今回のマージをブロックするものではありません。
+マージ後、以下を確認し報告してください。
+- main上でクリーンDBに対しverify_schema.pyを含む実DB E2Eを再実行し、全件PASSを確認する
+- Backend/Frontendのテストを再実行して確認
+- マージコミットハッシュ
+- 作業ブランチ feature/p2-t1-purchase-requests の削除（マージ済み後）
+```
+
+これでP2-T1は完了。次はP2-T2（サプライヤー：取引先マスタ管理）へ進む。
+
+---
+
+#### 【指示プロンプト P2-T2】サプライヤー（取引先）マスタ管理
+
+```
+# 背景・目的
+P2-T1では purchase_requests.supplier_name をフリーテキストとして実装した。本タスクでは
+正式なサプライヤー（取引先）マスタを実装し、発注申請から実在するサプライヤーレコードを
+選択できるようにする。これにより将来のP2-T3（発注〜検収〜請求連携）・P2-T4（購買ダッシュ
+ボード）でサプライヤー単位の集計・分析が可能になる。
+
+# 前提となる既存実装
+- P2-T1: purchase_requests テーブル（現状supplier_nameはフリーテキスト）
+- Phase 1で確立した設計パターン全般（tenant整合性トリガー、RLS、RBAC三層防御、
+  migrationのappend-only・fail-closed運用）
+
+# やってはいけないこと
+- 既存のpurchase_requests.supplier_nameを即座に削除・necessary化しない。既存データとの
+  後方互換性を保ちつつ、段階的にsupplier_idへ移行できる設計にする（supplier_idを追加し、
+  supplier_nameは当面フリーテキストのフォールバックとして残す、等の移行方針を報告に明記する）。
+- Phase 1/P2-T1で確立した設計原則（tenant整合性のDB保証、RBAC三層防御、migration運用ルール）
+  のいずれも省略しない。
+
+# 実装対象
+1. 新規マイグレーションで suppliers テーブルを作成する
+   （id, tenant_id, name, contact_name, contact_email, contact_phone, payment_terms,
+   status(active/inactive), created_by等）。RLS（ENABLE + FORCE）、tenant整合性トリガー
+   （created_by）を実装する。
+2. purchase_requests に supplier_id（nullable, suppliers(id)への参照）を追加する新規migration
+   を作成し、tenant整合性トリガー（supplier_idが設定されている場合、参照先suppliers.tenant_id
+   がpurchase_requests.tenant_idと一致すること）を、既存のfn_validate_purchase_request_tenant
+   _consistency()相当の関数に追加する。
+3. supplier.create/view/edit のpermissionをRBAC体系に追加し、Controller・Service両層で
+   チェックする。
+4. サプライヤーの登録・編集・一覧・検索APIとフロントエンド画面を実装する。
+5. 発注申請の起票画面で、既存のフリーテキスト入力に加えて登録済みサプライヤーからの選択も
+   できるようにする（supplier_idが選択された場合はsupplier_nameを自動補完する等、UI上の
+   整合性を保つ）。
+
+# 受け入れ基準（Definition of Done）
+- [ ] サプライヤーを登録・編集・検索できる
+- [ ] 他テナントのサプライヤーが一切見えないことをRLSで確認
+- [ ] 他テナントのsupplier_idを指定したpurchase_requestsのINSERT/UPDATEがDBトリガーで拒否される
+- [ ] supplier.*のpermissionを持たないロールでは操作できないことを確認
+- [ ] 既存のsupplier_nameフリーテキストのpurchase_requestsに回帰がない（後方互換性の確認）
+- [ ] migrationがappend-only・fail-closedの原則（本計画書0.4節）に従っている
+- [ ] Phase 0で確立した実DB E2E検証基盤で、上記すべてを実PostgreSQL上で確認し、
+      結果を報告に添付する
+- [ ] feature/p2-t2-suppliers ブランチにコミット・pushし、比較URLを報告に含める
+      （本計画書0.4節に従う）
+
+# ChatGPTレビュー時の確認観点
+- supplier_idとsupplier_nameの併存が、データの二重管理・不整合（例: supplier_idはAだが
+  supplier_nameは別のサプライヤー名になっている）を生まないか
+- P2-T1で確立したtenant整合性トリガーのパターンが、供給元テーブルが増えても一貫して
+  適用されているか
+```
+
+---
+
 ## 5. 既知の技術的負債・フォローアップ事項
 
 タスク完了時にSOが「修正不要だが記録すべき」と判定した事項を追跡する。将来の関連タスク着手時に必ず参照すること。
@@ -1893,6 +1974,7 @@ Phase 0（P0-T1）で承認エンジンのtarget_typeに'purchase_request'を追
 | DEBT-010 | P1-T5 | `general_requests`のPUT/DELETEが`general_request.edit`権限のみで判定されており、`created_by`（起票者本人）かどうかを確認していない。そのため同一テナント内のemployee同士が互いの下書き稟議を編集・削除できてしまう。「テナント内で共同編集可能」なのか「起票者本人のみ編集可能」なのかの仕様が明文化されていない。 | LOW〜MEDIUM（仕様次第でセキュリティ上の意味合いが変わる） | 稟議機能の実運用が始まる前、または利用者からのフィードバックがあったタイミングで仕様を正式決定 | 🔴 未対応（仕様確認待ち） |
 | DEBT-011 | P1-T6 | 契約書全文検索のembeddingは、外部embedding APIを呼ばず文字n-gramのハッシュによる疑似embedding（`pseudo-char-ngram-hash-v1`）で生成されている。MVPとしては許容範囲（model_nameも実態を正しく表しており、DEBT-003のような虚偽表示問題は回避できている）が、実運用での検索精度は限定的。将来的には実際のembeddingモデル（OpenAI/Anthropic/オープンソース等）への切り替えを検討する必要がある。 | LOW（検索精度の課題、セキュリティ上の問題ではない） | 契約書全文検索の実運用フィードバックを見て、精度不足が問題になった場合に対応 | 🔴 未対応（意図的なMVP実装として現状維持） |
 | DEBT-012 | P1-T6-FIX | 契約書全文検索の対象は`status='active'`のみに限定されており、`terminated`（解約済み）・`expired`（満了）の過去契約は検索対象に含まれない。「過去契約も参照したい」という業務ニーズが将来生じた場合、`include_inactive`のような明示的なオプションを別タスクとして設計する必要がある。 | LOW（意図的な保守的設計、機能制約） | 過去契約検索の必要性が具体化したタイミングで別タスクとして対応 | 🔴 未対応（意図的な機能制約として現状維持） |
+| DEBT-013 | P2-T1 | `purchase_requests.request_no`の採番が「現存レコード数（COUNT）+1」方式になっており、advisory lockにより同時実行時の重複は防げるものの、厳密な連番カウンタではない。draftレコードが物理削除可能な設計と組み合わさると、削除されたレコードの番号が将来別の申請で再利用され得る。監査要件が厳格化した場合は、専用sequence/counterテーブル方式への変更を検討する。 | LOW（現仕様の範囲では実害なし） | 監査要件強化、またはrequest_noの一意性・不再利用が業務上必須になったタイミングで対応 | 🔴 未対応 |
 
 ---
 
@@ -1940,3 +2022,4 @@ Phase 0（P0-T1）で承認エンジンのtarget_typeに'purchase_request'を追
 | 3.7.0 | P1-T6がSO判定REQUEST CHANGES（DB/RLS/tenant整合性/RBACは良好だが、検索対象がdraft/pending/rejectedの契約まで含んでしまい「確定済み契約のみ検索」という仕様境界に違反）。フォローアップ指示プロンプト（P1-T6-FIX、検索対象ステータスの明示的な絞り込み）を追加。DEBT-011（疑似embeddingの精度限界、MVPとして意図的に許容）を記録 |
 | 4.0.0 | P1-T6-FIXが正式PASS（検索対象をactiveのみのallowlistに限定、自然文検索・ID類似検索の両方に適用、実DB E2E 97/97）。DEBT-012（terminated/expired契約が検索対象外）を記録。マージ指示プロンプト（P1-T6-MERGE）とPhase 1クローズのサマリ（往復回数、確立された恒久ルール、DEBT棚卸し）を追加。**Phase 1（総務・法務）が全6タスク完了** |
 | 4.1.0 | P1-T6-MERGE完了報告を反映（マージコミットbd697eb、main上での再検証結果全PASS）。DEBT-003のステータスを解消済みに修正（P1-T2-FIXで実際には対応済みだった）。ロードマップ表(1節)にステータス列を追加しPhase 0/1を完了に更新。**Phase 2（購買・調達）のセクションを新設**し、タスク分解（P2-T1〜T4）とP2-T1（purchase_requestsテーブル設計・実装）の実装指示プロンプトを追加。以降のセクション番号を1つずつ繰り下げ |
+| 4.2.0 | P2-T1が初回レビューでSO正式PASS（金額整合性・tenant整合性・状態遷移・暗黙自動承認防止・RBAC三層防御をすべてDB最終防御まで確認）。DEBT-013（request_noの採番方式）を記録。マージ指示プロンプト（P2-T1-MERGE）を追加しP2-T1を完了扱いに更新。**P2-T2（サプライヤー：取引先マスタ管理）の実装指示プロンプトを新規作成** |
