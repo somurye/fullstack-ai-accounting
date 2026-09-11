@@ -315,6 +315,71 @@ async function run() {
     expect(prLegacy.supplier_name).toBe('新規スポット取引先 (未登録)');
     console.log('   -> [PASS] supplier_id未指定のフリーテキスト起票も後方互換で正常動作することを確認');
 
+    // (5) 【BLOCKER-01検証】参照中サプライヤーの名前変更がDBトリガー(23514)で拒否されること
+    // supplierA は prWithMaster から参照されている。
+    let nameChangeBlockedByTrigger = false;
+    try {
+      await pool.query(
+        `UPDATE suppliers SET name = '勝手に変更した会社名' WHERE id = $1`,
+        [supplierA.id],
+      );
+    } catch (err: unknown) {
+      const pgErr = err as { code?: string };
+      if (pgErr.code === '23514') {
+        nameChangeBlockedByTrigger = true;
+      }
+    }
+    expect(nameChangeBlockedByTrigger).toBe(true);
+    console.log('   -> [PASS] 発注申請で参照中のサプライヤーの名前変更がDBトリガー(23514)で拒否されることを確認 (過去データの不整合防止)');
+
+    // Service層経由でも 409 Conflict で拒否されること
+    let serviceNameChangeBlocked = false;
+    try {
+      await suppliersService.update(tenantA, userA_Accountant, supplierA.id, {
+        name: '勝手に変更した会社名2',
+      });
+    } catch (err: unknown) {
+      if (err instanceof AppException && err.getStatus() === 409) {
+        serviceNameChangeBlocked = true;
+      }
+    }
+    expect(serviceNameChangeBlocked).toBe(true);
+    console.log('   -> [PASS] Service層でも参照中サプライヤーの名前変更が 409 Conflict で拒否されることを確認 (二重防御)');
+
+    // suppliers.name と purchase_requests.supplier_name の両方が変更前の値のまま維持されていることを確認
+    const { rows: supCheck } = await pool.query<{ name: string }>(
+      `SELECT name FROM suppliers WHERE id = $1`,
+      [supplierA.id],
+    );
+    expect(supCheck[0].name).toBe('株式会社テックサプライ');
+
+    const { rows: prCheck } = await pool.query<{ supplier_name: string }>(
+      `SELECT supplier_name FROM purchase_requests WHERE id = $1`,
+      [prWithMaster.id],
+    );
+    expect(prCheck[0].supplier_name).toBe('株式会社テックサプライ');
+    console.log('   -> [PASS] suppliers.name と purchase_requests.supplier_name の両方が変更前の値を維持していることを確認');
+
+    // (6) 【巻き添え防止確認】参照中サプライヤーであっても、連絡先や支払条件等の他の列の更新は正常に行えること
+    const updatedContact = await suppliersService.update(tenantA, userA_Accountant, supplierA.id, {
+      contact_name: '連絡先 変更担当者',
+      payment_terms: '翌々月5日払い',
+    });
+    expect(updatedContact.contact_name).toBe('連絡先 変更担当者');
+    expect(updatedContact.payment_terms).toBe('翌々月5日払い');
+    console.log('   -> [PASS] 参照中サプライヤーでも名前以外の列 (contact情報等) は問題なく更新できることを確認 (ピンポイント制御)');
+
+    // (7) 【未参照サプライヤーの名前変更確認】どの発注申請からも参照されていないサプライヤーは名前変更が成功すること
+    const supplierC = await suppliersService.create(tenantA, userA_Owner, {
+      name: '未参照テストサプライヤー',
+      status: 'active',
+    });
+    const updatedC = await suppliersService.update(tenantA, userA_Accountant, supplierC.id, {
+      name: '未参照テストサプライヤー (社名変更後)',
+    });
+    expect(updatedC.name).toBe('未参照テストサプライヤー (社名変更後)');
+    console.log('   -> [PASS] 未参照のサプライヤーであれば通常通り名前変更できることを確認');
+
     // --------------------------------------------------------------------------
     // 5. 完全テナント分離 (RLS)
     // --------------------------------------------------------------------------

@@ -1820,6 +1820,17 @@ def run_verification(dsn: str) -> int:
         col_sup_id_exists = cur.fetchone()["col_exists"]
     r.ok("purchase_requests に supplier_id 列が追加されている", col_sup_id_exists)
 
+    # 15-5b. 参照中サプライヤー名前変更防止トリガー確認 (trg_prevent_supplier_name_change_if_referenced)
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute(
+            """SELECT tgname FROM pg_trigger
+               WHERE tgrelid = 'suppliers'::regclass
+                 AND tgname = 'trg_prevent_supplier_name_change_if_referenced'"""
+        )
+        trg_name_change = cur.fetchone()
+    r.ok("suppliers に参照中サプライヤー名前変更防止トリガー (trg_prevent_supplier_name_change_if_referenced) が存在する (BLOCKER-01)",
+         trg_name_change is not None)
+
     # 15-6. 冪等性保証: 018を2回連続適用してもエラーにならないこと
     idempotent_018_ok = True
     try:

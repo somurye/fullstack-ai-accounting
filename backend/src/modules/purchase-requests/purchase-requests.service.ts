@@ -51,19 +51,15 @@ export class PurchaseRequestsService {
     if (process.env.NODE_ENV === 'test') {
       return true;
     }
-    try {
-      const res = await client.query<{ exists: boolean }>(
-        `SELECT EXISTS (
-           SELECT 1 FROM pg_attribute
-           WHERE attrelid = 'purchase_requests'::regclass
-             AND attname = 'supplier_id'
-             AND NOT attisdropped
-         ) AS exists`,
-      );
-      return Boolean(res.rows[0]?.exists);
-    } catch {
-      return false;
-    }
+    const res = await client.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM pg_attribute
+         WHERE attrelid = 'purchase_requests'::regclass
+           AND attname = 'supplier_id'
+           AND NOT attisdropped
+       ) AS exists`,
+    );
+    return Boolean(res.rows[0]?.exists);
   }
 
   private async getColumns(client: PoolClient): Promise<string> {

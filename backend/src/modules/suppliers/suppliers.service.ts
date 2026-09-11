@@ -208,8 +208,20 @@ export class SuppliersService {
       }
       const existing = existingRes.rows[0];
 
-      // 名前変更時の重複確認
+      // 名前変更時の検証
       if (input.name && input.name !== existing.name) {
+        // 過去の発注申請との整合性を保護するため、参照中のサプライヤーは名前変更不可 (BLOCKER-01)
+        const refCheck = await client.query<{ count: string }>(
+          `SELECT COUNT(*)::text AS count FROM purchase_requests WHERE supplier_id = $1`,
+          [id],
+        );
+        if (Number(refCheck.rows[0]?.count ?? 0) > 0) {
+          throw AppException.conflict(
+            'SUPPLIER_NAME_CANNOT_BE_CHANGED',
+            `発注申請で参照されているサプライヤー「${existing.name}」の名前は変更できません`,
+          );
+        }
+
         const dupCheck = await client.query<{ id: string }>(
           `SELECT id FROM suppliers WHERE tenant_id = $1 AND name = $2 AND id != $3 LIMIT 1`,
           [tenantId, input.name, id],

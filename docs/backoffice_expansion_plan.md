@@ -1804,7 +1804,7 @@ migrationのappend-only・fail-closed運用）をそのまま踏襲し、発注�
 | タスクID | タスク名 | 概要 | 依存 | ステータス |
 |----------|----------|------|------|-----------|
 | P2-T1 | `purchase_requests`テーブル設計・実装 | 発注申請本体（品目、数量、単価、サプライヤー、金額、納期、ステータス）、既存承認エンジン統合、RBAC強制 | P0-T1, P1-T1, P1-T3 | ✅ SO正式PASS（コミット9e4fe21、初回レビューでPASS。DEBT-013を記録、mainマージ指示済み） |
-| P2-T2 | サプライヤー（取引先）マスタ管理 | サプライヤー登録・編集・検索、連絡先・支払条件等の管理、purchase_requestsとの関連付け | P0-T1, P2-T1 | プロンプト発行済み・着手待ち |
+| P2-T2 | サプライヤー（取引先）マスタ管理 | サプライヤー登録・編集・検索、連絡先・支払条件等の管理、purchase_requestsとの関連付け | P0-T1, P2-T1 | ⚠️ SO判定REQUEST CHANGES（コミット0fb1951、参照済みsupplier.name変更で既存purchase_requestと不整合が生じる経路、DBエラーをfalseに握り潰すcatch。修正指示済み・再レビュー待ち） |
 | P2-T3 | 発注〜検収〜請求の連携 | purchase_requestsが承認完了した後の発注確定、検収記録、既存vendor_bills（請求書管理）との紐付け | P2-T1, P2-T2 | 未着手 |
 | P2-T4 | 購買ダッシュボード・レポート | テナント内の購買状況（申請中・承認済み・発注済み件数、サプライヤー別支出等）の可視化 | P2-T1, P2-T2, P2-T3 | 未着手 |
 
@@ -1936,15 +1936,15 @@ P2-T1では purchase_requests.supplier_name をフリーテキストとして実
    整合性を保つ）。
 
 # 受け入れ基準（Definition of Done）
-- [x] サプライヤーを登録・編集・検索できる
-- [x] 他テナントのサプライヤーが一切見えないことをRLSで確認
-- [x] 他テナントのsupplier_idを指定したpurchase_requestsのINSERT/UPDATEがDBトリガーで拒否される
-- [x] supplier.*のpermissionを持たないロールでは操作できないことを確認
-- [x] 既存のsupplier_nameフリーテキストのpurchase_requestsに回帰がない（後方互換性の確認）
-- [x] migrationがappend-only・fail-closedの原則（本計画書0.4節）に従っている
-- [x] Phase 0で確立した実DB E2E検証基盤で、上記すべてを実PostgreSQL上で確認し、
+- [ ] サプライヤーを登録・編集・検索できる
+- [ ] 他テナントのサプライヤーが一切見えないことをRLSで確認
+- [ ] 他テナントのsupplier_idを指定したpurchase_requestsのINSERT/UPDATEがDBトリガーで拒否される
+- [ ] supplier.*のpermissionを持たないロールでは操作できないことを確認
+- [ ] 既存のsupplier_nameフリーテキストのpurchase_requestsに回帰がない（後方互換性の確認）
+- [ ] migrationがappend-only・fail-closedの原則（本計画書0.4節）に従っている
+- [ ] Phase 0で確立した実DB E2E検証基盤で、上記すべてを実PostgreSQL上で確認し、
       結果を報告に添付する
-- [x] feature/p2-t2-suppliers ブランチにコミット・pushし、比較URLを報告に含める
+- [ ] feature/p2-t2-suppliers ブランチにコミット・pushし、比較URLを報告に含める
       （本計画書0.4節に従う）
 
 # ChatGPTレビュー時の確認観点
@@ -1952,6 +1952,72 @@ P2-T1では purchase_requests.supplier_name をフリーテキストとして実
   supplier_nameは別のサプライヤー名になっている）を生まないか
 - P2-T1で確立したtenant整合性トリガーのパターンが、供給元テーブルが増えても一貫して
   適用されているか
+```
+
+---
+
+#### 【フォローアップ指示プロンプト P2-T2-FIX】REQUEST CHANGES対応（supplier名変更時の不整合・DBエラーの握り潰し）
+
+ChatGPT(SO)よりP2-T2が「REQUEST CHANGES」と判定された。suppliers/purchase_requestsの
+DB設計、tenant整合性、RBAC、後方互換性は評価されており、修正対象は以下2点に限定される。
+
+```
+# SOレビュー結果：P2-T2 REQUEST CHANGES
+main...feature/p2-t2-suppliers の実差分（コミット0fb1951）を確認した結果、現状はマージ不可
+です。以下を修正してください。なお、完了報告のコミットSHAが実際のHEADと異なっていました
+（報告: 9e4fe21 は実際にはP2-T1のコミット）。今後の報告では必ず`git rev-parse HEAD`等で
+実際のコミットSHAを確認してから記載してください。
+
+# BLOCKER-01: supplier.name変更が既存purchase_requestとの整合性を壊す
+purchase_requests側でsupplier_idとsupplier_nameの整合性はINSERT/UPDATE時にチェックされて
+いますが、suppliers.name自体は制限なく変更できます。そのため、あるsupplierを参照する
+purchase_requestが既に存在する状態でsuppliers.nameを変更すると、
+「purchase_requests.supplier_name（発注申請当時の名称）」と「suppliers.name（マスタの現在名）」
+に不整合が生じます。過去の確定データ（発注申請時点の取引先名）を後からのマスタ変更で
+書き換えるべきではありません。
+
+## 修正方針
+suppliersテーブルへのUPDATE（name列の変更）に対し、DBトリガーで以下を検証する。
+  - 変更対象のsupplier.idを参照するpurchase_requestsが1件でも存在する場合、
+    name列の変更を拒否する（他の列、例えばcontact情報等の変更は許可して構わない）。
+  - 参照するpurchase_requestsが存在しない場合は、name変更を許可する。
+これにより、「未参照のsupplierは名前変更可能」「参照済みのsupplierは名前変更不可」という
+安全な境界を設ける。
+
+## 追加テスト
+1. supplier作成
+2. そのsupplier_idを参照するpurchase_request作成
+3. supplier.nameの変更を試行 → DBトリガーで拒否されることを確認
+4. suppliers.nameとpurchase_requests.supplier_nameの両方が変更前の値のまま維持されていることを確認
+5. （比較のため）未参照のsupplierであれば名前変更が成功することも確認
+
+# BLOCKER-02: hasSupplierIdColumn()がDBエラーを「列が存在しない」に変換している
+purchase-requests.service.ts の hasSupplierIdColumn() は、pg_attributeへの問い合わせが
+何らかの理由で失敗した場合（DB接続障害、権限エラー、想定外のSQLエラー等）も含めて
+catch { return false; } としており、これらすべてを「P2-T1時代のスキーマ（supplier_id列が
+存在しない）」と誤認してしまいます。これはインフラ障害を握り潰さず伝播させるという
+このプロジェクトの原則に反します。
+
+## 修正方針
+catchブロックで無条件にfalseを返すのをやめ、pg_attributeへの問い合わせ自体は例外を
+そのまま伝播させる。「列が存在しない」という判定は、クエリが正常に実行された結果
+（該当行が0件）としてのみ行う。
+
+# 受け入れ基準（Definition of Done）
+- [x] 参照済みsupplierのname変更がDBトリガーで拒否される
+- [x] 未参照のsupplierはname変更を含め通常通り更新できる
+- [x] hasSupplierIdColumn()が、DB問い合わせ失敗時に例外を伝播させ、falseに変換しない
+- [x] 既存のE2E（RBAC、tenant整合性、supplier_id/name不一致等）に回帰がない
+- [x] 完了報告に実際のコミットSHA（`git rev-parse HEAD`の結果）を正確に記載する
+- [x] Phase 0で確立した実DB E2E検証基盤で、上記すべてを実PostgreSQL上で確認し、
+      結果を報告に添付する
+- [x] feature/p2-t2-suppliers ブランチに追加コミット・pushし、比較URLを報告に含める
+
+# ChatGPTレビュー時の確認観点
+- suppliers.nameの変更禁止トリガーが、他の列（contact情報等）の更新まで巻き添えにして
+  拒否していないか（name列の変更のみをピンポイントで検知しているか）
+- hasSupplierIdColumn()の修正後、正常系（列が存在する/しないの両方の正常なケース）の
+  判定ロジックに回帰がないか
 ```
 
 ---
@@ -2023,3 +2089,4 @@ P2-T1では purchase_requests.supplier_name をフリーテキストとして実
 | 4.0.0 | P1-T6-FIXが正式PASS（検索対象をactiveのみのallowlistに限定、自然文検索・ID類似検索の両方に適用、実DB E2E 97/97）。DEBT-012（terminated/expired契約が検索対象外）を記録。マージ指示プロンプト（P1-T6-MERGE）とPhase 1クローズのサマリ（往復回数、確立された恒久ルール、DEBT棚卸し）を追加。**Phase 1（総務・法務）が全6タスク完了** |
 | 4.1.0 | P1-T6-MERGE完了報告を反映（マージコミットbd697eb、main上での再検証結果全PASS）。DEBT-003のステータスを解消済みに修正（P1-T2-FIXで実際には対応済みだった）。ロードマップ表(1節)にステータス列を追加しPhase 0/1を完了に更新。**Phase 2（購買・調達）のセクションを新設**し、タスク分解（P2-T1〜T4）とP2-T1（purchase_requestsテーブル設計・実装）の実装指示プロンプトを追加。以降のセクション番号を1つずつ繰り下げ |
 | 4.2.0 | P2-T1が初回レビューでSO正式PASS（金額整合性・tenant整合性・状態遷移・暗黙自動承認防止・RBAC三層防御をすべてDB最終防御まで確認）。DEBT-013（request_noの採番方式）を記録。マージ指示プロンプト（P2-T1-MERGE）を追加しP2-T1を完了扱いに更新。**P2-T2（サプライヤー：取引先マスタ管理）の実装指示プロンプトを新規作成** |
+| 4.3.0 | P2-T2がSO判定REQUEST CHANGES（参照済みsupplier.name変更で既存purchase_requestとの不整合が生じる経路が未防御、DBエラーをfalseに握り潰すcatchあり、完了報告のコミットSHA誤り）。フォローアップ指示プロンプト（P2-T2-FIX）を追加 |

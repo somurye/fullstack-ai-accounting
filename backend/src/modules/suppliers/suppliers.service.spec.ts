@@ -181,9 +181,32 @@ describe('SuppliersService', () => {
       ).rejects.toThrow(AppException);
     });
 
+    it('名前変更時に発注申請で参照されている場合は409 Conflict (SUPPLIER_NAME_CANNOT_BE_CHANGED)', async () => {
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ '?column?': 1 }] }); // assertUserPermission
+      mockClient.query.mockResolvedValueOnce({ rows: [sampleSupplierRow] }); // existing
+      mockClient.query.mockResolvedValueOnce({ rows: [{ count: '2' }] }); // refCheck (2件参照中)
+
+      await expect(
+        service.update(TENANT_ID, USER_ID, SUPPLIER_ID, { name: '新サプライヤー名' }),
+      ).rejects.toThrow(AppException);
+    });
+
+    it('名前変更時に未参照であれば正常に変更可能', async () => {
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ '?column?': 1 }] }); // assertUserPermission
+      mockClient.query.mockResolvedValueOnce({ rows: [sampleSupplierRow] }); // existing
+      mockClient.query.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // refCheck (0件)
+      mockClient.query.mockResolvedValueOnce({ rows: [] }); // dupCheck (重複なし)
+      const updatedRow = { ...sampleSupplierRow, name: '変更後の正規社名' };
+      mockClient.query.mockResolvedValueOnce({ rows: [updatedRow] }); // UPDATE RETURNING
+
+      const result = await service.update(TENANT_ID, USER_ID, SUPPLIER_ID, { name: '変更後の正規社名' });
+      expect(result.name).toBe('変更後の正規社名');
+    });
+
     it('名前変更時に別サプライヤーと同名になる場合は409 Conflict', async () => {
       mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ '?column?': 1 }] });
       mockClient.query.mockResolvedValueOnce({ rows: [sampleSupplierRow] });
+      mockClient.query.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // refCheck (未参照)
       mockClient.query.mockResolvedValueOnce({ rows: [{ id: 'other-id' }] }); // dupCheck
 
       await expect(

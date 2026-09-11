@@ -91,6 +91,33 @@ CREATE TRIGGER trg_validate_supplier_tenant_consistency
     BEFORE INSERT OR UPDATE ON suppliers
     FOR EACH ROW EXECUTE FUNCTION fn_validate_supplier_tenant_consistency();
 
+-- 4.2 サプライヤー名変更不整合防止トリガー (参照中サプライヤーの名称変更禁止)
+--     発注申請 (purchase_requests) で参照されている supplier の名前変更を DB レベルで遮断し、
+--     過去の確定伝票当時の取引先名とマスタ名との不整合を防ぐ (BLOCKER-01)。
+CREATE OR REPLACE FUNCTION fn_prevent_supplier_name_change_if_referenced()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- name 列が変更されている場合のみ検証 (他の列、contact情報等の変更は許可)
+    IF NEW.name IS DISTINCT FROM OLD.name THEN
+        IF EXISTS (
+            SELECT 1 FROM purchase_requests
+            WHERE supplier_id = OLD.id
+        ) THEN
+            RAISE EXCEPTION 'Cannot change name of supplier "%" (id=%) because it is referenced by existing purchase requests',
+                OLD.name, OLD.id
+                USING ERRCODE = '23514';
+        END IF;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_prevent_supplier_name_change_if_referenced ON suppliers;
+CREATE TRIGGER trg_prevent_supplier_name_change_if_referenced
+    BEFORE UPDATE ON suppliers
+    FOR EACH ROW EXECUTE FUNCTION fn_prevent_supplier_name_change_if_referenced();
+
 DROP TRIGGER IF EXISTS trg_set_suppliers_updated_at ON suppliers;
 CREATE TRIGGER trg_set_suppliers_updated_at
     BEFORE UPDATE ON suppliers
