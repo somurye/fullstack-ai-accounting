@@ -707,8 +707,8 @@ Phase 0で汎用化した承認エンジン・添付ファイル基盤・AIゲ�
 | P1-T2 | 契約書アップロード〜AI条項抽出フロー | PDFアップロード→AIゲートウェイでの条項抽出提案→人間確認画面（DEBT-002/DEBT-003をあわせて解消） | P0-T3, P1-T1 | ✅ SO正式PASS（コミット923ccfd修正後、実PDF内容依存性をE2Eで確認済み、DEBT-007を記録・mainマージ指示済み） |
 | P1-T3 | 契約RBAC強制・AI提案ライフサイクル正式化 | ~~承認ワークフロー統合~~（P1-T1で先行実装済みのため統合済み）→ **スコープ変更**: (1) DEBT-005: contract permissionのAPI認可強制、(2) `ai_suggestions.target_type/target_id`のライフサイクル正式決定、(3) 状態遷移・SoDの最終確認 | P0-T1, P0-T4, P1-T1, P1-T2 | ✅ SO正式PASS（コミットb9a948d、DEBT-005/006/source_suggestion_id整合性を解消、DEBT-008を記録、mainマージ指示済み） |
 | P1-T4 | 契約期限アラート・バッチ | 満了/自動更新の一定日数前に通知を生成するバッチワーカー | P1-T1 | ✅ SO正式PASS（コミット、notification.batch_execute権限をowner限定で追加、DEBT-009を記録、mainマージ指示済み） |
-| P1-T5 | 稟議申請（汎用ワークフロー起票UI） | 契約以外の一般的な稟議（購買以外の申請）もこの画面から起票できる汎用フォーム | P0-T1, P1-T1, P1-T3 | ⚠️ SO判定REQUEST CHANGES（コミット28812ec = FIX2相当のまま。FIX3の内容が報告されているがGitHubに未反映。設計自体はPASS見込み、push状態の確認・修正を指示済み） |
-| P1-T6 | 契約書全文検索（pgvector活用） | 既存のjournal_entry_embeddingsと同様のパターンで契約書本文をベクトル化し類似契約検索を提供 | P1-T1 | 未着手 |
+| P1-T5 | 稟議申請（汎用ワークフロー起票UI） | 契約以外の一般的な稟議（購買以外の申請）もこの画面から起票できる汎用フォーム | P0-T1, P1-T1, P1-T3 | ✅ SO正式PASS（コミット60a0724、fail-closed migration・DEBT-010を記録、mainマージ指示済み） |
+| P1-T6 | 契約書全文検索（pgvector活用） | 既存のjournal_entry_embeddingsと同様のパターンで契約書本文をベクトル化し類似契約検索を提供 | P1-T1, P1-T2 | プロンプト発行済み・着手待ち（Phase 1最終タスク） |
 
 ### 3.3 Phase 1 実装指示プロンプト（Gemini向け）
 
@@ -1594,6 +1594,90 @@ DO $$ ... RAISE EXCEPTION ... END $$ によるfail-closed化）で問題ない�
 
 ---
 
+#### 【マージ指示プロンプト P1-T5-MERGE】mainへのマージ
+
+ChatGPT(SO)よりP1-T5-FIX3が正式PASS（migration append-only・fail-closed原則の両方を実リポジトリで確認済み）と判定された。
+
+```
+# 指示
+feature/p1-t5-general-requests を main へマージしてください。
+SO(ChatGPT)による正式PASS判定を得ています（既存migrationの事後変更なし、制約追加は新規015で
+fail-closedに実装、違反データがある既存DB/正常な既存DB/新規DBの3経路を実DB E2E 85/85で確認済み）。
+DEBT-010（起票者本人以外もdraft稟議を編集・削除できる、仕様未確定）は計画書側で追跡することとし、
+今回のマージをブロックするものではありません。
+マージ後、以下を確認し報告してください。
+- main上でクリーンDBに対しverify_schema.pyを含む実DB E2Eを再実行し、全件PASSを確認する
+- Backend/Frontendのテストを再実行して確認
+- マージコミットハッシュ
+- 作業ブランチ feature/p1-t5-general-requests の削除（マージ済み後）
+```
+
+これでP1-T5は完了。次はP1-T6（契約書全文検索：pgvector活用）へ進む。**これでPhase 1の全6タスクが出揃う。**
+
+---
+
+#### 【指示プロンプト P1-T6】契約書全文検索（pgvector活用）
+
+```
+# 背景・目的
+既存のjournal_entry_embeddings（仕訳の類似検索）と同様のパターンで、契約書本文をベクトル化し、
+「似た契約を探す」「キーワードでは見つからない類似条項の契約を探す」といった検索を可能にする。
+これがPhase 1の最後のタスクとなる。
+
+# 前提となる既存実装
+- P1-T2: PDFテキスト抽出（pdf-text-extractor.ts）。ただし現状、抽出したテキストは
+  AI提案生成に使われた後、永続化されていない可能性が高い（要確認）。
+- 既存のjournal_entry_embeddings テーブルとそのembedding生成パターン（使用モデル、
+  チャンク分割方針等）
+- P1-T1: contracts テーブル、tenant整合性トリガー
+
+# やってはいけないこと
+- embeddingや全文検索機能を、既存のAI提案（ai_suggestions）の隔離原則と混同しない。
+  全文検索はあくまで「確定済みcontractsの本文」に対する検索機能であり、
+  AI提案の生成・確定フローとは独立した機能として実装する。
+- 全文検索結果のAPIが、tenant境界を越えて類似契約を返さないようにする
+  （embedding検索であってもRLS/tenant_idでの絞り込みを必ず行う）。
+
+# 実装対象
+1. contracts に抽出済み本文を永続化する列（例: extracted_text TEXT）を追加するマイグレーションを
+   作成する（既存014方式ではなく新規番号のmigrationとして追加すること。本計画書0.4節の
+   migration不変原則に従う）。P1-T2のPDF抽出結果を、契約confirm時にcontractsへ保存するよう
+   ContractsServiceを更新する。
+2. contract_embeddings テーブルを新規作成する（id, tenant_id, contract_id, chunk_index,
+   chunk_text, embedding vector(次元数は既存journal_entry_embeddingsに合わせる)等）。
+   RLS（ENABLE + FORCE）、tenant整合性トリガー（contract_id経由でcontracts.tenant_idと
+   一致することをDBで保証、P1-T1/P1-T3で確立したパターンを踏襲）を実装する。
+3. 契約confirm時（またはバッチ処理として事後）に、extracted_textを適切なサイズでチャンク分割し、
+   既存のembedding生成パターンを再利用してcontract_embeddingsへ保存する処理を実装する。
+4. 類似契約検索API（例: GET /contracts/:id/similar、またはキーワード/自然文からの検索）を実装し、
+   pgvectorのコサイン類似度等で近傍探索を行う。検索結果は必ずtenant_idで絞り込む
+   （embeddingのインデックス自体がtenant境界を越えないことをRLSで保証しつつ、
+   アプリケーション側でも明示的にtenant_idを条件に含める）。
+5. contract.view権限がない場合はこの検索APIも利用できないようにする。
+
+# 受け入れ基準（Definition of Done）
+- [ ] 契約confirm時にPDF抽出テキストがcontracts.extracted_textへ保存される
+- [ ] contract_embeddingsが生成され、他テナントのembeddingを一切含まずに類似検索が行える
+- [ ] 他テナントのcontract_embeddingsが検索結果に一切混入しないことを実DB E2Eで確認する
+      （tenant越境した際の挙動を明示的にテストする）
+- [ ] contract.view権限がないユーザーは検索APIを利用できない
+- [ ] 既存のjournal_entry_embeddingsの動作に回帰がない
+- [ ] 新規migrationが本計画書0.4節の原則（append-only、fail-closedなデータ検証）に従っている
+- [ ] Phase 0で確立した実DB E2E検証基盤で、上記すべてを確認し結果を報告に添付する
+- [ ] feature/p1-t6-contract-fulltext-search ブランチにコミット・pushし、比較URLを報告に含める
+      （本計画書0.4節に従う）
+
+# ChatGPTレビュー時の確認観点
+- embedding生成のチャンク分割・モデル選択が既存のjournal_entry_embeddingsと一貫しているか
+  （車輪の再発明をしていないか）
+- 類似検索APIが、RLSに加えてアプリケーション層でも明示的にtenant_idを絞り込んでいるか
+  （pgvectorの近傍探索インデックスがRLSと正しく組み合わさっているかは要確認ポイント）
+- extracted_textの永続化によって、契約書本文という機微情報の保存範囲が広がることについて、
+  既存のattachments（ファイル実体）との重複や、アクセス制御の一貫性が保たれているか
+```
+
+---
+
 ## 3.4 決定事項: ロール・権限の粒度方針
 
 - **方針**: 権限を細分化し、権限外の領域は閲覧も含めて不可とする（deny-by-default）。既存のRLSが「fail-closed（未設定・不一致時は0件返却）」の原則を採っているため、この方針とも整合的。
@@ -1659,3 +1743,4 @@ DO $$ ... RAISE EXCEPTION ... END $$ によるfail-closed化）で問題ない�
 | 3.3.0 | P1-T5-FIXがSO判定REQUEST CHANGES（重大: 既存migration 014を事後的に書き換えたため、適用済みDBには制約が反映されない）。フォローアップ指示プロンプト（P1-T5-FIX2、新規migration 015への切替＋既存DB段階的アップグレードのE2E追加）を追加。**0.4節にmigration不変（append-only）の原則を新設** |
 | 3.4.0 | P1-T5-FIX2がSO判定REQUEST CHANGES（migration append-only原則は解消済みだが、015が既存データを無断でUPDATE/自動クレンジングしていた）。フォローアップ指示プロンプト（P1-T5-FIX3、fail-closedなDO $$ EXCEPTIONブロックへの置き換え）を追加。**0.4節に「制約追加migrationは既存データを自動改変せずfail-closedで停止する」原則を新設** |
 | 3.5.0 | P1-T5-FIX3がSO判定REQUEST CHANGES（設計自体は承認、ただし報告内容とGitHub実コミットが不一致。push漏れ）。フォローアップ指示プロンプト（P1-T5-FIX3-VERIFY）を追加し、push状態の確認・是正を指示（0.4節の既存ルールの再徹底） |
+| 3.6.0 | P1-T5-FIX3が正式PASS（GitHub実体とも一致、既存データ自動改変の完全撤廃、fail-closed migrationを85/85で確認）。マージ指示プロンプト（P1-T5-MERGE）を追加しP1-T5を完了扱いに更新。**P1-T6（契約書全文検索：pgvector活用）の実装指示プロンプトを新規作成**。これでPhase 1の全6タスクの指示プロンプトが出揃った |
