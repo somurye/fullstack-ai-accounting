@@ -6311,6 +6311,271 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/purchase-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 発注申請一覧を取得する */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description ステータス絞り込み */
+                    status?: "draft" | "pending_approval" | "active" | "rejected" | "terminated";
+                    /** @description 発注番号・タイトル・サプライヤー名・品目説明の検索キーワード */
+                    search?: string;
+                    page?: components["parameters"]["PageParam"];
+                    page_size?: components["parameters"]["PageSizeParam"];
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 発注申請一覧 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PurchaseRequestListResponse"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+            };
+        };
+        put?: never;
+        /** 発注申請を新規作成する (draft) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CreatePurchaseRequestInput"];
+                };
+            };
+            responses: {
+                /** @description 作成成功 */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PurchaseRequestResponse"];
+                    };
+                };
+                400: components["responses"]["BadRequest"];
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                422: components["responses"]["UnprocessableEntity"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/purchase-requests/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 発注申請の詳細を取得する */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 発注申請詳細 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PurchaseRequestDetailResponse"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                404: components["responses"]["NotFound"];
+            };
+        };
+        /** 発注申請を更新する (draftのみ) */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["UpdatePurchaseRequestInput"];
+                };
+            };
+            responses: {
+                /** @description 更新成功 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PurchaseRequestResponse"];
+                    };
+                };
+                400: components["responses"]["BadRequest"];
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                404: components["responses"]["NotFound"];
+                422: components["responses"]["UnprocessableEntity"];
+            };
+        };
+        post?: never;
+        /** 発注申請を削除する (draftのみ物理削除) */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 削除成功 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @constant */
+                            success?: true;
+                            data?: {
+                                /** Format: uuid */
+                                deleted_id?: string;
+                            };
+                        };
+                    };
+                };
+                400: components["responses"]["BadRequest"];
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                404: components["responses"]["NotFound"];
+                422: components["responses"]["UnprocessableEntity"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/purchase-requests/{id}/submit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 発注申請の承認を申請する */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 申請成功 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PurchaseRequestResponse"];
+                    };
+                };
+                400: components["responses"]["BadRequest"];
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                404: components["responses"]["NotFound"];
+                422: components["responses"]["UnprocessableEntity"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/purchase-requests/{id}/terminate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 発注申請を解約・取消する (activeのみ) */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 解約・取消成功 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PurchaseRequestResponse"];
+                    };
+                };
+                400: components["responses"]["BadRequest"];
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                404: components["responses"]["NotFound"];
+                422: components["responses"]["UnprocessableEntity"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -8149,6 +8414,101 @@ export interface components {
             /** @constant */
             success: true;
             data: components["schemas"]["GeneralRequest"][];
+            meta: components["schemas"]["Meta"];
+        };
+        /** @enum {string} */
+        PurchaseRequestStatus: "draft" | "pending_approval" | "active" | "rejected" | "terminated";
+        PurchaseRequest: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            tenant_id: string;
+            request_no: string;
+            title: string;
+            supplier_name: string;
+            item_description: string;
+            quantity: number;
+            unit_price: number;
+            total_amount: number;
+            /** @default JPY */
+            currency: string;
+            /** Format: date */
+            requested_delivery_date?: string | null;
+            status: components["schemas"]["PurchaseRequestStatus"];
+            /** Format: uuid */
+            attachment_id?: string | null;
+            description?: string | null;
+            /** Format: uuid */
+            created_by: string;
+            /** Format: date-time */
+            approved_at?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        PurchaseRequestDetail: components["schemas"]["PurchaseRequest"] & {
+            approval_request?: {
+                /** Format: uuid */
+                id?: string;
+                status?: string;
+                current_step?: number;
+                total_steps?: number;
+                steps?: {
+                    step_number?: number;
+                    approver_role?: string;
+                    /** Format: uuid */
+                    approver_id?: string | null;
+                    action?: string;
+                    comment?: string | null;
+                    /** Format: date-time */
+                    action_at?: string | null;
+                }[];
+            } | null;
+        };
+        CreatePurchaseRequestInput: {
+            title: string;
+            supplier_name: string;
+            item_description: string;
+            quantity: number;
+            unit_price: number;
+            total_amount: number;
+            /** @default JPY */
+            currency: string;
+            /** Format: date */
+            requested_delivery_date?: string | null;
+            /** Format: uuid */
+            attachment_id?: string | null;
+            description?: string | null;
+        };
+        UpdatePurchaseRequestInput: {
+            title?: string;
+            supplier_name?: string;
+            item_description?: string;
+            quantity?: number;
+            unit_price?: number;
+            total_amount?: number;
+            currency?: string;
+            /** Format: date */
+            requested_delivery_date?: string | null;
+            /** Format: uuid */
+            attachment_id?: string | null;
+            description?: string | null;
+        };
+        PurchaseRequestResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["PurchaseRequest"];
+        };
+        PurchaseRequestDetailResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["PurchaseRequestDetail"];
+        };
+        PurchaseRequestListResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["PurchaseRequest"][];
             meta: components["schemas"]["Meta"];
         };
     };

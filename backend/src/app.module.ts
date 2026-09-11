@@ -39,6 +39,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { ContractsModule } from './modules/contracts/contracts.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { GeneralRequestsModule } from './modules/general-requests/general-requests.module';
+import { PurchaseRequestsModule } from './modules/purchase-requests/purchase-requests.module';
 
 /**
  * AppModule
@@ -95,6 +96,7 @@ import { GeneralRequestsModule } from './modules/general-requests/general-reques
     ScheduleModule.forRoot(),
     NotificationsModule,
     GeneralRequestsModule,
+    PurchaseRequestsModule,
   ],
   controllers: [],
   providers: [

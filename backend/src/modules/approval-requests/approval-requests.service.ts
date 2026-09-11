@@ -258,6 +258,23 @@ export class ApprovalRequestsService {
       }
     }
 
+    // 発注申請(target_type='purchase_request')の場合、実行ユーザーが purchase_request.approve パーミッションを保持していることを検証
+    if (ar.target_type === 'purchase_request') {
+      const permCheck = await client.query(
+        `SELECT 1
+         FROM user_roles ur
+         JOIN role_permissions rp ON rp.role_id = ur.role_id
+         JOIN permissions p ON p.id = rp.permission_id
+         WHERE ur.tenant_id = $1 AND ur.user_id = $2
+           AND p.code = 'purchase_request.approve'
+         LIMIT 1`,
+        [tenantId, userId],
+      );
+      if (permCheck.rowCount === 0) {
+        throw AppException.forbidden('発注申請の承認・却下を行う権限(purchase_request.approve)がありません');
+      }
+    }
+
     const result = await client.query(
       `SELECT 1 FROM approval_rules rule
        WHERE rule.tenant_id = $1 AND rule.target_type = $2
@@ -363,6 +380,21 @@ export class ApprovalRequestsService {
         actorUserId: userId,
         action: 'general_request.approved',
         targetType: 'general_request',
+        targetId,
+        afterData: { status: 'active' },
+      });
+      return;
+    }
+
+    if (targetType === 'purchase_request') {
+      await client.query(
+        `UPDATE purchase_requests SET status = 'active', approved_at = now(), updated_at = now() WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, targetId],
+      );
+      await this.auditLogs.record(client, tenantId, {
+        actorUserId: userId,
+        action: 'purchase_request.approved',
+        targetType: 'purchase_request',
         targetId,
         afterData: { status: 'active' },
       });
@@ -484,6 +516,21 @@ export class ApprovalRequestsService {
         actorUserId: userId,
         action: 'general_request.rejected',
         targetType: 'general_request',
+        targetId,
+        afterData: { status: 'rejected' },
+      });
+      return;
+    }
+
+    if (targetType === 'purchase_request') {
+      await client.query(
+        `UPDATE purchase_requests SET status = 'rejected', updated_at = now() WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, targetId],
+      );
+      await this.auditLogs.record(client, tenantId, {
+        actorUserId: userId,
+        action: 'purchase_request.rejected',
+        targetType: 'purchase_request',
         targetId,
         afterData: { status: 'rejected' },
       });

@@ -87,6 +87,8 @@ tags:
     description: "通知 (Phase 1: P1-T4 契約期限アラート等)"
   - name: GeneralRequests
     description: "汎用稟議申請 (Phase 1: P1-T5 汎用ワークフロー)"
+  - name: PurchaseRequests
+    description: "発注申請 (Phase 2: P2-T1 購買・調達)"
 
 security:
   - BearerAuth: []
@@ -3207,6 +3209,146 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/UnprocessableEntity" }
 
+  /purchase-requests:
+    get:
+      tags: [PurchaseRequests]
+      summary: 発注申請一覧を取得する
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [draft, pending_approval, active, rejected, terminated]
+          description: ステータス絞り込み
+        - in: query
+          name: search
+          schema: { type: string }
+          description: 発注番号・タイトル・サプライヤー名・品目説明の検索キーワード
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/PageSizeParam"
+      responses:
+        "200":
+          description: 発注申請一覧
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PurchaseRequestListResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [PurchaseRequests]
+      summary: 発注申請を新規作成する (draft)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreatePurchaseRequestInput" }
+      responses:
+        "201":
+          description: 作成成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PurchaseRequestResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /purchase-requests/{id}:
+    get:
+      tags: [PurchaseRequests]
+      summary: 発注申請の詳細を取得する
+      parameters:
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 発注申請詳細
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PurchaseRequestDetailResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [PurchaseRequests]
+      summary: 発注申請を更新する (draftのみ)
+      parameters:
+        - $ref: "#/components/parameters/IdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdatePurchaseRequestInput" }
+      responses:
+        "200":
+          description: 更新成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PurchaseRequestResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+    delete:
+      tags: [PurchaseRequests]
+      summary: 発注申請を削除する (draftのみ物理削除)
+      parameters:
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 削除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { const: true }
+                  data:
+                    type: object
+                    properties:
+                      deleted_id: { type: string, format: uuid }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /purchase-requests/{id}/submit:
+    post:
+      tags: [PurchaseRequests]
+      summary: 発注申請の承認を申請する
+      parameters:
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 申請成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PurchaseRequestResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
+  /purchase-requests/{id}/terminate:
+    post:
+      tags: [PurchaseRequests]
+      summary: 発注申請を解約・取消する (activeのみ)
+      parameters:
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: 解約・取消成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PurchaseRequestResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
+
 # ==============================================================================
 # COMPONENTS
 # ==============================================================================
@@ -5267,5 +5409,132 @@ components:
           type: array
           items: { $ref: "#/components/schemas/GeneralRequest" }
         meta: { $ref: "#/components/schemas/Meta" }
+
+    # ---- Purchase Requests (Phase 2: 購買・調達) ----
+    PurchaseRequestStatus:
+      type: string
+      enum: [draft, pending_approval, active, rejected, terminated]
+
+    PurchaseRequest:
+      type: object
+      required:
+        - id
+        - tenant_id
+        - request_no
+        - title
+        - supplier_name
+        - item_description
+        - quantity
+        - unit_price
+        - total_amount
+        - currency
+        - status
+        - created_by
+        - created_at
+        - updated_at
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        request_no: { type: string }
+        title: { type: string }
+        supplier_name: { type: string }
+        item_description: { type: string }
+        quantity: { type: number, minimum: 0.0001 }
+        unit_price: { type: number, minimum: 0 }
+        total_amount: { type: number, minimum: 0 }
+        currency: { type: string, default: "JPY" }
+        requested_delivery_date: { type: string, format: date, nullable: true }
+        status: { $ref: "#/components/schemas/PurchaseRequestStatus" }
+        attachment_id: { type: string, format: uuid, nullable: true }
+        description: { type: string, nullable: true }
+        created_by: { type: string, format: uuid }
+        approved_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    PurchaseRequestDetail:
+      allOf:
+        - $ref: "#/components/schemas/PurchaseRequest"
+        - type: object
+          properties:
+            approval_request:
+              type: object
+              nullable: true
+              properties:
+                id: { type: string, format: uuid }
+                status: { type: string }
+                current_step: { type: integer }
+                total_steps: { type: integer }
+                steps:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      step_number: { type: integer }
+                      approver_role: { type: string }
+                      approver_id: { type: string, format: uuid, nullable: true }
+                      action: { type: string }
+                      comment: { type: string, nullable: true }
+                      action_at: { type: string, format: date-time, nullable: true }
+
+    CreatePurchaseRequestInput:
+      type: object
+      required:
+        - title
+        - supplier_name
+        - item_description
+        - quantity
+        - unit_price
+        - total_amount
+      properties:
+        title: { type: string, minLength: 1 }
+        supplier_name: { type: string, minLength: 1 }
+        item_description: { type: string, minLength: 1 }
+        quantity: { type: number, minimum: 0.0001 }
+        unit_price: { type: number, minimum: 0 }
+        total_amount: { type: number, minimum: 0 }
+        currency: { type: string, default: "JPY" }
+        requested_delivery_date: { type: string, format: date, nullable: true }
+        attachment_id: { type: string, format: uuid, nullable: true }
+        description: { type: string, nullable: true }
+
+    UpdatePurchaseRequestInput:
+      type: object
+      properties:
+        title: { type: string, minLength: 1 }
+        supplier_name: { type: string, minLength: 1 }
+        item_description: { type: string, minLength: 1 }
+        quantity: { type: number, minimum: 0.0001 }
+        unit_price: { type: number, minimum: 0 }
+        total_amount: { type: number, minimum: 0 }
+        currency: { type: string }
+        requested_delivery_date: { type: string, format: date, nullable: true }
+        attachment_id: { type: string, format: uuid, nullable: true }
+        description: { type: string, nullable: true }
+
+    PurchaseRequestResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/PurchaseRequest" }
+
+    PurchaseRequestDetailResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success: { const: true }
+        data: { $ref: "#/components/schemas/PurchaseRequestDetail" }
+
+    PurchaseRequestListResponse:
+      type: object
+      required: [success, data, meta]
+      properties:
+        success: { const: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/PurchaseRequest" }
+        meta: { $ref: "#/components/schemas/Meta" }
+
 
 
