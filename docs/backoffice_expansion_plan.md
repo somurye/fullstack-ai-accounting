@@ -1805,7 +1805,7 @@ migrationのappend-only・fail-closed運用）をそのまま踏襲し、発注�
 |----------|----------|------|------|-----------|
 | P2-T1 | `purchase_requests`テーブル設計・実装 | 発注申請本体（品目、数量、単価、サプライヤー、金額、納期、ステータス）、既存承認エンジン統合、RBAC強制 | P0-T1, P1-T1, P1-T3 | ✅ SO正式PASS（コミット9e4fe21、初回レビューでPASS。DEBT-013を記録、mainマージ指示済み） |
 | P2-T2 | サプライヤー（取引先）マスタ管理 | サプライヤー登録・編集・検索、連絡先・支払条件等の管理、purchase_requestsとの関連付け | P0-T1, P2-T1 | ✅ SO正式PASS・mainマージ完了（マージコミット`05ffb6f`、main上でE2E 114/114・Jest 133/133・build成功を再確認済み） |
-| P2-T3 | 発注〜検収〜請求の連携 | purchase_requestsが承認完了した後の発注確定、検収記録、既存vendor_bills（請求書管理）との紐付け | P2-T1, P2-T2 | プロンプト発行済み・着手待ち |
+| P2-T3 | 発注〜検収〜請求の連携 | purchase_requestsが承認完了した後の発注確定、検収記録、既存vendor_bills（請求書管理）との紐付け | P2-T1, P2-T2 | ⏸️ レビュー待ち（完了報告に対応するコミットがGitHub main(f014b9a)上でまだ確認できず。push状態の確認・是正を指示済み） |
 | P2-T4 | 購買ダッシュボード・レポート | テナント内の購買状況（申請中・承認済み・発注済み件数、サプライヤー別支出等）の可視化 | P2-T1, P2-T2, P2-T3 | 未着手 |
 
 P2-T2以降の詳細タスク分解・実装指示プロンプトは、P2-T1の実装結果（実際のテーブル定義・
@@ -2144,18 +2144,18 @@ P2-T1でpurchase_requestsの承認（active化）まで、P2-T2でサプライ�
    リンク表示を実装する。
 
 # 受け入れ基準（Definition of Done）
-- [x] activeな発注申請に対して検収記録を追加できる（部分納品による複数回の検収を含む）
-- [x] draft/pending_approval状態の発注申請には検収記録を追加できない
+- [ ] activeな発注申請に対して検収記録を追加できる（部分納品による複数回の検収を含む）
+- [ ] draft/pending_approval状態の発注申請には検収記録を追加できない
       （状態遷移の一貫性を維持する）
-- [x] 他テナントのpurchase_request_id/received_byを指定した場合にDBトリガーで拒否される
-- [x] vendor_billsとpurchase_requestsの紐付けが、他テナントのレコードを跨いで
+- [ ] 他テナントのpurchase_request_id/received_byを指定した場合にDBトリガーで拒否される
+- [ ] vendor_billsとpurchase_requestsの紐付けが、他テナントのレコードを跨いで
       成立しないことをDBトリガーで確認する
-- [x] permissionを持たないロールでは検収記録・請求書紐付けができないことを確認
-- [x] 既存のvendor_bills関連機能（仕訳連携等）に回帰がない
-- [x] migrationがappend-only・fail-closedの原則（本計画書0.4節）に従っている
-- [x] Phase 0で確立した実DB E2E検証基盤で、上記すべてを実PostgreSQL上で確認し、
+- [ ] permissionを持たないロールでは検収記録・請求書紐付けができないことを確認
+- [ ] 既存のvendor_bills関連機能（仕訳連携等）に回帰がない
+- [ ] migrationがappend-only・fail-closedの原則（本計画書0.4節）に従っている
+- [ ] Phase 0で確立した実DB E2E検証基盤で、上記すべてを実PostgreSQL上で確認し、
       結果を報告に添付する
-- [x] feature/p2-t3-purchase-receipts-billing ブランチにコミット・pushし、比較URLを
+- [ ] feature/p2-t3-purchase-receipts-billing ブランチにコミット・pushし、比較URLを
       報告に含める（本計画書0.4節に従う）
 
 # ChatGPTレビュー時の確認観点
@@ -2166,6 +2166,31 @@ P2-T1でpurchase_requestsの承認（active化）まで、P2-T2でサプライ�
 - Phase 1/Phase 2で繰り返し指摘された問題（暗黙自動承認、tenant整合性のアプリ層依存、
   RBAC未強制、同時実行race condition、migration事後書き換え）のいずれかが
   再発していないか
+```
+
+---
+
+#### 【フォローアップ指示プロンプト P2-T3-VERIFY】push状態の確認（SOはコミットSHAが確認できるまでレビュー不可）
+
+ChatGPT(SO)より、完了報告に対応する実装コミットがGitHub main（f014b9a時点）上でまだ
+確認できないため、実コード確認を伴うレビューが実施できない状態にあると指摘された。
+これは本計画書0.4節「push前の報告のみの完了通知は受け付けない」というルールに関わる。
+
+```
+# 指示
+以下を確認し、必要な対応を行ってください。
+
+1. git status / git log で、P2-T3の実装（019_purchase_receipts_and_billing.sql、
+   backend/frontend実装、E2Eテスト等）が実際にローカルでコミットされているか確認する。
+2. コミットされていない場合はコミットし、feature/p2-t3-purchase-receipts-billing ブランチへ
+   pushする。コミット済みだがpushされていない場合はpushする。
+3. push後、GitHub上で該当ブランチのHEADが今回報告した実装内容と一致していることを
+   自分でも確認する。
+4. 新しいコミットSHA（git rev-parse HEAD）と、main...<ブランチ名>の比較URLを報告に含める。
+5. 今回のpush漏れがなぜ起きたか一言報告してください（再発防止のため記録します）。
+
+SOはコミットSHAを受け取り次第、main...HEADの実差分を確認して正式なレビュー
+（PASS/CONDITIONAL PASS/REQUEST CHANGES）を行います。
 ```
 
 ---
@@ -2241,3 +2266,4 @@ P2-T1でpurchase_requestsの承認（active化）まで、P2-T2でサプライ�
 | 4.4.0 | P2-T2-FIXがSO判定REQUEST CHANGES（前回2 BLOCKERは解消。ただしsupplier.name変更とpurchase_request作成の同時実行にrace conditionが残る、P1-T3のDEBT-006と同型の問題）。フォローアップ指示プロンプト（P2-T2-FIX2、pg_advisory_xact_lockによる直列化）を追加 |
 | 4.5.0 | P2-T2-FIX2が正式PASS（3つのBLOCKER全解消、並行実行の両方向を実DBで確認、Schema E2E 114/114・Jest 133/133）。マージ指示プロンプト（P2-T2-MERGE）を追加しP2-T2を完了扱いに更新。**P2-T3（発注〜検収〜請求の連携）の実装指示プロンプトを新規作成** |
 | 4.6.0 | P2-T2-MERGE完了報告を反映（マージコミット05ffb6f、main上での再検証結果全PASS）。P2-T2が正式クローズ |
+| 4.7.0 | P2-T3について、完了報告に対応する実装コミットがGitHub main上でまだ確認できず、SOがレビュー保留（レビュー待ち⏸️）。フォローアップ指示プロンプト（P2-T3-VERIFY）を追加し、push状態の確認・是正を指示（0.4節の既存ルールの再徹底、P1-T5-FIX3-VERIFYと同型の対応） |
