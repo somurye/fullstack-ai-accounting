@@ -92,3 +92,15 @@ export type CreatePurchaseRequestDto = z.output<typeof createPurchaseRequestSche
 export type UpdatePurchaseRequestInput = z.input<typeof updatePurchaseRequestSchema>;
 export type UpdatePurchaseRequestDto = z.output<typeof updatePurchaseRequestSchema>;
 export type PurchaseRequestListQuery = z.infer<typeof purchaseRequestListQuerySchema>;
+
+export const createPurchaseReceiptSchema = z.object({
+  received_quantity: z.number().positive('受領数量は0より大きい数値を入力してください'),
+  received_date: z.string().regex(DATE_ONLY_RE, '受領日はYYYY-MM-DD形式で指定してください'),
+  notes: z.string().max(1000, 'メモは1000文字以内で入力してください').nullable().optional(),
+});
+export type CreatePurchaseReceiptInput = z.infer<typeof createPurchaseReceiptSchema>;
+
+export const linkVendorBillSchema = z.object({
+  vendor_bill_id: z.string().uuid('仕入請求書IDはUUID形式で指定してください'),
+});
+export type LinkVendorBillInput = z.infer<typeof linkVendorBillSchema>;

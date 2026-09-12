@@ -2144,18 +2144,18 @@ P2-T1でpurchase_requestsの承認（active化）まで、P2-T2でサプライ�
    リンク表示を実装する。
 
 # 受け入れ基準（Definition of Done）
-- [ ] activeな発注申請に対して検収記録を追加できる（部分納品による複数回の検収を含む）
-- [ ] draft/pending_approval状態の発注申請には検収記録を追加できない
+- [x] activeな発注申請に対して検収記録を追加できる（部分納品による複数回の検収を含む）
+- [x] draft/pending_approval状態の発注申請には検収記録を追加できない
       （状態遷移の一貫性を維持する）
-- [ ] 他テナントのpurchase_request_id/received_byを指定した場合にDBトリガーで拒否される
-- [ ] vendor_billsとpurchase_requestsの紐付けが、他テナントのレコードを跨いで
+- [x] 他テナントのpurchase_request_id/received_byを指定した場合にDBトリガーで拒否される
+- [x] vendor_billsとpurchase_requestsの紐付けが、他テナントのレコードを跨いで
       成立しないことをDBトリガーで確認する
-- [ ] permissionを持たないロールでは検収記録・請求書紐付けができないことを確認
-- [ ] 既存のvendor_bills関連機能（仕訳連携等）に回帰がない
-- [ ] migrationがappend-only・fail-closedの原則（本計画書0.4節）に従っている
-- [ ] Phase 0で確立した実DB E2E検証基盤で、上記すべてを実PostgreSQL上で確認し、
+- [x] permissionを持たないロールでは検収記録・請求書紐付けができないことを確認
+- [x] 既存のvendor_bills関連機能（仕訳連携等）に回帰がない
+- [x] migrationがappend-only・fail-closedの原則（本計画書0.4節）に従っている
+- [x] Phase 0で確立した実DB E2E検証基盤で、上記すべてを実PostgreSQL上で確認し、
       結果を報告に添付する
-- [ ] feature/p2-t3-purchase-receipts-billing ブランチにコミット・pushし、比較URLを
+- [x] feature/p2-t3-purchase-receipts-billing ブランチにコミット・pushし、比較URLを
       報告に含める（本計画書0.4節に従う）
 
 # ChatGPTレビュー時の確認観点

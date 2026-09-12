@@ -9,33 +9,50 @@ import {
   Package,
   Clock,
   CheckCircle2,
-  Check,
   Ban,
+  Receipt,
+  FileText,
+  Plus,
+  Link2,
+  Unlink,
 } from 'lucide-react';
 import { apiClient } from '../../lib/apiClient';
 import { toast } from '../../stores/toastStore';
-import type { components } from '../../types/api.generated';
 import {
   STATUS_LABELS,
-  type PurchaseRequestDetail,
+  type ExtendedPurchaseRequestDetail,
   type PurchaseRequestStatus,
+  type PurchaseReceipt,
+  type LinkedVendorBill,
 } from './types';
-
-type PurchaseRequestDetailResponse = components['schemas']['PurchaseRequestDetailResponse'];
 
 export function PurchaseRequestDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
 
-  const [detail, setDetail] = useState<PurchaseRequestDetail | null>(null);
+  const [detail, setDetail] = useState<ExtendedPurchaseRequestDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [terminating, setTerminating] = useState(false);
 
+  // 検収モーダル状態
+  const [showReceiptModal, setShowReceiptModal] = useState(false);
+  const [receiptQuantity, setReceiptQuantity] = useState<number>(0);
+  const [receiptDate, setReceiptDate] = useState<string>(new Date().toISOString().slice(0, 10));
+  const [receiptNotes, setReceiptNotes] = useState<string>('');
+  const [savingReceipt, setSavingReceipt] = useState(false);
+
+  // 請求書紐付けモーダル状態
+  const [showLinkModal, setShowLinkModal] = useState(false);
+  const [availableBills, setAvailableBills] = useState<any[]>([]);
+  const [selectedBillId, setSelectedBillId] = useState<string>('');
+  const [loadingBills, setLoadingBills] = useState(false);
+  const [linkingBill, setLinkingBill] = useState(false);
+
   const fetchDetail = async () => {
     setLoading(true);
     try {
-      const res = await apiClient.get<PurchaseRequestDetailResponse>(`/purchase-requests/${id}`);
+      const res = await apiClient.get<any>(`/purchase-requests/${id}`);
       setDetail(res.data.data);
     } catch (err: any) {
       toast.error('発注申請データの取得に失敗しました');
@@ -99,6 +116,94 @@ export function PurchaseRequestDetailPage() {
     }
   };
 
+  // 検収登録
+  const handleOpenReceiptModal = () => {
+    if (!detail) return;
+    const remaining = detail.remaining_quantity !== undefined ? detail.remaining_quantity : detail.quantity;
+    setReceiptQuantity(remaining > 0 ? remaining : 1);
+    setReceiptDate(new Date().toISOString().slice(0, 10));
+    setReceiptNotes('');
+    setShowReceiptModal(true);
+  };
+
+  const handleSubmitReceipt = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!detail) return;
+    if (receiptQuantity <= 0) {
+      toast.error('受領数量は0より大きい数値を入力してください');
+      return;
+    }
+
+    setSavingReceipt(true);
+    try {
+      await apiClient.post(`/purchase-requests/${detail.id}/receipts`, {
+        received_quantity: receiptQuantity,
+        received_date: receiptDate,
+        notes: receiptNotes.trim() || undefined,
+      });
+      toast.success('検収記録を登録しました');
+      setShowReceiptModal(false);
+      fetchDetail();
+    } catch (err: any) {
+      const msg = err.response?.data?.message || '検収記録の登録に失敗しました';
+      toast.error(msg);
+    } finally {
+      setSavingReceipt(false);
+    }
+  };
+
+  // 請求書紐付け
+  const handleOpenLinkModal = async () => {
+    setShowLinkModal(true);
+    setLoadingBills(true);
+    try {
+      const res = await apiClient.get<any>('/vendor-bills', { params: { page_size: 50 } });
+      const bills = res.data?.data || [];
+      setAvailableBills(bills);
+      if (bills.length > 0) {
+        setSelectedBillId(bills[0].id);
+      }
+    } catch (err: any) {
+      toast.error('仕入請求書一覧の取得に失敗しました');
+    } finally {
+      setLoadingBills(false);
+    }
+  };
+
+  const handleSubmitLink = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!detail || !selectedBillId) return;
+
+    setLinkingBill(true);
+    try {
+      await apiClient.post(`/purchase-requests/${detail.id}/link-bill`, {
+        vendor_bill_id: selectedBillId,
+      });
+      toast.success('仕入請求書を紐付けました');
+      setShowLinkModal(false);
+      fetchDetail();
+    } catch (err: any) {
+      const msg = err.response?.data?.message || '仕入請求書の紐付けに失敗しました';
+      toast.error(msg);
+    } finally {
+      setLinkingBill(false);
+    }
+  };
+
+  const handleUnlinkBill = async (vendorBillId: string) => {
+    if (!detail) return;
+    if (!confirm('この仕入請求書との紐付けを解除しますか？')) return;
+
+    try {
+      await apiClient.delete(`/purchase-requests/${detail.id}/link-bill/${vendorBillId}`);
+      toast.success('紐付けを解除しました');
+      fetchDetail();
+    } catch (err: any) {
+      const msg = err.response?.data?.message || '紐付け解除に失敗しました';
+      toast.error(msg);
+    }
+  };
+
   if (loading) {
     return <div className="p-12 text-center text-surface-400">読み込み中...</div>;
   }
@@ -117,6 +222,10 @@ export function PurchaseRequestDetailPage() {
     text: 'text-surface-400',
     border: 'border-surface-700',
   };
+
+  const totalReceived = detail.total_received_quantity ?? 0;
+  const remainingQty = detail.remaining_quantity ?? Math.max(0, detail.quantity - totalReceived);
+  const completionRate = Math.min(100, Math.round((totalReceived / detail.quantity) * 100));
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">
@@ -175,14 +284,31 @@ export function PurchaseRequestDetailPage() {
           )}
 
           {detail.status === 'active' && (
-            <button
-              onClick={handleTerminate}
-              disabled={terminating}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 text-sm font-medium rounded-lg transition-colors disabled:opacity-50"
-            >
-              <Ban className="w-4 h-4 text-zinc-400" />
-              発注を解約・取消
-            </button>
+            <>
+              <button
+                onClick={handleOpenReceiptModal}
+                disabled={remainingQty <= 0}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded-lg transition-colors shadow-sm disabled:opacity-50 disabled:bg-surface-800 disabled:text-surface-500"
+              >
+                <Receipt className="w-4 h-4" />
+                {remainingQty <= 0 ? '検収完納済' : '検収を記録する'}
+              </button>
+              <button
+                onClick={handleOpenLinkModal}
+                className="inline-flex items-center gap-2 px-3.5 py-2 bg-surface-800 hover:bg-surface-700 text-surface-200 text-sm font-medium rounded-lg transition-colors border border-surface-700"
+              >
+                <Link2 className="w-4 h-4 text-indigo-400" />
+                仕入請求書を紐付け
+              </button>
+              <button
+                onClick={handleTerminate}
+                disabled={terminating}
+                className="inline-flex items-center gap-2 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 text-sm font-medium rounded-lg transition-colors disabled:opacity-50"
+              >
+                <Ban className="w-4 h-4 text-zinc-400" />
+                解約・取消
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -208,7 +334,7 @@ export function PurchaseRequestDetailPage() {
                 (承認日時: {new Date(detail.approved_at).toLocaleString('ja-JP')})
               </span>
             )}
-            発注処理および納品受入の準備を進めてください。
+            納品物を受領した際は「検収を記録する」から受領登録を行ってください。
           </div>
         </div>
       )}
@@ -225,7 +351,7 @@ export function PurchaseRequestDetailPage() {
 
       {/* メイングリッド */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* 左側2カラム: 発注内容詳細 */}
+        {/* 左側2カラム: 発注内容詳細 & 検収・請求連携 */}
         <div className="lg:col-span-2 space-y-6">
           {/* 金額・品目カード */}
           <div className="bg-surface-900 border border-surface-800 rounded-xl p-6 shadow-sm space-y-6">
@@ -270,7 +396,7 @@ export function PurchaseRequestDetailPage() {
               </div>
 
               <div className="p-3 bg-surface-950 border border-surface-800/80 rounded-lg">
-                <span className="text-xs text-surface-400">数量</span>
+                <span className="text-xs text-surface-400">発注数量</span>
                 <div className="font-medium font-mono text-surface-100 mt-1">
                   {Number(detail.quantity).toLocaleString()}
                 </div>
@@ -297,66 +423,134 @@ export function PurchaseRequestDetailPage() {
             )}
           </div>
 
-          {/* 承認タイムライン (存在する場合) */}
-          {detail.approval_request && (
-            <div className="bg-surface-900 border border-surface-800 rounded-xl p-6 shadow-sm space-y-4">
+          {/* 検収進捗 & 履歴カード (P2-T3) */}
+          <div className="bg-surface-900 border border-surface-800 rounded-xl p-6 shadow-sm space-y-5">
+            <div className="flex items-center justify-between border-b border-surface-800 pb-3">
               <h2 className="text-base font-semibold text-surface-100 flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-indigo-400" />
-                承認ワークフロー進捗
+                <Receipt className="w-4 h-4 text-emerald-400" />
+                検収・納品受領状況
               </h2>
+              {detail.status === 'active' && remainingQty > 0 && (
+                <button
+                  onClick={handleOpenReceiptModal}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-emerald-400 bg-emerald-950/50 hover:bg-emerald-900/60 border border-emerald-800/60 rounded-md transition-colors"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  検収を記録
+                </button>
+              )}
+            </div>
 
-              <div className="space-y-4">
-                {detail.approval_request.steps?.map((step: any, idx: number) => {
-                  const isDone = step.action === 'approved';
-                  const isCurrent =
-                    detail.approval_request?.current_step === step.step_number &&
-                    detail.approval_request?.status === 'pending';
-
-                  return (
-                    <div
-                      key={idx}
-                      className="flex items-start gap-3 pb-4 border-b border-surface-800/60 last:border-0 last:pb-0"
-                    >
-                      <div
-                        className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mt-0.5 ${
-                          isDone
-                            ? 'bg-emerald-950 text-emerald-400 border border-emerald-700'
-                            : isCurrent
-                            ? 'bg-amber-950 text-amber-400 border border-amber-600 animate-pulse'
-                            : 'bg-surface-800 text-surface-400 border border-surface-700'
-                        }`}
-                      >
-                        {isDone ? <Check className="w-4 h-4" /> : step.step_number}
-                      </div>
-
-                      <div className="flex-1 text-sm">
-                        <div className="flex items-center justify-between">
-                          <span className="font-medium text-surface-200">
-                            ステップ {step.step_number}: {step.approver_role || '承認担当'}
-                          </span>
-                          {step.action_at && (
-                            <span className="text-xs text-surface-500">
-                              {new Date(step.action_at).toLocaleString('ja-JP')}
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="text-xs text-surface-400 mt-1">
-                          アクション: {step.action || (isCurrent ? '審査待ち' : '未着手')}
-                        </div>
-
-                        {step.comment && (
-                          <div className="mt-2 p-2.5 bg-surface-950 border border-surface-800/60 rounded text-xs text-surface-300">
-                            コメント: {step.comment}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
+            {/* 進捗プログレスバー */}
+            <div className="space-y-2">
+              <div className="flex justify-between text-xs text-surface-400">
+                <span>検収進捗率: <strong className="text-surface-200 font-mono">{completionRate}%</strong></span>
+                <span>
+                  受領済: <strong className="text-emerald-400 font-mono">{totalReceived}</strong> / 発注数: <span className="font-mono">{detail.quantity}</span>
+                  {remainingQty > 0 && <span className="text-amber-400 ml-2">(残: {remainingQty})</span>}
+                </span>
+              </div>
+              <div className="w-full bg-surface-950 rounded-full h-2.5 overflow-hidden border border-surface-800">
+                <div
+                  className={`h-full rounded-full transition-all duration-500 ${completionRate >= 100 ? 'bg-emerald-500' : 'bg-indigo-500'}`}
+                  style={{ width: `${completionRate}%` }}
+                />
               </div>
             </div>
-          )}
+
+            {/* 検収履歴テーブル */}
+            {detail.receipts && detail.receipts.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs text-surface-300">
+                  <thead className="bg-surface-950 text-surface-400 uppercase border-b border-surface-800">
+                    <tr>
+                      <th className="p-2.5">受領日</th>
+                      <th className="p-2.5 text-right">受領数量</th>
+                      <th className="p-2.5">受領担当</th>
+                      <th className="p-2.5">メモ</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-surface-800">
+                    {detail.receipts.map((rec: PurchaseReceipt) => (
+                      <tr key={rec.id} className="hover:bg-surface-850/50">
+                        <td className="p-2.5 font-mono">{rec.received_date}</td>
+                        <td className="p-2.5 text-right font-mono font-bold text-emerald-400">
+                          +{rec.received_quantity}
+                        </td>
+                        <td className="p-2.5 text-surface-300">{rec.received_by_name || '担当者'}</td>
+                        <td className="p-2.5 text-surface-400">{rec.notes || '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="p-6 text-center text-xs text-surface-500 bg-surface-950/50 border border-surface-800/40 rounded-lg">
+                検収記録はまだ登録されていません。納品物受領後に検収を記録してください。
+              </div>
+            )}
+          </div>
+
+          {/* 紐付け仕入請求書カード (P2-T3) */}
+          <div className="bg-surface-900 border border-surface-800 rounded-xl p-6 shadow-sm space-y-4">
+            <div className="flex items-center justify-between border-b border-surface-800 pb-3">
+              <h2 className="text-base font-semibold text-surface-100 flex items-center gap-2">
+                <FileText className="w-4 h-4 text-indigo-400" />
+                紐付け仕入請求書 (買掛金)
+              </h2>
+              {detail.status === 'active' && (
+                <button
+                  onClick={handleOpenLinkModal}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-indigo-400 bg-indigo-950/50 hover:bg-indigo-900/60 border border-indigo-800/60 rounded-md transition-colors"
+                >
+                  <Link2 className="w-3.5 h-3.5" />
+                  請求書を紐付け
+                </button>
+              )}
+            </div>
+
+            {detail.linked_vendor_bills && detail.linked_vendor_bills.length > 0 ? (
+              <div className="space-y-3">
+                {detail.linked_vendor_bills.map((bill: LinkedVendorBill) => (
+                  <div
+                    key={bill.id}
+                    className="p-3.5 bg-surface-950 border border-surface-800 rounded-lg flex items-center justify-between text-xs"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono font-semibold text-indigo-400">{bill.bill_no}</span>
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-surface-800 text-surface-300">
+                          {bill.status}
+                        </span>
+                      </div>
+                      <div className="text-surface-400">
+                        請求日: {bill.bill_date} / 支払期日: {bill.due_date}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <div className="text-right">
+                        <span className="text-[10px] text-surface-500 block">請求額</span>
+                        <span className="font-mono font-bold text-surface-100 text-sm">
+                          ¥{Number(bill.total_amount).toLocaleString()}
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => handleUnlinkBill(bill.id)}
+                        className="p-1.5 text-surface-500 hover:text-rose-400 hover:bg-rose-950/30 rounded transition-colors"
+                        title="紐付け解除"
+                      >
+                        <Unlink className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="p-6 text-center text-xs text-surface-500 bg-surface-950/50 border border-surface-800/40 rounded-lg">
+                紐付けられた仕入請求書はありません。
+              </div>
+            )}
+          </div>
         </div>
 
         {/* 右側1カラム: メタ情報 */}
@@ -407,6 +601,153 @@ export function PurchaseRequestDetailPage() {
           </div>
         </div>
       </div>
+
+      {/* 検収登録モーダル */}
+      {showReceiptModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-surface-900 border border-surface-800 rounded-xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-surface-800 pb-3">
+              <h3 className="text-base font-bold text-surface-100 flex items-center gap-2">
+                <Receipt className="w-5 h-5 text-emerald-400" />
+                検収・納品受領の記録
+              </h3>
+              <button
+                onClick={() => setShowReceiptModal(false)}
+                className="text-surface-400 hover:text-surface-200"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmitReceipt} className="space-y-4 text-sm">
+              <div>
+                <label className="block text-xs font-medium text-surface-300 mb-1">
+                  受領日 <span className="text-rose-400">*</span>
+                </label>
+                <input
+                  type="date"
+                  required
+                  value={receiptDate}
+                  onChange={(e) => setReceiptDate(e.target.value)}
+                  className="w-full bg-surface-950 border border-surface-800 rounded-lg px-3 py-2 text-surface-100 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-surface-300 mb-1">
+                  受領数量 <span className="text-rose-400">*</span>
+                  <span className="text-xs text-surface-500 ml-2">(残数量: {remainingQty})</span>
+                </label>
+                <input
+                  type="number"
+                  min="0.01"
+                  max={remainingQty}
+                  step="any"
+                  required
+                  value={receiptQuantity}
+                  onChange={(e) => setReceiptQuantity(Number(e.target.value))}
+                  className="w-full bg-surface-950 border border-surface-800 rounded-lg px-3 py-2 text-surface-100 font-mono focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-surface-300 mb-1">
+                  検収メモ / 備考
+                </label>
+                <textarea
+                  rows={3}
+                  value={receiptNotes}
+                  onChange={(e) => setReceiptNotes(e.target.value)}
+                  placeholder="分納第1回受領、外装破損なし確認 等"
+                  className="w-full bg-surface-950 border border-surface-800 rounded-lg px-3 py-2 text-surface-100 placeholder:text-surface-600 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowReceiptModal(false)}
+                  className="px-4 py-2 bg-surface-800 hover:bg-surface-700 text-surface-300 rounded-lg transition-colors"
+                >
+                  キャンセル
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingReceipt}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-medium rounded-lg transition-colors disabled:opacity-50"
+                >
+                  {savingReceipt ? '保存中...' : '登録する'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 請求書紐付けモーダル */}
+      {showLinkModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-surface-900 border border-surface-800 rounded-xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-surface-800 pb-3">
+              <h3 className="text-base font-bold text-surface-100 flex items-center gap-2">
+                <Link2 className="w-5 h-5 text-indigo-400" />
+                仕入請求書の紐付け
+              </h3>
+              <button
+                onClick={() => setShowLinkModal(false)}
+                className="text-surface-400 hover:text-surface-200"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmitLink} className="space-y-4 text-sm">
+              {loadingBills ? (
+                <div className="p-8 text-center text-surface-400">仕入請求書を読み込み中...</div>
+              ) : availableBills.length === 0 ? (
+                <div className="p-6 text-center text-surface-500 bg-surface-950 rounded-lg">
+                  紐付け可能な仕入請求書が見つかりませんでした。
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-xs font-medium text-surface-300 mb-2">
+                    紐付ける仕入請求書を選択
+                  </label>
+                  <select
+                    value={selectedBillId}
+                    onChange={(e) => setSelectedBillId(e.target.value)}
+                    className="w-full bg-surface-950 border border-surface-800 rounded-lg px-3 py-2 text-surface-100 focus:outline-none focus:border-indigo-500 font-mono"
+                  >
+                    {availableBills.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.bill_no} (¥{Number(b.total_amount).toLocaleString()}) - 期日: {b.due_date}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowLinkModal(false)}
+                  className="px-4 py-2 bg-surface-800 hover:bg-surface-700 text-surface-300 rounded-lg transition-colors"
+                >
+                  キャンセル
+                </button>
+                <button
+                  type="submit"
+                  disabled={linkingBill || availableBills.length === 0}
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-medium rounded-lg transition-colors disabled:opacity-50"
+                >
+                  {linkingBill ? '紐付け中...' : '紐付ける'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+

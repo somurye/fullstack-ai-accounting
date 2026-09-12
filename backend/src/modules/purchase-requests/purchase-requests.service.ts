@@ -8,16 +8,22 @@ import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import {
   mapPurchaseRequestRow,
   getSqlPurchaseRequestColumns,
+  mapPurchaseReceiptRow,
   type PurchaseRequestApprovalHistoryEntryDto,
   type PurchaseRequestAttachmentDto,
   type PurchaseRequestDetailDto,
   type PurchaseRequestDto,
   type PurchaseRequestRow,
+  type PurchaseReceiptDto,
+  type PurchaseReceiptRow,
+  type LinkedVendorBillDto,
 } from './purchase-requests.mapper';
 import type {
   CreatePurchaseRequestInput,
   PurchaseRequestListQuery,
   UpdatePurchaseRequestInput,
+  CreatePurchaseReceiptInput,
+  LinkVendorBillInput,
 } from './dto/purchase-request.schemas';
 
 export interface PurchaseRequestListResult {
@@ -57,6 +63,33 @@ export class PurchaseRequestsService {
          WHERE attrelid = 'purchase_requests'::regclass
            AND attname = 'supplier_id'
            AND NOT attisdropped
+       ) AS exists`,
+    );
+    return Boolean(res.rows[0]?.exists);
+  }
+
+  private async hasPurchaseReceiptsTable(client: PoolClient): Promise<boolean> {
+    if (process.env.NODE_ENV === 'test') {
+      return true;
+    }
+    const res = await client.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.tables
+         WHERE table_name = 'purchase_receipts'
+       ) AS exists`,
+    );
+    return Boolean(res.rows[0]?.exists);
+  }
+
+  private async hasVendorBillPurchaseRequestId(client: PoolClient): Promise<boolean> {
+    if (process.env.NODE_ENV === 'test') {
+      return true;
+    }
+    const res = await client.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.columns
+         WHERE table_name = 'vendor_bills'
+           AND column_name = 'purchase_request_id'
        ) AS exists`,
     );
     return Boolean(res.rows[0]?.exists);
@@ -231,10 +264,78 @@ export class PurchaseRequestsService {
         acted_at: r.acted_at instanceof Date ? r.acted_at.toISOString() : String(r.acted_at),
       }));
 
+      // 検収記録の取得
+      let receipts: PurchaseReceiptDto[] = [];
+      const hasReceipts = await this.hasPurchaseReceiptsTable(client);
+      if (hasReceipts) {
+        const receiptRows = await client.query<PurchaseReceiptRow>(
+          `SELECT
+             prc.id,
+             prc.tenant_id,
+             prc.purchase_request_id,
+             prc.received_quantity,
+             TO_CHAR(prc.received_date, 'YYYY-MM-DD') AS received_date,
+             prc.notes,
+             prc.received_by,
+             u.name AS received_by_name,
+             prc.created_at
+           FROM purchase_receipts prc
+           LEFT JOIN users u ON u.id = prc.received_by
+           WHERE prc.tenant_id = $1 AND prc.purchase_request_id = $2
+           ORDER BY prc.created_at ASC`,
+          [tenantId, id],
+        );
+        receipts = receiptRows.rows.map(mapPurchaseReceiptRow);
+      }
+
+      const totalReceivedQuantity = receipts.reduce((sum, r) => sum + r.received_quantity, 0);
+      const remainingQuantity = Math.max(0, Math.round((base.quantity - totalReceivedQuantity) * 100) / 100);
+
+      // 紐付けられた仕入請求書の取得
+      let linkedVendorBills: LinkedVendorBillDto[] = [];
+      const hasVbPrId = await this.hasVendorBillPurchaseRequestId(client);
+      if (hasVbPrId) {
+        const vbRes = await client.query<{
+          id: string;
+          bill_no: string;
+          vendor_id: string;
+          bill_date: string;
+          due_date: string;
+          status: string;
+          total_amount: string | number;
+        }>(
+          `SELECT
+             id,
+             bill_no,
+             vendor_id,
+             TO_CHAR(bill_date, 'YYYY-MM-DD') AS bill_date,
+             TO_CHAR(due_date, 'YYYY-MM-DD') AS due_date,
+             status,
+             total_amount
+           FROM vendor_bills
+           WHERE tenant_id = $1 AND purchase_request_id = $2
+           ORDER BY created_at DESC`,
+          [tenantId, id],
+        );
+        linkedVendorBills = vbRes.rows.map((r) => ({
+          id: r.id,
+          bill_no: r.bill_no,
+          vendor_id: r.vendor_id,
+          bill_date: r.bill_date,
+          due_date: r.due_date,
+          status: r.status,
+          total_amount: Number(r.total_amount),
+        }));
+      }
+
       return {
         ...base,
         attachment,
         approval_history: approvalHistory,
+        receipts,
+        total_received_quantity: totalReceivedQuantity,
+        remaining_quantity: remainingQuantity,
+        linked_vendor_bills: linkedVendorBills,
       };
     });
   }
@@ -724,6 +825,190 @@ export class PurchaseRequestsService {
       });
 
       return terminated;
+    });
+  }
+
+  /**
+   * 発注申請に対する検収記録の追加 (Phase 2: P2-T3)
+   */
+  async addReceipt(
+    tenantId: string,
+    userId: string,
+    purchaseRequestId: string,
+    dto: CreatePurchaseReceiptInput,
+  ): Promise<PurchaseReceiptDto> {
+    return this.db.transaction(tenantId, userId, async (client) => {
+      await this.assertUserPermission(client, tenantId, userId, 'purchase_request.receive');
+
+      const existing = await client.query<{ status: string; quantity: string }>(
+        `SELECT status, quantity FROM purchase_requests WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, purchaseRequestId],
+      );
+      if (existing.rowCount === 0) {
+        throw AppException.notFound('指定された発注申請が見つかりません');
+      }
+      const current = existing.rows[0];
+      if (current.status !== 'active') {
+        throw AppException.badRequest(
+          `承認済み(active)の発注申請に対してのみ検収記録を追加できます (現在: ${current.status})`,
+        );
+      }
+
+      // DB INSERT (DBトリガー側で advisory lock + テナント整合性 + 数量超過検証 + ステータス検証を実行)
+      const res = await client.query<PurchaseReceiptRow>(
+        `INSERT INTO purchase_receipts (
+           tenant_id, purchase_request_id, received_quantity, received_date, notes, received_by
+         ) VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING
+           id, tenant_id, purchase_request_id, received_quantity,
+           TO_CHAR(received_date, 'YYYY-MM-DD') AS received_date,
+           notes, received_by, created_at`,
+        [tenantId, purchaseRequestId, dto.received_quantity, dto.received_date, dto.notes ?? null, userId],
+      );
+
+      const receipt = mapPurchaseReceiptRow(res.rows[0]);
+
+      await this.auditLogs.record(client, tenantId, {
+        actorUserId: userId,
+        action: 'purchase_request.receipt_added',
+        targetType: 'purchase_request',
+        targetId: purchaseRequestId,
+        afterData: { receipt_id: receipt.id, received_quantity: receipt.received_quantity, received_date: receipt.received_date },
+      });
+
+      return receipt;
+    });
+  }
+
+  /**
+   * 発注申請の検収記録一覧取得
+   */
+  async listReceipts(
+    tenantId: string,
+    userId: string | null,
+    purchaseRequestId: string,
+  ): Promise<PurchaseReceiptDto[]> {
+    return this.db.transaction(tenantId, userId, async (client) => {
+      await this.assertUserPermission(client, tenantId, userId, 'purchase_request.view');
+
+      const existing = await client.query(
+        `SELECT 1 FROM purchase_requests WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, purchaseRequestId],
+      );
+      if (existing.rowCount === 0) {
+        throw AppException.notFound('指定された発注申請が見つかりません');
+      }
+
+      const receiptRows = await client.query<PurchaseReceiptRow>(
+        `SELECT
+           prc.id,
+           prc.tenant_id,
+           prc.purchase_request_id,
+           prc.received_quantity,
+           TO_CHAR(prc.received_date, 'YYYY-MM-DD') AS received_date,
+           prc.notes,
+           prc.received_by,
+           u.name AS received_by_name,
+           prc.created_at
+         FROM purchase_receipts prc
+         LEFT JOIN users u ON u.id = prc.received_by
+         WHERE prc.tenant_id = $1 AND prc.purchase_request_id = $2
+         ORDER BY prc.created_at ASC`,
+        [tenantId, purchaseRequestId],
+      );
+
+      return receiptRows.rows.map(mapPurchaseReceiptRow);
+    });
+  }
+
+  /**
+   * 仕入請求書 (vendor_bills) と発注申請の紐付け
+   */
+  async linkVendorBill(
+    tenantId: string,
+    userId: string,
+    purchaseRequestId: string,
+    dto: LinkVendorBillInput,
+  ): Promise<void> {
+    return this.db.transaction(tenantId, userId, async (client) => {
+      await this.assertUserPermission(client, tenantId, userId, 'purchase_request.link_bill');
+
+      const prRes = await client.query<{ status: string }>(
+        `SELECT status FROM purchase_requests WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, purchaseRequestId],
+      );
+      if (prRes.rowCount === 0) {
+        throw AppException.notFound('指定された発注申請が見つかりません');
+      }
+      if (prRes.rows[0].status !== 'active') {
+        throw AppException.badRequest(
+          `承認済み(active)の発注申請に対してのみ仕入請求書を紐付けできます (現在: ${prRes.rows[0].status})`,
+        );
+      }
+
+      const vbRes = await client.query<{ id: string; purchase_request_id: string | null }>(
+        `SELECT id, purchase_request_id FROM vendor_bills WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, dto.vendor_bill_id],
+      );
+      if (vbRes.rowCount === 0) {
+        throw AppException.notFound('指定された仕入請求書が見つかりません');
+      }
+
+      // vendor_bills の purchase_request_id を更新 (DBトリガーでテナント整合性を検証)
+      await client.query(
+        `UPDATE vendor_bills
+         SET purchase_request_id = $1, updated_at = now()
+         WHERE tenant_id = $2 AND id = $3`,
+        [purchaseRequestId, tenantId, dto.vendor_bill_id],
+      );
+
+      await this.auditLogs.record(client, tenantId, {
+        actorUserId: userId,
+        action: 'purchase_request.bill_linked',
+        targetType: 'purchase_request',
+        targetId: purchaseRequestId,
+        beforeData: { vendor_bill_id: dto.vendor_bill_id, previous_pr_id: vbRes.rows[0].purchase_request_id },
+        afterData: { vendor_bill_id: dto.vendor_bill_id, linked_pr_id: purchaseRequestId },
+      });
+    });
+  }
+
+  /**
+   * 仕入請求書 (vendor_bills) と発注申請の紐付け解除
+   */
+  async unlinkVendorBill(
+    tenantId: string,
+    userId: string,
+    purchaseRequestId: string,
+    vendorBillId: string,
+  ): Promise<void> {
+    return this.db.transaction(tenantId, userId, async (client) => {
+      await this.assertUserPermission(client, tenantId, userId, 'purchase_request.link_bill');
+
+      const vbRes = await client.query<{ id: string }>(
+        `SELECT id FROM vendor_bills
+         WHERE tenant_id = $1 AND id = $2 AND purchase_request_id = $3`,
+        [tenantId, vendorBillId, purchaseRequestId],
+      );
+      if (vbRes.rowCount === 0) {
+        throw AppException.notFound('指定された発注申請に紐付く仕入請求書が見つかりません');
+      }
+
+      await client.query(
+        `UPDATE vendor_bills
+         SET purchase_request_id = NULL, updated_at = now()
+         WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, vendorBillId],
+      );
+
+      await this.auditLogs.record(client, tenantId, {
+        actorUserId: userId,
+        action: 'purchase_request.bill_unlinked',
+        targetType: 'purchase_request',
+        targetId: purchaseRequestId,
+        beforeData: { vendor_bill_id: vendorBillId, purchase_request_id: purchaseRequestId },
+        afterData: { vendor_bill_id: vendorBillId, purchase_request_id: null },
+      });
     });
   }
 }

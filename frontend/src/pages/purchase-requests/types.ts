@@ -6,6 +6,34 @@ export type CreatePurchaseRequestInput = components['schemas']['CreatePurchaseRe
 export type UpdatePurchaseRequestInput = components['schemas']['UpdatePurchaseRequestInput'];
 export type PurchaseRequestStatus = components['schemas']['PurchaseRequestStatus'];
 
+export interface PurchaseReceipt {
+  id: string;
+  purchase_request_id: string;
+  received_quantity: number;
+  received_date: string;
+  notes: string | null;
+  received_by: string;
+  received_by_name?: string;
+  created_at: string;
+}
+
+export interface LinkedVendorBill {
+  id: string;
+  bill_no: string;
+  vendor_id: string;
+  bill_date: string;
+  due_date: string;
+  status: string;
+  total_amount: number;
+}
+
+export interface ExtendedPurchaseRequestDetail extends PurchaseRequestDetail {
+  receipts?: PurchaseReceipt[];
+  total_received_quantity?: number;
+  remaining_quantity?: number;
+  linked_vendor_bills?: LinkedVendorBill[];
+}
+
 export const STATUS_LABELS: Record<
   PurchaseRequestStatus,
   { label: string; bg: string; text: string; border: string }

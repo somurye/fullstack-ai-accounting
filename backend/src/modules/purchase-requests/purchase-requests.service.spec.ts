@@ -103,7 +103,35 @@ describe('PurchaseRequestsService', () => {
               acted_at: new Date('2026-09-12T12:00:00Z'),
             },
           ],
-        }); // approval history
+        }) // approval history
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              id: 'rec-1',
+              tenant_id: TENANT_ID,
+              purchase_request_id: REQUEST_ID,
+              received_quantity: '1.00',
+              received_date: '2026-09-13',
+              notes: '納品完了',
+              received_by: USER_ID,
+              received_by_name: '検収者 山田',
+              created_at: new Date('2026-09-13T10:00:00Z'),
+            },
+          ],
+        }) // receipts
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              id: 'bill-1',
+              bill_no: 'BILL-2026-0001',
+              vendor_id: '55555555-5555-5555-5555-555555555555',
+              bill_date: '2026-09-14',
+              due_date: '2026-10-31',
+              status: 'pending_approval',
+              total_amount: '900000.00',
+            },
+          ],
+        }); // linked vendor bills
 
       const result = await service.getById(TENANT_ID, USER_ID, REQUEST_ID);
 
@@ -112,6 +140,12 @@ describe('PurchaseRequestsService', () => {
       expect(result.attachment?.file_name).toBe('quote_server.pdf');
       expect(result.approval_history).toHaveLength(1);
       expect(result.approval_history[0].approver_name).toBe('承認者 田中');
+      expect(result.receipts).toHaveLength(1);
+      expect(result.receipts[0].received_quantity).toBe(1);
+      expect(result.total_received_quantity).toBe(1);
+      expect(result.remaining_quantity).toBe(1); // 2 - 1 = 1
+      expect(result.linked_vendor_bills).toHaveLength(1);
+      expect(result.linked_vendor_bills[0].bill_no).toBe('BILL-2026-0001');
     });
 
     it('存在しないIDの場合 NotFound 例外を投げる', async () => {
@@ -387,6 +421,110 @@ describe('PurchaseRequestsService', () => {
       await expect(service.terminate(TENANT_ID, USER_ID, REQUEST_ID)).rejects.toThrow(
         AppException,
       );
+    });
+  });
+
+  describe('addReceipt', () => {
+    it('active状態の発注申請に検収記録を正常に追加できる', async () => {
+      mockClient.query
+        .mockResolvedValueOnce({ rowCount: 1 }) // assertUserPermission
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ status: 'active', quantity: '2.00' }],
+        }) // select existing
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              id: 'rec-1',
+              tenant_id: TENANT_ID,
+              purchase_request_id: REQUEST_ID,
+              received_quantity: '2.00',
+              received_date: '2026-09-15',
+              notes: '全量受領完了',
+              received_by: USER_ID,
+              created_at: new Date('2026-09-15T10:00:00Z'),
+            },
+          ],
+        }); // insert returning
+
+      const result = await service.addReceipt(TENANT_ID, USER_ID, REQUEST_ID, {
+        received_quantity: 2,
+        received_date: '2026-09-15',
+        notes: '全量受領完了',
+      });
+
+      expect(result.id).toBe('rec-1');
+      expect(result.received_quantity).toBe(2);
+      expect(mockAuditLogs.record).toHaveBeenCalledWith(
+        mockClient,
+        TENANT_ID,
+        expect.objectContaining({
+          action: 'purchase_request.receipt_added',
+          targetType: 'purchase_request',
+          targetId: REQUEST_ID,
+        }),
+      );
+    });
+
+    it('draft状態の発注申請に検収記録を追加しようとすると BadRequest 例外を投げる', async () => {
+      mockClient.query
+        .mockResolvedValueOnce({ rowCount: 1 }) // assertUserPermission
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ status: 'draft', quantity: '2.00' }],
+        });
+
+      await expect(
+        service.addReceipt(TENANT_ID, USER_ID, REQUEST_ID, {
+          received_quantity: 1,
+          received_date: '2026-09-15',
+        }),
+      ).rejects.toThrow(AppException);
+    });
+  });
+
+  describe('linkVendorBill', () => {
+    it('active状態の発注申請に仕入請求書を正常に紐付けできる', async () => {
+      mockClient.query
+        .mockResolvedValueOnce({ rowCount: 1 }) // assertUserPermission
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ status: 'active' }],
+        }) // select PR
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ id: 'bill-1', purchase_request_id: null }],
+        }) // select VB
+        .mockResolvedValueOnce({ rowCount: 1 }); // update VB
+
+      await service.linkVendorBill(TENANT_ID, USER_ID, REQUEST_ID, {
+        vendor_bill_id: '55555555-5555-5555-5555-555555555555',
+      });
+
+      expect(mockAuditLogs.record).toHaveBeenCalledWith(
+        mockClient,
+        TENANT_ID,
+        expect.objectContaining({
+          action: 'purchase_request.bill_linked',
+          targetType: 'purchase_request',
+          targetId: REQUEST_ID,
+        }),
+      );
+    });
+
+    it('draft状態の発注申請に請求書を紐付けようとすると BadRequest 例外を投げる', async () => {
+      mockClient.query
+        .mockResolvedValueOnce({ rowCount: 1 }) // assertUserPermission
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ status: 'draft' }],
+        });
+
+      await expect(
+        service.linkVendorBill(TENANT_ID, USER_ID, REQUEST_ID, {
+          vendor_bill_id: '55555555-5555-5555-5555-555555555555',
+        }),
+      ).rejects.toThrow(AppException);
     });
   });
 });

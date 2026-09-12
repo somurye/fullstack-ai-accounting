@@ -39,9 +39,35 @@ export interface PurchaseRequestDto {
   updated_at: string;
 }
 
+export interface PurchaseReceiptDto {
+  id: string;
+  tenant_id: string;
+  purchase_request_id: string;
+  received_quantity: number;
+  received_date: string;
+  notes: string | null;
+  received_by: string;
+  received_by_name?: string;
+  created_at: string;
+}
+
+export interface LinkedVendorBillDto {
+  id: string;
+  bill_no: string;
+  vendor_id: string;
+  bill_date: string;
+  due_date: string;
+  status: string;
+  total_amount: number;
+}
+
 export interface PurchaseRequestDetailDto extends PurchaseRequestDto {
   attachment: PurchaseRequestAttachmentDto | null;
   approval_history: PurchaseRequestApprovalHistoryEntryDto[];
+  receipts: PurchaseReceiptDto[];
+  total_received_quantity: number;
+  remaining_quantity: number;
+  linked_vendor_bills: LinkedVendorBillDto[];
 }
 
 export interface PurchaseRequestRow {
@@ -113,5 +139,31 @@ export function mapPurchaseRequestRow(row: PurchaseRequestRow): PurchaseRequestD
     created_by: row.created_by,
     created_at: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
     updated_at: row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at),
+  };
+}
+
+export interface PurchaseReceiptRow {
+  id: string;
+  tenant_id: string;
+  purchase_request_id: string;
+  received_quantity: string | number;
+  received_date: string;
+  notes: string | null;
+  received_by: string;
+  received_by_name?: string;
+  created_at: Date | string;
+}
+
+export function mapPurchaseReceiptRow(row: PurchaseReceiptRow): PurchaseReceiptDto {
+  return {
+    id: row.id,
+    tenant_id: row.tenant_id,
+    purchase_request_id: row.purchase_request_id,
+    received_quantity: Number(row.received_quantity),
+    received_date: typeof row.received_date === 'string' ? row.received_date.slice(0, 10) : String(row.received_date),
+    notes: row.notes,
+    received_by: row.received_by,
+    received_by_name: row.received_by_name,
+    created_at: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
   };
 }

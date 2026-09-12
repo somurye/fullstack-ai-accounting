@@ -22,6 +22,8 @@ import {
   createPurchaseRequestSchema,
   purchaseRequestListQuerySchema,
   updatePurchaseRequestSchema,
+  createPurchaseReceiptSchema,
+  linkVendorBillSchema,
 } from './dto/purchase-request.schemas';
 import { PurchaseRequestsService } from './purchase-requests.service';
 
@@ -109,6 +111,51 @@ export class PurchaseRequestsController {
     const id = parseWithZod(idParamSchema, idParam);
     const result = await this.service.terminate(tenantId, userId, id);
     return successEnvelope(result);
+  }
+
+  @Post(':id/receipts')
+  @RequirePermissions('purchase_request.receive')
+  async addReceipt(@Param('id') idParam: unknown, @Body() body: unknown) {
+    const tenantId = this.requireTenantId();
+    const userId = this.requireUserId();
+    const id = parseWithZod(idParamSchema, idParam);
+    const dto = parseWithZod(createPurchaseReceiptSchema, body);
+    const result = await this.service.addReceipt(tenantId, userId, id, dto);
+    return successEnvelope(result);
+  }
+
+  @Get(':id/receipts')
+  @RequirePermissions('purchase_request.view')
+  async listReceipts(@Param('id') idParam: unknown) {
+    const tenantId = this.requireTenantId();
+    const id = parseWithZod(idParamSchema, idParam);
+    const receipts = await this.service.listReceipts(tenantId, RequestContext.getUserId(), id);
+    return successEnvelope(receipts);
+  }
+
+  @Post(':id/link-bill')
+  @RequirePermissions('purchase_request.link_bill')
+  async linkVendorBill(@Param('id') idParam: unknown, @Body() body: unknown) {
+    const tenantId = this.requireTenantId();
+    const userId = this.requireUserId();
+    const id = parseWithZod(idParamSchema, idParam);
+    const dto = parseWithZod(linkVendorBillSchema, body);
+    await this.service.linkVendorBill(tenantId, userId, id, dto);
+    return successEnvelope({ success: true });
+  }
+
+  @Delete(':id/link-bill/:vendorBillId')
+  @HttpCode(204)
+  @RequirePermissions('purchase_request.link_bill')
+  async unlinkVendorBill(
+    @Param('id') idParam: unknown,
+    @Param('vendorBillId') vendorBillIdParam: unknown,
+  ) {
+    const tenantId = this.requireTenantId();
+    const userId = this.requireUserId();
+    const id = parseWithZod(idParamSchema, idParam);
+    const vendorBillId = parseWithZod(idParamSchema, vendorBillIdParam);
+    await this.service.unlinkVendorBill(tenantId, userId, id, vendorBillId);
   }
 
   private requireTenantId(): string {

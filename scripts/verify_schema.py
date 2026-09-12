@@ -1856,6 +1856,97 @@ def run_verification(dsn: str) -> int:
     r.ok("サプライヤーマスタE2E: RBAC二重防御・テナント整合性トリガー・名前不整合防止・フリーテキスト後方互換性・完全テナント分離が動作する (P2-T2)",
          sup_run.returncode == 0)
 
+    # ------------------------------------------------------------------------
+    # 16. 発注〜検収〜請求の連携 (P2-T3) の検証
+    # ------------------------------------------------------------------------
+    print("\n--- 16. 発注〜検収〜請求の連携 (P2-T3) の検証 ---")
+
+    # 16-1. 019_purchase_receipts_and_billing.sql を適用
+    file_019 = SQL_DIR / "019_purchase_receipts_and_billing.sql"
+    with open(file_019, encoding="utf-8") as f:
+        sql_019 = f.read()
+    conn = psycopg2.connect(dsn)
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql_019)
+    finally:
+        conn.close()
+    print("[schema] 019_purchase_receipts_and_billing.sql を適用しました")
+
+    # 16-2. purchase_receipts テーブル存在確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute(
+            """SELECT EXISTS (
+                   SELECT 1 FROM information_schema.tables
+                   WHERE table_name = 'purchase_receipts'
+               ) AS tbl_exists"""
+        )
+        tbl_receipts_exists = cur.fetchone()["tbl_exists"]
+    r.ok("purchase_receipts テーブルが正常に作成されている", tbl_receipts_exists)
+
+    # 16-3. purchase_receipts の数量正数CHECK制約確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute(
+            """SELECT conname FROM pg_constraint
+               WHERE conrelid = 'purchase_receipts'::regclass
+                 AND conname = 'chk_purchase_receipts_quantity_positive'"""
+        )
+        chk_rec_qty = cur.fetchone()
+    r.ok("purchase_receipts に数量正数CHECK制約 (chk_purchase_receipts_quantity_positive) が存在する", chk_rec_qty is not None)
+
+    # 16-4. purchase_receipts の RLS 有効化 & FORCE 確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute(
+            """SELECT relrowsecurity, relforcerowsecurity
+               FROM pg_class WHERE relname = 'purchase_receipts'"""
+        )
+        rls_rec = cur.fetchone()
+        cur.execute(
+            """SELECT policyname FROM pg_policies
+               WHERE tablename = 'purchase_receipts' AND policyname = 'tenant_isolation_purchase_receipts'"""
+        )
+        pol_rec = cur.fetchone()
+    r.ok("purchase_receipts で RLS が有効化かつ FORCE されている (バイパス不可)",
+         rls_rec is not None and rls_rec["relrowsecurity"] and rls_rec["relforcerowsecurity"])
+    r.ok("purchase_receipts に tenant_isolation ポリシーが適用されている", pol_rec is not None)
+
+    # 16-5. vendor_bills への purchase_request_id 列追加確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute(
+            """SELECT EXISTS (
+                   SELECT 1 FROM information_schema.columns
+                   WHERE table_name = 'vendor_bills' AND column_name = 'purchase_request_id'
+               ) AS col_exists"""
+        )
+        col_pr_id_exists = cur.fetchone()["col_exists"]
+    r.ok("vendor_bills に purchase_request_id 列が追加されている", col_pr_id_exists)
+
+    # 16-6. 冪等性保証: 019を2回連続適用してもエラーにならないこと
+    idempotent_019_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_019)
+        finally:
+            conn.close()
+    except Exception as e:
+        idempotent_019_ok = False
+        print(f"  [ERROR] 019 re-apply failed: {e}")
+    r.ok("段階的アップグレード検証 7: 019を2回連続適用してもエラーにならず正常終了する (ALTER TABLE / DDL 冪等性保証)",
+         idempotent_019_ok)
+
+    # 16-7. 【P2-T3実証】発注〜検収〜請求 実DB E2Eテスト
+    cmd_p2t3 = f"npx ts-node src/scripts/verify-purchase-receipts-billing-e2e.ts \"{dsn}\""
+    p2t3_run = subprocess.run(cmd_p2t3, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
+    if p2t3_run.returncode != 0:
+        err_msg = f"\n[P2-T3 E2E ERROR STDOUT]:\n{p2t3_run.stdout}\n[P2-T3 E2E ERROR STDERR]:\n{p2t3_run.stderr}"
+        print(err_msg.encode("cp932", errors="replace").decode("cp932"))
+    r.ok("発注〜検収〜請求E2E: 分納・状態一貫性・数量超過防止・Advisory Lock同時実行直列化・tenant整合性・請求紐付け・WORM・RBACが動作する (P2-T3)",
+         p2t3_run.returncode == 0)
+
     return r.summary()
 
 
@@ -1884,12 +1975,12 @@ def main() -> int:
 
         # 1. まず 001〜014 までを適用 (P1-T5マージ直後の既存DB状態を再現)
         apply_schema(dsn, max_file="014_general_requests.sql")
-        # 2. 検証実行 (セクション12で015段階適用、セクション13で016段階適用、セクション14で017段階適用、セクション15で018段階適用 -> E2E実行)
+        # 2. 検証実行 (セクション12で015、セクション13で016、セクション14で017、セクション15で018、セクション16で019段階適用 -> E2E実行)
         exit_code = run_verification(dsn)
 
-        # 3. クリーンDBに最初から001〜018を一括適用した場合の回帰なし確認
+        # 3. クリーンDBに最初から001〜019を一括適用した場合の回帰なし確認
         if exit_code == 0:
-            fresh_db_name = "keiri_kaikei_fresh_018"
+            fresh_db_name = "keiri_kaikei_fresh_019"
             conn_raw = psycopg2.connect(dsn)
             conn_raw.autocommit = True
             try:
@@ -1900,9 +1991,9 @@ def main() -> int:
                 conn_raw.close()
 
             dsn_fresh = dsn.rsplit("/", 1)[0] + f"/{fresh_db_name}"
-            print("\n--- クリーンDBへの001〜018一括適用検証 (新規環境回帰なし確認) ---")
+            print("\n--- クリーンDBへの001〜019一括適用検証 (新規環境回帰なし確認) ---")
             apply_schema(dsn_fresh)
-            print("[schema] クリーンDBへの001〜018一括適用が正常終了しました (回帰なし確認完了)")
+            print("[schema] クリーンDBへの001〜019一括適用が正常終了しました (回帰なし確認完了)")
     finally:
         if args.use_docker and not args.keep_docker:
             docker_stop()
@@ -1912,3 +2003,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
