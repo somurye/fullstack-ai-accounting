@@ -48,14 +48,16 @@ describe('AttendanceService', () => {
     it('出勤打刻が正常に記録される', async () => {
       // 1. assertUserPermission PASS
       mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{}] });
-      // 2. 従業員取得 (active)
+      // 2. isManager PASS (管理者ロール所持)
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{}] });
+      // 3. 従業員取得 (active)
       mockClient.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [{ id: 'emp-1', name: '山田 太郎', employee_no: 'EMP001' }],
       });
-      // 3. 既存レコードなし (0 rows)
+      // 4. 既存レコードなし (0 rows)
       mockClient.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
-      // 4. INSERT
+      // 5. INSERT
       const createdRow = {
         id: 'att-1',
         tenant_id: 'tenant-1',
@@ -91,15 +93,17 @@ describe('AttendanceService', () => {
       expect(mockAuditLogs.record).toHaveBeenCalled();
     });
 
-    it('退勤打刻時に労働時間区分が自動計算される', async () => {
+    it('退勤打刻時に労働時間区分が自動計算され、週次再計算が行われる', async () => {
       // 1. assertUserPermission PASS
       mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{}] });
-      // 2. 従業員取得 (active)
+      // 2. isManager PASS (管理者ロール所持)
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{}] });
+      // 3. 従業員取得 (active)
       mockClient.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [{ id: 'emp-1', name: '山田 太郎', employee_no: 'EMP001' }],
       });
-      // 3. 既存レコードあり (09:00出勤済み)
+      // 4. 既存レコードあり (09:00出勤済み)
       const existingRow = {
         id: 'att-1',
         tenant_id: 'tenant-1',
@@ -114,7 +118,7 @@ describe('AttendanceService', () => {
         rowCount: 1,
         rows: [existingRow],
       });
-      // 4. UPDATE (18:30退勤 -> 拘束9.5h, 休憩1h, 実働8.5h -> 所定8h, 残業0.5h)
+      // 5. UPDATE (18:30退勤 -> 拘束9.5h, 休憩1h, 実働8.5h -> 所定8h, 残業0.5h)
       const updatedRow = {
         ...existingRow,
         clock_out: new Date(2026, 8, 13, 18, 30, 0),
@@ -124,6 +128,21 @@ describe('AttendanceService', () => {
         holiday_hours: '0.00',
         updated_at: new Date(),
       };
+      mockClient.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [updatedRow],
+      });
+      // 6. recalculateWeeklyWorkHours: 当該週のレコード取得
+      mockClient.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [updatedRow],
+      });
+      // 7. recalculateWeeklyWorkHours: UPDATE
+      mockClient.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [],
+      });
+      // 8. 再読み込み
       mockClient.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [updatedRow],
@@ -139,6 +158,26 @@ describe('AttendanceService', () => {
       expect(res.regular_hours).toBe(8.0);
       expect(res.overtime_hours).toBe(0.5);
       expect(mockAuditLogs.record).toHaveBeenCalled();
+    });
+
+    it('一般従業員が他人のemployee_idで打刻しようとすると403で拒否される', async () => {
+      // 1. assertUserPermission PASS
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{}] });
+      // 2. isManager FAIL (非管理者)
+      mockClient.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
+      // 3. 自身のemployee_id取得 (emp-self)
+      mockClient.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{ id: 'emp-self' }],
+      });
+
+      await expect(
+        service.clock('tenant-1', 'user-employee', {
+          employee_id: 'emp-other',
+          type: 'clock_in',
+          timestamp: '2026-09-13T09:00:00+09:00',
+        }),
+      ).rejects.toThrow(AppException);
     });
   });
 });

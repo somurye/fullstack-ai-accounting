@@ -15,11 +15,42 @@ import {
   type AttendanceRecordDto,
   type AttendanceRecordRow,
 } from './attendance.mapper';
-import { calculateWorkingHours } from './utils/work-hours-calculator';
+import {
+  calculateWorkingHours,
+  calculateWeeklyWorkHours,
+  type DailyWorkRecordForAggregation,
+} from './utils/work-hours-calculator';
 
 export interface AttendanceListResult {
   records: AttendanceRecordDto[];
   pagination: PaginationMeta;
+}
+
+function toDateString(d: string | Date): string {
+  if (d instanceof Date) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+  return String(d).split('T')[0]!;
+}
+
+/**
+ * 与えられた日付文字列（YYYY-MM-DD）が含まれる暦週（日曜日〜土曜日）の開始日と終了日を取得
+ */
+function getWeekRange(workDateStr: string): { weekStart: string; weekEnd: string } {
+  const parts = toDateString(workDateStr).split('-').map(Number);
+  const d = new Date(parts[0]!, parts[1]! - 1, parts[2]!);
+  const dayOfWeek = d.getDay(); // 0: 日曜, 1: 月曜, ..., 6: 土曜
+
+  const start = new Date(d);
+  start.setDate(d.getDate() - dayOfWeek);
+
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+
+  return { weekStart: toDateString(start), weekEnd: toDateString(end) };
 }
 
 @Injectable()
@@ -57,6 +88,103 @@ export class AttendanceService {
   }
 
   /**
+   * 操作者が管理者ロール（owner, payroll_admin, accounting_manager）を所持しているか判定
+   */
+  private async isManager(client: PoolClient, tenantId: string, userId: string | null): Promise<boolean> {
+    if (!userId) return false;
+    const managerCheck = await client.query(
+      `SELECT 1
+       FROM user_roles ur
+       JOIN roles r ON r.id = ur.role_id
+       WHERE ur.tenant_id = $1 AND ur.user_id = $2
+         AND r.code::text IN ('owner', 'payroll_admin', 'accounting_manager')
+       LIMIT 1`,
+      [tenantId, userId],
+    );
+    return (managerCheck.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * 操作者が管理者ロールか、または対象従業員本人であるかを検証 (DEBT-005 / object-level authorization)
+   * employeeロールのユーザーが同一テナント内の他人の勤怠データを不正操作・閲覧することを防止
+   */
+  private async assertEmployeeAccess(
+    client: PoolClient,
+    tenantId: string,
+    userId: string | null,
+    targetEmployeeId: string,
+  ): Promise<void> {
+    if (!userId) {
+      throw AppException.unauthorized('ユーザー認証が必要です');
+    }
+
+    // 1. 管理者ロール所持者はテナント内の任意の従業員を操作可能
+    if (await this.isManager(client, tenantId, userId)) {
+      return;
+    }
+
+    // 2. 非管理者の場合: 自身に紐づく employee レコードを取得して照合
+    const selfEmpRes = await client.query<{ id: string }>(
+      `SELECT id FROM employees WHERE tenant_id = $1 AND user_id = $2 AND status = 'active' LIMIT 1`,
+      [tenantId, userId],
+    );
+    const selfEmp = selfEmpRes.rows[0];
+
+    if (!selfEmp || selfEmp.id !== targetEmployeeId) {
+      throw AppException.forbidden('他人の勤怠データに対する操作・閲覧は許可されていません');
+    }
+  }
+
+  /**
+   * 当該週（日〜土）の勤怠レコードに対して週40時間超過を再計算し、DBの各レコードに反映 (労基法第32条第1項準拠)
+   */
+  private async recalculateWeeklyWorkHours(
+    client: PoolClient,
+    tenantId: string,
+    employeeId: string,
+    workDate: string,
+  ): Promise<void> {
+    const { weekStart, weekEnd } = getWeekRange(workDate);
+
+    // 当該週の退勤済みレコードを全件取得 (FOR UPDATE)
+    const recordsRes = await client.query<AttendanceRecordRow>(
+      `SELECT * FROM attendance_records
+       WHERE tenant_id = $1 AND employee_id = $2
+         AND work_date >= $3 AND work_date <= $4
+         AND clock_in IS NOT NULL AND clock_out IS NOT NULL
+       ORDER BY work_date ASC
+       FOR UPDATE`,
+      [tenantId, employeeId, weekStart, weekEnd],
+    );
+
+    if (recordsRes.rows.length === 0) {
+      return;
+    }
+
+    const dailyInputs: DailyWorkRecordForAggregation[] = recordsRes.rows.map((row) => ({
+      workDate: toDateString(row.work_date),
+      clockIn: row.clock_in,
+      clockOut: row.clock_out,
+      breakMinutes: row.break_minutes,
+      isHoliday: row.is_holiday,
+    }));
+
+    const weeklyResult = calculateWeeklyWorkHours(dailyInputs);
+
+    // 再計算された各日の regularHours, overtimeHours をDBに一括UPDATE
+    for (const dayRes of weeklyResult.records) {
+      await client.query(
+        `UPDATE attendance_records
+         SET regular_hours = $1,
+             overtime_hours = $2,
+             updated_at = now()
+         WHERE tenant_id = $3 AND employee_id = $4 AND work_date = $5`,
+        [dayRes.regularHours, dayRes.overtimeHours, tenantId, employeeId, dayRes.workDate],
+      );
+    }
+  }
+
+  /**
    * 打刻処理 (出勤 / 退勤)
    * 退勤時に労働時間区分（所定内・時間外・深夜・休日）を自動算出
    */
@@ -67,6 +195,7 @@ export class AttendanceService {
   ): Promise<AttendanceRecordDto> {
     return this.db.transaction(tenantId, userId, async (client) => {
       await this.assertUserPermission(client, tenantId, userId, 'attendance.create');
+      await this.assertEmployeeAccess(client, tenantId, userId, input.employee_id);
 
       const now = input.timestamp ? new Date(input.timestamp) : new Date();
       // YYYY-MM-DD 形式の日付を取得
@@ -223,7 +352,18 @@ export class AttendanceService {
           },
         });
 
-        return mapAttendanceRecordRow(updated);
+        // 週40時間を超える時間外を当該週のレコード群に反映
+        await this.recalculateWeeklyWorkHours(client, tenantId, input.employee_id, workDate);
+
+        const reloadedRes = await client.query<AttendanceRecordRow>(
+          `SELECT a.*, e.employee_no, e.name AS employee_name
+           FROM attendance_records a
+           JOIN employees e ON e.id = a.employee_id
+           WHERE a.id = $1`,
+          [updated.id],
+        );
+
+        return mapAttendanceRecordRow(reloadedRes.rows[0] ?? updated);
       }
     });
   }
@@ -238,6 +378,7 @@ export class AttendanceService {
   ): Promise<AttendanceRecordDto> {
     return this.db.transaction(tenantId, userId, async (client) => {
       await this.assertUserPermission(client, tenantId, userId, 'attendance.create');
+      await this.assertEmployeeAccess(client, tenantId, userId, input.employee_id);
 
       // 従業員確認
       const empRes = await client.query<{ id: string; name: string; employee_no: string }>(
@@ -305,6 +446,21 @@ export class AttendanceService {
         },
       });
 
+      // 退勤済みレコードの場合、週40時間を超える時間外を当該週のレコード群に反映
+      if (input.clock_in && input.clock_out) {
+        await this.recalculateWeeklyWorkHours(client, tenantId, input.employee_id, input.work_date);
+
+        const reloadedRes = await client.query<AttendanceRecordRow>(
+          `SELECT a.*, e.employee_no, e.name AS employee_name
+           FROM attendance_records a
+           JOIN employees e ON e.id = a.employee_id
+           WHERE a.id = $1`,
+          [created.id],
+        );
+
+        return mapAttendanceRecordRow(reloadedRes.rows[0] ?? created);
+      }
+
       return mapAttendanceRecordRow(created);
     });
   }
@@ -333,6 +489,8 @@ export class AttendanceService {
       if (!existing) {
         throw AppException.notFound('指定された勤怠記録が見つかりません');
       }
+
+      await this.assertEmployeeAccess(client, tenantId, userId, existing.employee_id);
 
       const clockIn = input.clock_in !== undefined ? input.clock_in : existing.clock_in;
       const clockOut = input.clock_out !== undefined ? input.clock_out : existing.clock_out;
@@ -406,6 +564,21 @@ export class AttendanceService {
         },
       });
 
+      // 退勤済みレコードの場合、週40時間を超える時間外を当該週のレコード群に反映
+      if (clockIn && clockOut) {
+        await this.recalculateWeeklyWorkHours(client, tenantId, existing.employee_id, toDateString(existing.work_date));
+
+        const reloadedRes = await client.query<AttendanceRecordRow>(
+          `SELECT a.*, e.employee_no, e.name AS employee_name
+           FROM attendance_records a
+           JOIN employees e ON e.id = a.employee_id
+           WHERE a.id = $1`,
+          [updated.id],
+        );
+
+        return mapAttendanceRecordRow(reloadedRes.rows[0] ?? updated);
+      }
+
       return mapAttendanceRecordRow(updated);
     });
   }
@@ -421,11 +594,29 @@ export class AttendanceService {
     return this.db.transaction(tenantId, userId, async (client) => {
       await this.assertUserPermission(client, tenantId, userId, 'attendance.view');
 
+      const isManager = await this.isManager(client, tenantId, userId);
+      let targetEmployeeId = query.employee_id;
+
+      if (!isManager) {
+        const selfEmpRes = await client.query<{ id: string }>(
+          `SELECT id FROM employees WHERE tenant_id = $1 AND user_id = $2 AND status = 'active' LIMIT 1`,
+          [tenantId, userId],
+        );
+        const selfEmp = selfEmpRes.rows[0];
+        if (!selfEmp) {
+          throw AppException.forbidden('有効な従業員プロファイルが紐づいていません');
+        }
+        if (targetEmployeeId && targetEmployeeId !== selfEmp.id) {
+          throw AppException.forbidden('他人の勤怠データに対する操作・閲覧は許可されていません');
+        }
+        targetEmployeeId = selfEmp.id;
+      }
+
       const conditions: string[] = ['a.tenant_id = $1'];
       const params: unknown[] = [tenantId];
 
-      if (query.employee_id) {
-        params.push(query.employee_id);
+      if (targetEmployeeId) {
+        params.push(targetEmployeeId);
         conditions.push(`a.employee_id = $${params.length}`);
       }
       if (query.start_date) {
@@ -490,6 +681,8 @@ export class AttendanceService {
       if (!row) {
         throw AppException.notFound('指定された勤怠記録が見つかりません');
       }
+
+      await this.assertEmployeeAccess(client, tenantId, userId, row.employee_id);
 
       return mapAttendanceRecordRow(row);
     });

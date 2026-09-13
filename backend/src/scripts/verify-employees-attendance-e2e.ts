@@ -81,6 +81,7 @@ async function run() {
 
     const empA1 = randomUUID();
     const empA2_inactive = randomUUID();
+    const empA3_other = randomUUID();
     const empB1 = randomUUID();
 
     const client = await pool.connect();
@@ -125,13 +126,14 @@ async function run() {
         [tenantA, userA_Owner, userA_Employee, tenantB, userB_Owner],
       );
 
-      // 従業員登録 (Tenant A: active 1名, inactive 1名)
+      // 従業員登録 (Tenant A: active 2名, inactive 1名)
       await client.query(
         `INSERT INTO employees (id, tenant_id, user_id, employee_no, name, hire_date, employment_type, status)
          VALUES
          ($1, $2, $3, 'EMP-A-001', '田中 太郎', '2026-04-01', 'full_time', 'active'),
-         ($4, $2, NULL, 'EMP-A-002', '佐藤 花子 (退職)', '2025-01-01', 'part_time', 'inactive')`,
-        [empA1, tenantA, userA_Employee, empA2_inactive],
+         ($4, $2, NULL, 'EMP-A-002', '佐藤 花子 (退職)', '2025-01-01', 'part_time', 'inactive'),
+         ($5, $2, NULL, 'EMP-A-003', '高橋 次郎 (同僚)', '2026-04-01', 'full_time', 'active')`,
+        [empA1, tenantA, userA_Employee, empA2_inactive, empA3_other],
       );
 
       // 従業員登録 (Tenant B: active 1名)
@@ -188,6 +190,111 @@ async function run() {
     }
     expect(clockBlocked).toBe(true);
     console.log('  [PASS] Service層: attendance.create 未保持ユーザーを403拒否 (二重防御)');
+
+    // --------------------------------------------------------------------------
+    // 2.1 Object-level Authorization 実DB検証 (BLOCKER-02対応)
+    // employeeロールのユーザーが他人のemployee_idを操作しようとすると5メソッド全てで403拒否されることを実証
+    // --------------------------------------------------------------------------
+    console.log('2.1 Object-level Authorization 実DB検証 (BLOCKER-02: 5メソッドの403拒否)...');
+
+    // (1) clock: employeeが他人のemployee_idで打刻試行 -> 403
+    let objClockBlocked = false;
+    try {
+      await attendanceService.clock(tenantA, userA_Employee, {
+        employee_id: empA3_other,
+        type: 'clock_in',
+        timestamp: '2026-09-01T09:00:00+09:00',
+      });
+    } catch (e: any) {
+      if (e instanceof AppException && e.getStatus() === 403) {
+        objClockBlocked = true;
+      }
+    }
+    expect(objClockBlocked).toBe(true);
+    console.log('  [PASS] Object-Auth 1/5: clock() - employeeロールによる他人打刻を403拒否');
+
+    // (2) createRecord: employeeが他人のemployee_idで勤怠作成試行 -> 403
+    let objCreateBlocked = false;
+    try {
+      await attendanceService.createRecord(tenantA, userA_Employee, {
+        employee_id: empA3_other,
+        work_date: '2026-09-01',
+        clock_in: '2026-09-01T09:00:00+09:00',
+        clock_out: '2026-09-01T18:00:00+09:00',
+      });
+    } catch (e: any) {
+      if (e instanceof AppException && e.getStatus() === 403) {
+        objCreateBlocked = true;
+      }
+    }
+    expect(objCreateBlocked).toBe(true);
+    console.log('  [PASS] Object-Auth 2/5: createRecord() - employeeロールによる他人勤怠作成を403拒否');
+
+    // 管理者(owner)により empA3_other の勤怠レコードを正常作成
+    const otherRecord = await attendanceService.createRecord(tenantA, userA_Owner, {
+      employee_id: empA3_other,
+      work_date: '2026-09-01',
+      clock_in: '2026-09-01T09:00:00+09:00',
+      clock_out: '2026-09-01T18:00:00+09:00',
+      break_minutes: 60,
+    });
+    expect(typeof otherRecord.id).toBe('string');
+
+    // (3) updateRecord: employeeが他人の勤怠レコードを更新試行 -> 403
+    let objUpdateBlocked = false;
+    try {
+      await attendanceService.updateRecord(tenantA, userA_Employee, otherRecord.id, {
+        note: '不正更新試行',
+      });
+    } catch (e: any) {
+      if (e instanceof AppException && e.getStatus() === 403) {
+        objUpdateBlocked = true;
+      }
+    }
+    expect(objUpdateBlocked).toBe(true);
+    console.log('  [PASS] Object-Auth 3/5: updateRecord() - employeeロールによる他人勤怠更新を403拒否');
+
+    // (4) getById: employeeが他人の勤怠レコードを取得試行 -> 403
+    let objGetByIdBlocked = false;
+    try {
+      await attendanceService.getById(tenantA, userA_Employee, otherRecord.id);
+    } catch (e: any) {
+      if (e instanceof AppException && e.getStatus() === 403) {
+        objGetByIdBlocked = true;
+      }
+    }
+    expect(objGetByIdBlocked).toBe(true);
+    console.log('  [PASS] Object-Auth 4/5: getById() - employeeロールによる他人勤怠詳細閲覧を403拒否');
+
+    // (5) list: employeeが他人のemployee_idを指定して一覧取得試行 -> 403
+    let objListBlocked = false;
+    try {
+      await attendanceService.list(tenantA, userA_Employee, {
+        employee_id: empA3_other,
+      });
+    } catch (e: any) {
+      if (e instanceof AppException && e.getStatus() === 403) {
+        objListBlocked = true;
+      }
+    }
+    expect(objListBlocked).toBe(true);
+    console.log('  [PASS] Object-Auth 5/5: list() - employeeロールによる他人employee_id一覧取得を403拒否');
+
+    // (補足検証) list: employeeがemployee_id未指定の場合、自身のレコードのみにスコープ強制限定されることを実証
+    const empSelfList = await attendanceService.list(tenantA, userA_Employee, {});
+    for (const r of empSelfList.records) {
+      expect(r.employee_id).toBe(empA1);
+    }
+    console.log('  [PASS] Object-Auth 補足: list() - employeeロール未指定時は自動的に自身の勤怠のみに限定');
+
+    // (補足検証) 管理者(owner)は他人の勤怠レコードを正常に閲覧・更新できることを実証
+    const ownerGetRes = await attendanceService.getById(tenantA, userA_Owner, otherRecord.id);
+    expect(ownerGetRes.employee_id).toBe(empA3_other);
+    const ownerUpdateRes = await attendanceService.updateRecord(tenantA, userA_Owner, otherRecord.id, {
+      note: '管理者による正当な更新',
+    });
+    expect(ownerUpdateRes.note).toBe('管理者による正当な更新');
+    console.log('  [PASS] 管理者ロール(owner): テナント内の全従業員の勤怠を正常に閲覧・更新可能であることを実証');
 
     // --------------------------------------------------------------------------
     // 3. テナント完全分離実証 (RLS + テナント境界)
@@ -366,6 +473,99 @@ async function run() {
     expect(weeklyCalc.totalOvertimeHours).toBe(8.0);
     expect(weeklyCalc.totalActualHours).toBe(48.0);
     console.log('  [PASS] 境界値7: 週40時間超過判定 (8h×6日=48h) -> 所定=40.00h, 週時間外=8.00h (労基法第32条完全準拠)');
+
+    // ケース8: 実運用フローにおける週40時間超過の実DB反映検証 (BLOCKER-01対応)
+    // 単体Calculatorではなく、AttendanceService.createRecord()を通した実運用フローで、
+    // 同一暦週(月〜土)に6日分(各8h=計48h)の勤怠を順次登録。
+    // 土曜日(6日目)の登録により、週40時間を超過した8hが時間外としてDBの当該レコードに保存され、
+    // 週集計としても所定40.00h、時間外8.00hとなることを実DBで検証。
+    console.log('  -> ケース8: 実運用フロー週40時間超過のDB保存値検証 (月〜土 6日分登録)...');
+    const flowDates = [
+      '2026-09-21', // 月
+      '2026-09-22', // 火
+      '2026-09-23', // 水
+      '2026-09-24', // 木
+      '2026-09-25', // 金
+      '2026-09-26', // 土 (週40h超過日)
+    ];
+
+    let lastRecord: any;
+    for (const d of flowDates) {
+      lastRecord = await attendanceService.createRecord(tenantA, userA_Owner, {
+        employee_id: empA1,
+        work_date: d,
+        clock_in: `${d}T09:00:00+09:00`,
+        clock_out: `${d}T18:00:00+09:00`,
+        break_minutes: 60, // 実働8.0h
+        is_holiday: false,
+      });
+    }
+
+    // 土曜日(6日目)の返却値検証: 当該日の所定は0h、8hすべてが週超過時間外となる
+    expect(lastRecord.work_date).toBe('2026-09-26');
+    expect(lastRecord.regular_hours).toBe(0.0);
+    expect(lastRecord.overtime_hours).toBe(8.0);
+
+    // 実DB(attendance_recordsテーブル)から直接SELECTして保存値を確認
+    const checkDbClient = await pool.connect();
+    try {
+      const dbRowsRes = await checkDbClient.query<{
+        work_date: string;
+        regular_hours: string;
+        overtime_hours: string;
+      }>(
+        `SELECT work_date::text, regular_hours::text, overtime_hours::text
+         FROM attendance_records
+         WHERE tenant_id = $1 AND employee_id = $2
+           AND work_date >= '2026-09-21' AND work_date <= '2026-09-26'
+         ORDER BY work_date ASC`,
+        [tenantA, empA1],
+      );
+
+      expect(dbRowsRes.rows.length).toBe(6);
+      // 月〜金: 所定8.00h, 時間外0.00h
+      for (let i = 0; i < 5; i++) {
+        expect(parseFloat(dbRowsRes.rows[i]!.regular_hours)).toBe(8.0);
+        expect(parseFloat(dbRowsRes.rows[i]!.overtime_hours)).toBe(0.0);
+      }
+      // 土: 所定0.00h, 時間外8.00h (DB保存値)
+      expect(parseFloat(dbRowsRes.rows[5]!.regular_hours)).toBe(0.0);
+      expect(parseFloat(dbRowsRes.rows[5]!.overtime_hours)).toBe(8.0);
+
+      // 週集計SUMクエリによる確認
+      const sumRes = await checkDbClient.query<{ reg_sum: string; ot_sum: string }>(
+        `SELECT SUM(regular_hours)::text as reg_sum, SUM(overtime_hours)::text as ot_sum
+         FROM attendance_records
+         WHERE tenant_id = $1 AND employee_id = $2
+           AND work_date >= '2026-09-21' AND work_date <= '2026-09-26'`,
+        [tenantA, empA1],
+      );
+      expect(parseFloat(sumRes.rows[0]!.reg_sum)).toBe(40.0);
+      expect(parseFloat(sumRes.rows[0]!.ot_sum)).toBe(8.0);
+
+      // (追加検証) updateRecord による週次自動再計算: 水曜日の勤務を1時間短縮(実働7h)に更新
+      // -> 週合計47hとなり、土曜日のDB保存値が自動的に所定1.00h、時間外7.00hに再計算されることを実証
+      const wedRecordRes = await checkDbClient.query<{ id: string }>(
+        `SELECT id FROM attendance_records WHERE tenant_id = $1 AND employee_id = $2 AND work_date = '2026-09-23'`,
+        [tenantA, empA1],
+      );
+      await attendanceService.updateRecord(tenantA, userA_Owner, wedRecordRes.rows[0]!.id, {
+        clock_out: '2026-09-23T17:00:00+09:00', // 1時間短縮 (実働7h)
+      });
+
+      // 土曜日のレコードを再確認
+      const satAfterUpdateRes = await checkDbClient.query<{ regular_hours: string; overtime_hours: string }>(
+        `SELECT regular_hours::text, overtime_hours::text
+         FROM attendance_records
+         WHERE tenant_id = $1 AND employee_id = $2 AND work_date = '2026-09-26'`,
+        [tenantA, empA1],
+      );
+      expect(parseFloat(satAfterUpdateRes.rows[0]!.regular_hours)).toBe(1.0);
+      expect(parseFloat(satAfterUpdateRes.rows[0]!.overtime_hours)).toBe(7.0);
+      console.log('  [PASS] 境界値8: 実運用フロー週40時間超過の実DB反映 & 更新時自動再計算 (所定40h/時間外8h -> 更新後所定40h/時間外7h) 完全一致');
+    } finally {
+      checkDbClient.release();
+    }
 
     // --------------------------------------------------------------------------
     // 6. EXPLAIN ANALYZE & インデックス適合性実証
