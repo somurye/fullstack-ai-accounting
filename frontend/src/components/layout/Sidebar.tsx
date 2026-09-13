@@ -2,6 +2,7 @@ import {
   BarChart3,
   BookOpen,
   Building2,
+  Clock,
   FileCheck,
   FileStack,
   FileText,
@@ -88,6 +89,13 @@ const NAV_GROUPS: NavGroup[] = [
       { label: '購買ダッシュボード', to: '/purchase-dashboard', icon: BarChart3 },
       { label: '発注申請', to: '/purchase-requests', icon: ShoppingCart },
       { label: 'サプライヤーマスタ', to: '/suppliers', icon: Building2 },
+    ],
+  },
+  {
+    title: '人事労務 (Phase 3)',
+    items: [
+      { label: '従業員マスタ', to: '/employees', icon: Users },
+      { label: '勤怠管理・打刻', to: '/attendance', icon: Clock },
     ],
   },
   {

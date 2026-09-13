@@ -2005,6 +2005,78 @@ def run_verification(dsn: str) -> int:
     r.ok("購買ダッシュボードE2E: テナント完全分離・二重RBAC認可・ステータス集計・サプライヤーランキング・検収待ち集計・月次推移が動作する (P2-T4)",
          p2t4_run.returncode == 0)
 
+    # --------------------------------------------------------------------------
+    # 18. 従業員マスタ・勤怠管理 (P3-T1) の検証
+    # --------------------------------------------------------------------------
+    print("\n--- 18. 従業員マスタ・勤怠管理 (P3-T1) の検証 ---")
+
+    # 18-1. 021_employees_and_attendance.sql を適用
+    file_021 = SQL_DIR / "021_employees_and_attendance.sql"
+    with open(file_021, encoding="utf-8") as f:
+        sql_021 = f.read()
+    conn = psycopg2.connect(dsn)
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql_021)
+    finally:
+        conn.close()
+    print("[schema] 021_employees_and_attendance.sql を適用しました")
+
+    # 18-2. employees テーブルの作成確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("SELECT to_regclass('employees') IS NOT NULL AS exists")
+        emp_tbl_exists = cur.fetchone()["exists"]
+    r.ok("employees テーブルが正常に作成されている", emp_tbl_exists)
+
+    # 18-3. employees テーブルの RLS 有効化確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'employees'")
+        row = cur.fetchone()
+        emp_rls_ok = row["relrowsecurity"] and row["relforcerowsecurity"]
+    r.ok("employees の RLS が有効かつ FORCE されている", emp_rls_ok)
+
+    # 18-4. attendance_records テーブルの作成確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("SELECT to_regclass('attendance_records') IS NOT NULL AS exists")
+        att_tbl_exists = cur.fetchone()["exists"]
+    r.ok("attendance_records テーブルが正常に作成されている", att_tbl_exists)
+
+    # 18-5. attendance_records テーブルの RLS 有効化確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'attendance_records'")
+        row = cur.fetchone()
+        att_rls_ok = row["relrowsecurity"] and row["relforcerowsecurity"]
+    r.ok("attendance_records の RLS が有効かつ FORCE されている", att_rls_ok)
+
+    # 18-6. 段階的アップグレード・冪等性検証 (021を2回連続適用してもエラーにならないこと)
+    idempotent_021_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_021)
+        finally:
+            conn.close()
+    except Exception as e:
+        idempotent_021_ok = False
+        print(f"  [ERROR] 021 re-apply failed: {e}")
+    r.ok("段階的アップグレード検証 9: 021を2回連続適用してもエラーにならず正常終了する (DDL 冪等性保証)",
+         idempotent_021_ok)
+
+    # 18-7. 【P3-T1実証】実DB E2Eテスト (RBAC、tenant分離、整合性トリガー、労働時間区分境界値実測)
+    cmd_p3t1 = f"npx ts-node src/scripts/verify-employees-attendance-e2e.ts \"{dsn}\""
+    p3t1_run = subprocess.run(cmd_p3t1, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
+    if p3t1_run.returncode != 0:
+        err_msg = f"\n[P3-T1 E2E ERROR STDOUT]:\n{p3t1_run.stdout}\n[P3-T1 E2E ERROR STDERR]:\n{p3t1_run.stderr}"
+        print(err_msg.encode("cp932", errors="replace").decode("cp932"))
+    else:
+        print("\n=== P3-T1 E2E 実測実行ログ ===")
+        print(p3t1_run.stdout)
+    r.ok("従業員マスタ・勤怠管理E2E: テナント完全分離・二重RBAC認可・DB整合性トリガー・労働時間区分境界値実測(8h/22h/深夜/休日)が動作する (P3-T1)",
+         p3t1_run.returncode == 0)
+
     return r.summary()
 
 
@@ -2036,9 +2108,9 @@ def main() -> int:
         # 2. 検証実行 (セクション12で015、セクション13で016、セクション14で017、セクション15で018、セクション16で019段階適用 -> E2E実行)
         exit_code = run_verification(dsn)
 
-        # 3. クリーンDBに最初から001〜020を一括適用した場合の回帰なし確認
+        # 3. クリーンDBに最初から001〜021を一括適用した場合の回帰なし確認
         if exit_code == 0:
-            fresh_db_name = "keiri_kaikei_fresh_020"
+            fresh_db_name = "keiri_kaikei_fresh_021"
             conn_raw = psycopg2.connect(dsn)
             conn_raw.autocommit = True
             try:
@@ -2049,9 +2121,9 @@ def main() -> int:
                 conn_raw.close()
 
             dsn_fresh = dsn.rsplit("/", 1)[0] + f"/{fresh_db_name}"
-            print("\n--- クリーンDBへの001〜020一括適用検証 (新規環境回帰なし確認) ---")
+            print("\n--- クリーンDBへの001〜021一括適用検証 (新規環境回帰なし確認) ---")
             apply_schema(dsn_fresh)
-            print("[schema] クリーンDBへの001〜020一括適用が正常終了しました (回帰なし確認完了)")
+            print("[schema] クリーンDBへの001〜021一括適用が正常終了しました (回帰なし確認完了)")
     finally:
         if args.use_docker and not args.keep_docker:
             docker_stop()
