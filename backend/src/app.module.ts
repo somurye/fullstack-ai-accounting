@@ -42,6 +42,8 @@ import { GeneralRequestsModule } from './modules/general-requests/general-reques
 import { PurchaseRequestsModule } from './modules/purchase-requests/purchase-requests.module';
 import { SuppliersModule } from './modules/suppliers/suppliers.module';
 import { PurchaseDashboardModule } from './modules/purchase-dashboard/purchase-dashboard.module';
+import { EmployeesModule } from './modules/employees/employees.module';
+import { AttendanceModule } from './modules/attendance/attendance.module';
 
 /**
  * AppModule
@@ -101,6 +103,8 @@ import { PurchaseDashboardModule } from './modules/purchase-dashboard/purchase-d
     PurchaseRequestsModule,
     SuppliersModule,
     PurchaseDashboardModule,
+    EmployeesModule,
+    AttendanceModule,
   ],
   controllers: [],
   providers: [

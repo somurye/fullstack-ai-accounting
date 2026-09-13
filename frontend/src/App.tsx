@@ -137,6 +137,12 @@ const PurchaseDashboardPage = lazy(() =>
 const SupplierListPage = lazy(() =>
   import('./pages/suppliers/SupplierListPage').then((m) => ({ default: m.SupplierListPage })),
 );
+const EmployeeListPage = lazy(() =>
+  import('./pages/employees/EmployeeListPage').then((m) => ({ default: m.EmployeeListPage })),
+);
+const AttendancePage = lazy(() =>
+  import('./pages/attendance/AttendancePage').then((m) => ({ default: m.AttendancePage })),
+);
 const SettingsPage = lazy(() => import('./pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
 const MobileExpenseApplyPage = lazy(() =>
   import('./pages/mobile/MobileExpenseApplyPage').then((m) => ({ default: m.MobileExpenseApplyPage })),
@@ -225,6 +231,8 @@ export default function App() {
             <Route path="/purchase-requests/:id/edit" element={<PurchaseRequestFormPage />} />
             <Route path="/purchase-dashboard" element={<PurchaseDashboardPage />} />
             <Route path="/suppliers" element={<SupplierListPage />} />
+            <Route path="/employees" element={<EmployeeListPage />} />
+            <Route path="/attendance" element={<AttendancePage />} />
             <Route path="/forbidden" element={<ForbiddenPage />} />
 
             {/* 職務分掌(SoD)RBAC: 財務諸表は ADMIN / ACCOUNTANT のみ */}
