@@ -131,6 +131,9 @@ const PurchaseRequestFormPage = lazy(() =>
 const PurchaseRequestDetailPage = lazy(() =>
   import('./pages/purchase-requests/PurchaseRequestDetailPage').then((m) => ({ default: m.PurchaseRequestDetailPage })),
 );
+const PurchaseDashboardPage = lazy(() =>
+  import('./pages/purchase-requests/PurchaseDashboardPage').then((m) => ({ default: m.PurchaseDashboardPage })),
+);
 const SupplierListPage = lazy(() =>
   import('./pages/suppliers/SupplierListPage').then((m) => ({ default: m.SupplierListPage })),
 );
@@ -220,6 +223,7 @@ export default function App() {
             <Route path="/purchase-requests/new" element={<PurchaseRequestFormPage />} />
             <Route path="/purchase-requests/:id" element={<PurchaseRequestDetailPage />} />
             <Route path="/purchase-requests/:id/edit" element={<PurchaseRequestFormPage />} />
+            <Route path="/purchase-dashboard" element={<PurchaseDashboardPage />} />
             <Route path="/suppliers" element={<SupplierListPage />} />
             <Route path="/forbidden" element={<ForbiddenPage />} />
 

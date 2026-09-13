@@ -69,3 +69,55 @@ export const STATUS_LABELS: Record<
     border: 'border-zinc-700',
   },
 };
+
+export interface StatusCountItem {
+  count: number;
+  total_amount: number;
+}
+
+export interface StatusCounts {
+  draft: StatusCountItem;
+  pending_approval: StatusCountItem;
+  active: StatusCountItem;
+  rejected: StatusCountItem;
+  terminated: StatusCountItem;
+  total: StatusCountItem;
+}
+
+export interface SupplierRankingItem {
+  supplier_id: string | null;
+  supplier_name: string;
+  request_count: number;
+  total_amount: number;
+}
+
+export interface AmountSummary {
+  current_month_active_amount: number;
+  current_month_total_amount: number;
+  current_period_active_amount: number;
+  current_period_total_amount: number;
+  current_month_label: string;
+  current_period_label: string;
+}
+
+export interface PendingReceipts {
+  total_pending_receipt_count: number;
+  unreceived_count: number;
+  partially_received_count: number;
+}
+
+export interface MonthlyTrendItem {
+  month: string;
+  active_amount: number;
+  total_amount: number;
+  request_count: number;
+}
+
+export interface PurchaseDashboardSummary {
+  status_counts: StatusCounts;
+  supplier_ranking: SupplierRankingItem[];
+  amount_summary: AmountSummary;
+  pending_receipts: PendingReceipts;
+  monthly_trends: MonthlyTrendItem[];
+}
+
