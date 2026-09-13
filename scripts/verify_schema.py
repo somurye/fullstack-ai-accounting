@@ -1996,6 +1996,15 @@ def run_verification(dsn: str) -> int:
     r.ok("発注〜検収〜請求E2E: 分納・状態一貫性・数量超過防止・Advisory Lock同時実行直列化・tenant整合性・請求紐付け・WORM(UPDATE/DELETE)・RBACが動作する (P2-T3)",
          p2t3_run.returncode == 0)
 
+    # 17. 【P2-T4実証】購買ダッシュボード・レポート 実DB E2Eテスト
+    cmd_p2t4 = f"npx ts-node src/scripts/verify-purchase-dashboard-e2e.ts \"{dsn}\""
+    p2t4_run = subprocess.run(cmd_p2t4, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
+    if p2t4_run.returncode != 0:
+        err_msg = f"\n[P2-T4 E2E ERROR STDOUT]:\n{p2t4_run.stdout}\n[P2-T4 E2E ERROR STDERR]:\n{p2t4_run.stderr}"
+        print(err_msg.encode("cp932", errors="replace").decode("cp932"))
+    r.ok("購買ダッシュボードE2E: テナント完全分離・二重RBAC認可・ステータス集計・サプライヤーランキング・検収待ち集計・月次推移が動作する (P2-T4)",
+         p2t4_run.returncode == 0)
+
     return r.summary()
 
 

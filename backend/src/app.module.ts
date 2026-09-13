@@ -41,6 +41,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { GeneralRequestsModule } from './modules/general-requests/general-requests.module';
 import { PurchaseRequestsModule } from './modules/purchase-requests/purchase-requests.module';
 import { SuppliersModule } from './modules/suppliers/suppliers.module';
+import { PurchaseDashboardModule } from './modules/purchase-dashboard/purchase-dashboard.module';
 
 /**
  * AppModule
@@ -99,6 +100,7 @@ import { SuppliersModule } from './modules/suppliers/suppliers.module';
     GeneralRequestsModule,
     PurchaseRequestsModule,
     SuppliersModule,
+    PurchaseDashboardModule,
   ],
   controllers: [],
   providers: [
