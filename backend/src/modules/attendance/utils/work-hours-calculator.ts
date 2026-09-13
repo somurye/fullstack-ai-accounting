@@ -128,3 +128,158 @@ export function calculateWorkingHours(
     totalActualMinutes: actualMinutes,
   };
 }
+
+export interface DailyWorkRecordForAggregation {
+  workDate: string; // YYYY-MM-DD
+  clockIn: Date | string | null | undefined;
+  clockOut: Date | string | null | undefined;
+  breakMinutes?: number | null;
+  isHoliday?: boolean | null;
+}
+
+export interface WeeklyCalculationDayResult extends WorkHoursCalculationResult {
+  workDate: string;
+  isHoliday: boolean;
+  /** 日単位の法定超過時間（1日8時間を超える部分） */
+  dailyOvertimeHours: number;
+  /** 当該週において週40時間を超えたため時間外へ振り替えられた時間 */
+  weeklyOvertimeHours: number;
+}
+
+export interface WeeklyWorkHoursResult {
+  records: WeeklyCalculationDayResult[];
+  /** 所定内労働時間合計（週40時間を上限にキャップされた後の時間） */
+  totalRegularHours: number;
+  /** 1日8時間超の時間外労働合計 */
+  totalDailyOvertimeHours: number;
+  /** 週40時間超の時間外労働合計（日の時間外との重複を除く） */
+  totalWeeklyOvertimeHours: number;
+  /** 総時間外労働時間（日単位超過 + 週単位超過） */
+  totalOvertimeHours: number;
+  /** 総深夜労働時間 */
+  totalLateNightHours: number;
+  /** 法定休日労働時間 */
+  totalHolidayHours: number;
+  /** 実総労働時間 */
+  totalActualHours: number;
+}
+
+/**
+ * 1週間単位（原則7日間）の労働時間集計・週40時間超過判定ロジック
+ *
+ * 労働基準法第32条第1項に基づく週単位時間外労働の計算規則:
+ * 1. 各日の労働時間について、1日8時間を超える部分は「日の時間外」として計上。
+ * 2. 法定休日労働（isHoliday=true）は35%割増の対象であり、週40時間の算定対象から除外（昭22.11.27 基発401号）。
+ * 3. 各日の法定内労働時間（実労働時間から日単位超過を除いた部分、最大8時間）を当該週で累積。
+ * 4. 累積法定内時間が週40時間（2400分）を超過した場合、その超過分を「週の時間外労働」として時間外に振り替える。
+ *    （すでに日単位時間外として計上された部分は二重計上しない）
+ */
+export function calculateWeeklyWorkHours(
+  days: DailyWorkRecordForAggregation[],
+  options?: { weeklyLimitMinutes?: number },
+): WeeklyWorkHoursResult {
+  const weeklyLimitMinutes =
+    options?.weeklyLimitMinutes ?? LABOR_STANDARDS.WEEKLY_REGULAR_LIMIT_MINUTES;
+
+  // 日付昇順でソート
+  const sortedDays = [...days].sort((a, b) => a.workDate.localeCompare(b.workDate));
+
+  let cumulativeRegularMinutes = 0;
+  let totalDailyOvertimeMinutes = 0;
+  let totalWeeklyOvertimeMinutes = 0;
+  let totalRegularMinutes = 0;
+  let totalLateNightMinutes = 0;
+  let totalHolidayMinutes = 0;
+  let totalActualMinutes = 0;
+
+  const resultRecords: WeeklyCalculationDayResult[] = [];
+
+  for (const day of sortedDays) {
+    const daily = calculateWorkingHours({
+      clockIn: day.clockIn,
+      clockOut: day.clockOut,
+      breakMinutes: day.breakMinutes,
+      isHoliday: day.isHoliday,
+    });
+
+    const isHoliday = Boolean(day.isHoliday);
+
+    if (isHoliday) {
+      // 法定休日労働: 週40時間の累積には算入しない
+      totalHolidayMinutes += daily.totalActualMinutes;
+      totalLateNightMinutes += Math.round(daily.lateNightHours * 60);
+      totalActualMinutes += daily.totalActualMinutes;
+
+      resultRecords.push({
+        ...daily,
+        workDate: day.workDate,
+        isHoliday: true,
+        dailyOvertimeHours: 0,
+        weeklyOvertimeHours: 0,
+      });
+      continue;
+    }
+
+    const dayActualMinutes = daily.totalActualMinutes;
+    totalActualMinutes += dayActualMinutes;
+    totalLateNightMinutes += Math.round(daily.lateNightHours * 60);
+
+    // 日単位の法定超過（1日8時間＝480分超）
+    const dayRegularCandidateMinutes = Math.min(
+      dayActualMinutes,
+      LABOR_STANDARDS.DAILY_REGULAR_LIMIT_MINUTES,
+    );
+    const dayOvertimeMinutes = Math.max(
+      0,
+      dayActualMinutes - LABOR_STANDARDS.DAILY_REGULAR_LIMIT_MINUTES,
+    );
+    totalDailyOvertimeMinutes += dayOvertimeMinutes;
+
+    // 週40時間（2400分）判定
+    let dayWeeklyOvertimeMinutes = 0;
+    let dayFinalRegularMinutes = 0;
+
+    if (cumulativeRegularMinutes + dayRegularCandidateMinutes <= weeklyLimitMinutes) {
+      // 週40時間以内
+      dayFinalRegularMinutes = dayRegularCandidateMinutes;
+      cumulativeRegularMinutes += dayRegularCandidateMinutes;
+    } else {
+      // 週40時間を超過する境界または既に超過している場合
+      const remainingRegularMinutes = Math.max(0, weeklyLimitMinutes - cumulativeRegularMinutes);
+      dayFinalRegularMinutes = remainingRegularMinutes;
+      dayWeeklyOvertimeMinutes = dayRegularCandidateMinutes - remainingRegularMinutes;
+      cumulativeRegularMinutes = weeklyLimitMinutes; // 上限に到達
+    }
+
+    totalRegularMinutes += dayFinalRegularMinutes;
+    totalWeeklyOvertimeMinutes += dayWeeklyOvertimeMinutes;
+
+    const dayTotalOvertimeMinutes = dayOvertimeMinutes + dayWeeklyOvertimeMinutes;
+
+    resultRecords.push({
+      workDate: day.workDate,
+      isHoliday: false,
+      regularHours: roundToTwo(dayFinalRegularMinutes / 60),
+      overtimeHours: roundToTwo(dayTotalOvertimeMinutes / 60),
+      dailyOvertimeHours: roundToTwo(dayOvertimeMinutes / 60),
+      weeklyOvertimeHours: roundToTwo(dayWeeklyOvertimeMinutes / 60),
+      lateNightHours: daily.lateNightHours,
+      holidayHours: 0,
+      totalActualHours: daily.totalActualHours,
+      totalActualMinutes: daily.totalActualMinutes,
+    });
+  }
+
+  const totalOvertimeMinutes = totalDailyOvertimeMinutes + totalWeeklyOvertimeMinutes;
+
+  return {
+    records: resultRecords,
+    totalRegularHours: roundToTwo(totalRegularMinutes / 60),
+    totalDailyOvertimeHours: roundToTwo(totalDailyOvertimeMinutes / 60),
+    totalWeeklyOvertimeHours: roundToTwo(totalWeeklyOvertimeMinutes / 60),
+    totalOvertimeHours: roundToTwo(totalOvertimeMinutes / 60),
+    totalLateNightHours: roundToTwo(totalLateNightMinutes / 60),
+    totalHolidayHours: roundToTwo(totalHolidayMinutes / 60),
+    totalActualHours: roundToTwo(totalActualMinutes / 60),
+  };
+}

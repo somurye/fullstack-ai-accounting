@@ -18,6 +18,7 @@ import { DatabaseService } from '../database/database.service';
 import { AuditLogsService } from '../modules/audit-logs/audit-logs.service';
 import { EmployeesService } from '../modules/employees/employees.service';
 import { AttendanceService } from '../modules/attendance/attendance.service';
+import { calculateWeeklyWorkHours } from '../modules/attendance/utils/work-hours-calculator';
 import { AppException } from '../common/exceptions/app.exception';
 
 function expect(actual: any) {
@@ -347,6 +348,24 @@ async function run() {
     expect(rec6.holiday_hours).toBe(8.0);
     expect(rec6.late_night_hours).toBe(0.0);
     console.log('  [PASS] 境界値6: 法定休日労働 -> 休日労働=8.00h, 通常時間外=0.00h (完全一致)');
+
+    // ケース7: 週40時間超過判定 (1日8h × 6日勤務 = 48h)
+    // -> 日単位超過は各日0hだが、週単位で40hを超えた8hが「週時間外」として正確に集計されることを実証
+    const weeklyTestDays = [
+      { workDate: '2026-09-07', clockIn: '2026-09-07T09:00:00+09:00', clockOut: '2026-09-07T18:00:00+09:00', breakMinutes: 60 },
+      { workDate: '2026-09-08', clockIn: '2026-09-08T09:00:00+09:00', clockOut: '2026-09-08T18:00:00+09:00', breakMinutes: 60 },
+      { workDate: '2026-09-09', clockIn: '2026-09-09T09:00:00+09:00', clockOut: '2026-09-09T18:00:00+09:00', breakMinutes: 60 },
+      { workDate: '2026-09-10', clockIn: '2026-09-10T09:00:00+09:00', clockOut: '2026-09-10T18:00:00+09:00', breakMinutes: 60 },
+      { workDate: '2026-09-11', clockIn: '2026-09-11T09:00:00+09:00', clockOut: '2026-09-11T18:00:00+09:00', breakMinutes: 60 },
+      { workDate: '2026-09-12', clockIn: '2026-09-12T09:00:00+09:00', clockOut: '2026-09-12T18:00:00+09:00', breakMinutes: 60 },
+    ];
+    const weeklyCalc = calculateWeeklyWorkHours(weeklyTestDays);
+    expect(weeklyCalc.totalRegularHours).toBe(40.0);
+    expect(weeklyCalc.totalDailyOvertimeHours).toBe(0.0);
+    expect(weeklyCalc.totalWeeklyOvertimeHours).toBe(8.0);
+    expect(weeklyCalc.totalOvertimeHours).toBe(8.0);
+    expect(weeklyCalc.totalActualHours).toBe(48.0);
+    console.log('  [PASS] 境界値7: 週40時間超過判定 (8h×6日=48h) -> 所定=40.00h, 週時間外=8.00h (労基法第32条完全準拠)');
 
     // --------------------------------------------------------------------------
     // 6. EXPLAIN ANALYZE & インデックス適合性実証

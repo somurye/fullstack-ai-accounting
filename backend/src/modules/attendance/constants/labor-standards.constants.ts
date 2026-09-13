@@ -13,6 +13,9 @@ export const LABOR_STANDARDS = {
   /** 1日の法定労働時間（時間単位） */
   DAILY_REGULAR_LIMIT_HOURS: 8.0,
 
+  /** 1週間の法定労働時間（分単位）: 40時間 = 2400分 */
+  WEEKLY_REGULAR_LIMIT_MINUTES: 40 * 60,
+
   /** 1週間の法定労働時間（時間単位） */
   WEEKLY_REGULAR_LIMIT_HOURS: 40.0,
 

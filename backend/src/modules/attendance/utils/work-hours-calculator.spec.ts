@@ -1,4 +1,7 @@
-import { calculateWorkingHours } from './work-hours-calculator';
+import {
+  calculateWorkingHours,
+  calculateWeeklyWorkHours,
+} from './work-hours-calculator';
 
 describe('work-hours-calculator (労働時間区分ロジック境界値検証)', () => {
   describe('境界値: 8時間基準 (所定内 vs 時間外)', () => {
@@ -171,6 +174,113 @@ describe('work-hours-calculator (労働時間区分ロジック境界値検証)'
       });
       expect(res.regularHours).toBe(0);
       expect(res.totalActualHours).toBe(0);
+    });
+  });
+
+  describe('週40時間超過判定ロジック (calculateWeeklyWorkHours)', () => {
+    it('1日8時間×5日 (計40時間): 週40時間ちょうどで週時間外0h', () => {
+      const days = [
+        { workDate: '2026-09-07', clockIn: '2026-09-07T09:00:00+09:00', clockOut: '2026-09-07T18:00:00+09:00', breakMinutes: 60 },
+        { workDate: '2026-09-08', clockIn: '2026-09-08T09:00:00+09:00', clockOut: '2026-09-08T18:00:00+09:00', breakMinutes: 60 },
+        { workDate: '2026-09-09', clockIn: '2026-09-09T09:00:00+09:00', clockOut: '2026-09-09T18:00:00+09:00', breakMinutes: 60 },
+        { workDate: '2026-09-10', clockIn: '2026-09-10T09:00:00+09:00', clockOut: '2026-09-10T18:00:00+09:00', breakMinutes: 60 },
+        { workDate: '2026-09-11', clockIn: '2026-09-11T09:00:00+09:00', clockOut: '2026-09-11T18:00:00+09:00', breakMinutes: 60 },
+      ];
+
+      const res = calculateWeeklyWorkHours(days);
+
+      expect(res.totalRegularHours).toBe(40.0);
+      expect(res.totalDailyOvertimeHours).toBe(0.0);
+      expect(res.totalWeeklyOvertimeHours).toBe(0.0);
+      expect(res.totalOvertimeHours).toBe(0.0);
+      expect(res.totalActualHours).toBe(40.0);
+    });
+
+    it('1日8時間×6日 (計48時間): 日単位超過は0だが週40時間超で8時間が週時間外に計上', () => {
+      // 月〜土まで毎日8時間労働
+      const days = [
+        { workDate: '2026-09-07', clockIn: '2026-09-07T09:00:00+09:00', clockOut: '2026-09-07T18:00:00+09:00', breakMinutes: 60 },
+        { workDate: '2026-09-08', clockIn: '2026-09-08T09:00:00+09:00', clockOut: '2026-09-08T18:00:00+09:00', breakMinutes: 60 },
+        { workDate: '2026-09-09', clockIn: '2026-09-09T09:00:00+09:00', clockOut: '2026-09-09T18:00:00+09:00', breakMinutes: 60 },
+        { workDate: '2026-09-10', clockIn: '2026-09-10T09:00:00+09:00', clockOut: '2026-09-10T18:00:00+09:00', breakMinutes: 60 },
+        { workDate: '2026-09-11', clockIn: '2026-09-11T09:00:00+09:00', clockOut: '2026-09-11T18:00:00+09:00', breakMinutes: 60 },
+        { workDate: '2026-09-12', clockIn: '2026-09-12T09:00:00+09:00', clockOut: '2026-09-12T18:00:00+09:00', breakMinutes: 60 },
+      ];
+
+      const res = calculateWeeklyWorkHours(days);
+
+      expect(res.totalRegularHours).toBe(40.0); // 40hでキャップ
+      expect(res.totalDailyOvertimeHours).toBe(0.0); // 日単位超過はなし
+      expect(res.totalWeeklyOvertimeHours).toBe(8.0); // 土曜の8時間が週時間外に
+      expect(res.totalOvertimeHours).toBe(8.0);
+      expect(res.totalActualHours).toBe(48.0);
+
+      // 土曜（6日目）のレコードが週時間外8hになっていること
+      expect(res.records[5]?.weeklyOvertimeHours).toBe(8.0);
+      expect(res.records[5]?.regularHours).toBe(0.0);
+    });
+
+    it('1日7時間×6日 (計42時間): 1日8時間未満でも週40時間超の2時間が週時間外に計上', () => {
+      // 毎日7時間労働（10:00〜18:00, 休憩1h）
+      const days = [
+        { workDate: '2026-09-07', clockIn: '2026-09-07T10:00:00+09:00', clockOut: '2026-09-07T18:00:00+09:00', breakMinutes: 60 },
+        { workDate: '2026-09-08', clockIn: '2026-09-08T10:00:00+09:00', clockOut: '2026-09-08T18:00:00+09:00', breakMinutes: 60 },
+        { workDate: '2026-09-09', clockIn: '2026-09-09T10:00:00+09:00', clockOut: '2026-09-09T18:00:00+09:00', breakMinutes: 60 },
+        { workDate: '2026-09-10', clockIn: '2026-09-10T10:00:00+09:00', clockOut: '2026-09-10T18:00:00+09:00', breakMinutes: 60 },
+        { workDate: '2026-09-11', clockIn: '2026-09-11T10:00:00+09:00', clockOut: '2026-09-11T18:00:00+09:00', breakMinutes: 60 },
+        { workDate: '2026-09-12', clockIn: '2026-09-12T10:00:00+09:00', clockOut: '2026-09-12T18:00:00+09:00', breakMinutes: 60 },
+      ];
+
+      const res = calculateWeeklyWorkHours(days);
+
+      // 月〜金で 7*5 = 35h。土曜は 7h のうち 5h が所定内（累計40h到達）、残る 2h が週時間外
+      expect(res.totalRegularHours).toBe(40.0);
+      expect(res.totalDailyOvertimeHours).toBe(0.0);
+      expect(res.totalWeeklyOvertimeHours).toBe(2.0);
+      expect(res.totalOvertimeHours).toBe(2.0);
+      expect(res.totalActualHours).toBe(42.0);
+      expect(res.records[5]?.regularHours).toBe(5.0);
+      expect(res.records[5]?.weeklyOvertimeHours).toBe(2.0);
+    });
+
+    it('1日10時間×5日 (計50時間): 各日2hの時間外(計10h)があるため所定内は40h、週時間外は二重計上されない', () => {
+      // 09:00〜20:00 (実働10h, 日時間外2h)
+      const days = [
+        { workDate: '2026-09-07', clockIn: '2026-09-07T09:00:00+09:00', clockOut: '2026-09-07T20:00:00+09:00', breakMinutes: 60 },
+        { workDate: '2026-09-08', clockIn: '2026-09-08T09:00:00+09:00', clockOut: '2026-09-08T20:00:00+09:00', breakMinutes: 60 },
+        { workDate: '2026-09-09', clockIn: '2026-09-09T09:00:00+09:00', clockOut: '2026-09-09T20:00:00+09:00', breakMinutes: 60 },
+        { workDate: '2026-09-10', clockIn: '2026-09-10T09:00:00+09:00', clockOut: '2026-09-10T20:00:00+09:00', breakMinutes: 60 },
+        { workDate: '2026-09-11', clockIn: '2026-09-11T09:00:00+09:00', clockOut: '2026-09-11T20:00:00+09:00', breakMinutes: 60 },
+      ];
+
+      const res = calculateWeeklyWorkHours(days);
+
+      expect(res.totalRegularHours).toBe(40.0);
+      expect(res.totalDailyOvertimeHours).toBe(10.0);
+      expect(res.totalWeeklyOvertimeHours).toBe(0.0); // 二重計上なし
+      expect(res.totalOvertimeHours).toBe(10.0);
+      expect(res.totalActualHours).toBe(50.0);
+    });
+
+    it('法定休日労働を含む場合: 法定休日は週40時間算定対象外となり休日労働として集計', () => {
+      // 月〜金 8h (40h) + 日曜 法定休日 8h
+      const days = [
+        { workDate: '2026-09-07', clockIn: '2026-09-07T09:00:00+09:00', clockOut: '2026-09-07T18:00:00+09:00', breakMinutes: 60 },
+        { workDate: '2026-09-08', clockIn: '2026-09-08T09:00:00+09:00', clockOut: '2026-09-08T18:00:00+09:00', breakMinutes: 60 },
+        { workDate: '2026-09-09', clockIn: '2026-09-09T09:00:00+09:00', clockOut: '2026-09-09T18:00:00+09:00', breakMinutes: 60 },
+        { workDate: '2026-09-10', clockIn: '2026-09-10T09:00:00+09:00', clockOut: '2026-09-10T18:00:00+09:00', breakMinutes: 60 },
+        { workDate: '2026-09-11', clockIn: '2026-09-11T09:00:00+09:00', clockOut: '2026-09-11T18:00:00+09:00', breakMinutes: 60 },
+        { workDate: '2026-09-13', clockIn: '2026-09-13T09:00:00+09:00', clockOut: '2026-09-13T18:00:00+09:00', breakMinutes: 60, isHoliday: true },
+      ];
+
+      const res = calculateWeeklyWorkHours(days);
+
+      expect(res.totalRegularHours).toBe(40.0);
+      expect(res.totalDailyOvertimeHours).toBe(0.0);
+      expect(res.totalWeeklyOvertimeHours).toBe(0.0);
+      expect(res.totalOvertimeHours).toBe(0.0);
+      expect(res.totalHolidayHours).toBe(8.0);
+      expect(res.totalActualHours).toBe(48.0);
     });
   });
 });
