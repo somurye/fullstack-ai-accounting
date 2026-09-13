@@ -625,53 +625,144 @@ async function run() {
       checkDbClient.release();
     }
 
-    // ケース9: 同一従業員・同一週の並行勤怠登録におけるAdvisory Lock直列化実証 (BLOCKER-01対応)
-    // 異なる2つのDBセッション/トランザクションから、同一従業員・同一週の異なる曜日(月・火)に対して
-    // 同時に createRecord() を実行。pg_advisory_xact_lock により安全に直列化され、
-    // レースコンディションやデッドロックなく正常終了し、集計が一致することを検証。
-    console.log('  -> ケース9: 同一従業員・同一週の並行勤怠登録のAdvisory Lock直列化実証 (BLOCKER-01)...');
-    const parallelEmp = empA3_other;
-    const parallelWeekDays = [
-      { work_date: '2026-10-05', clock_in: '2026-10-05T09:00:00+09:00', clock_out: '2026-10-05T18:00:00+09:00', break_minutes: 60 },
-      { work_date: '2026-10-06', clock_in: '2026-10-06T09:00:00+09:00', clock_out: '2026-10-06T18:00:00+09:00', break_minutes: 60 },
-    ];
+    // ケース9-1: updateRecord()とcreateRecord()の並行実行におけるデッドロック防止実証 (FIX3 BLOCKER対応)
+    // 既存レコードに対する updateRecord() と、別日の新規 createRecord() を 2つの並行トランザクションで
+    // Promise.all 同時実行。Advisory Lock先行取得により循環待ち(デッドロック)が発生せず両方正常完了することを実証。
+    console.log('  -> ケース9-1: updateRecord()とcreateRecord()並行実行のデッドロック防止実証 (FIX3)...');
+    const parallelEmp1 = empA3_other;
+    // 事前作成: 月曜日(2026-10-05) 09:00〜18:00 (実働8h)
+    const mondayRecord = await attendanceService.createRecord(tenantA, userA_Owner, {
+      employee_id: parallelEmp1,
+      work_date: '2026-10-05',
+      clock_in: '2026-10-05T09:00:00+09:00',
+      clock_out: '2026-10-05T18:00:00+09:00',
+      break_minutes: 60,
+    });
 
-    // 2つの並行リクエストを Promise.all で同時に発行
-    const [parallelRes1, parallelRes2] = await Promise.all([
-      attendanceService.createRecord(tenantA, userA_Owner, {
-        employee_id: parallelEmp,
-        work_date: parallelWeekDays[0]!.work_date,
-        clock_in: parallelWeekDays[0]!.clock_in,
-        clock_out: parallelWeekDays[0]!.clock_out,
-        break_minutes: parallelWeekDays[0]!.break_minutes,
+    // 並行実行: 月曜日のupdateRecord (09:00〜19:00, 実働9hに更新) と 火曜日の新規createRecord (09:00〜18:00, 実働8h)
+    const [updateRes, createRes] = await Promise.all([
+      attendanceService.updateRecord(tenantA, userA_Owner, mondayRecord.id, {
+        clock_out: '2026-10-05T19:00:00+09:00', // 実働9h -> 所定8h, 日超過時間外1h
       }),
       attendanceService.createRecord(tenantA, userA_Owner, {
-        employee_id: parallelEmp,
-        work_date: parallelWeekDays[1]!.work_date,
-        clock_in: parallelWeekDays[1]!.clock_in,
-        clock_out: parallelWeekDays[1]!.clock_out,
-        break_minutes: parallelWeekDays[1]!.break_minutes,
+        employee_id: parallelEmp1,
+        work_date: '2026-10-06',
+        clock_in: '2026-10-06T09:00:00+09:00',
+        clock_out: '2026-10-06T18:00:00+09:00',
+        break_minutes: 60, // 実働8h -> 所定8h, 時間外0h
       }),
     ]);
 
-    expect(parallelRes1.regular_hours).toBe(8.0);
-    expect(parallelRes2.regular_hours).toBe(8.0);
+    expect(updateRes.regular_hours).toBe(8.0);
+    expect(updateRes.overtime_hours).toBe(1.0);
+    expect(createRes.regular_hours).toBe(8.0);
+    expect(createRes.overtime_hours).toBe(0.0);
 
-    const parallelCheckClient = await pool.connect();
+    const deadlockCheckClient = await pool.connect();
     try {
-      const parallelSum = await parallelCheckClient.query<{ reg_sum: string; ot_sum: string; cnt: string }>(
+      const sumCheck = await deadlockCheckClient.query<{ reg_sum: string; ot_sum: string; cnt: string }>(
         `SELECT SUM(regular_hours)::text as reg_sum, SUM(overtime_hours)::text as ot_sum, COUNT(*)::text as cnt
          FROM attendance_records
          WHERE tenant_id = $1 AND employee_id = $2
            AND work_date >= '2026-10-05' AND work_date <= '2026-10-11'`,
-        [tenantA, parallelEmp],
+        [tenantA, parallelEmp1],
       );
-      expect(parseInt(parallelSum.rows[0]!.cnt, 10)).toBe(2);
-      expect(parseFloat(parallelSum.rows[0]!.reg_sum)).toBe(16.0);
-      expect(parseFloat(parallelSum.rows[0]!.ot_sum)).toBe(0.0);
-      console.log('  [PASS] BLOCKER-01: 同一従業員・同一週の並行登録がAdvisory Lockにより直列化され、正常集計に収束することを実証');
+      expect(parseInt(sumCheck.rows[0]!.cnt, 10)).toBe(2);
+      expect(parseFloat(sumCheck.rows[0]!.reg_sum)).toBe(16.0);
+      expect(parseFloat(sumCheck.rows[0]!.ot_sum)).toBe(1.0);
+      console.log('  [PASS] FIX3 BLOCKER: updateRecord()とcreateRecord()の並行実行でデッドロックが発生せず正常完了することを確認');
     } finally {
-      parallelCheckClient.release();
+      deadlockCheckClient.release();
+    }
+
+    // ケース9-2: 週40時間境界をまたぐ並行登録の実DB検証 (FIX3 必須要件2)
+    // 労基法通達(昭63.1.1基発1号)上の原則暦週(日曜日〜土曜日)に基づき、
+    // 日〜木の40時間(8h×5日)が既に登録された状態から、金曜8時間・土曜8時間を同時に並行登録。
+    // 最終的に週合計 regular=40.00h, overtime=16.00h (金曜8h+土曜8hの計16hがすべて時間外) に正しく収束することを検証。
+    console.log('  -> ケース9-2: 週40h境界並行検証 (日〜木40h登録済みからの金土並行登録)...');
+    const boundaryEmp = empA1;
+    const boundaryDates = [
+      '2026-10-18', // 日 (8h)
+      '2026-10-19', // 月 (8h)
+      '2026-10-20', // 火 (8h)
+      '2026-10-21', // 水 (8h)
+      '2026-10-22', // 木 (8h)
+    ];
+
+    // 日〜木を順次登録 (計40.00h)
+    for (const d of boundaryDates) {
+      await attendanceService.createRecord(tenantA, userA_Owner, {
+        employee_id: boundaryEmp,
+        work_date: d,
+        clock_in: `${d}T09:00:00+09:00`,
+        clock_out: `${d}T18:00:00+09:00`,
+        break_minutes: 60,
+        is_holiday: false,
+      });
+    }
+
+    // 金曜(2026-10-23, 8h) と 土曜(2026-10-24, 8h) を 2つの並行トランザクションで同時に登録
+    const [friRes, satRes] = await Promise.all([
+      attendanceService.createRecord(tenantA, userA_Owner, {
+        employee_id: boundaryEmp,
+        work_date: '2026-10-23',
+        clock_in: '2026-10-23T09:00:00+09:00',
+        clock_out: '2026-10-23T18:00:00+09:00',
+        break_minutes: 60,
+        is_holiday: false,
+      }),
+      attendanceService.createRecord(tenantA, userA_Owner, {
+        employee_id: boundaryEmp,
+        work_date: '2026-10-24',
+        clock_in: '2026-10-24T09:00:00+09:00',
+        clock_out: '2026-10-24T18:00:00+09:00',
+        break_minutes: 60,
+        is_holiday: false,
+      }),
+    ]);
+
+    // 両方完了後、金曜と土曜の集計がDB上で正しく収束しているか実DBから直接確認
+    const boundaryCheckClient = await pool.connect();
+    try {
+      const boundaryRows = await boundaryCheckClient.query<{
+        work_date: string;
+        regular_hours: string;
+        overtime_hours: string;
+      }>(
+        `SELECT work_date::text, regular_hours::text, overtime_hours::text
+         FROM attendance_records
+         WHERE tenant_id = $1 AND employee_id = $2
+           AND work_date >= '2026-10-18' AND work_date <= '2026-10-24'
+         ORDER BY work_date ASC`,
+        [tenantA, boundaryEmp],
+      );
+
+      expect(boundaryRows.rows.length).toBe(7);
+      // 日〜木: 各所定8.00h, 時間外0.00h
+      for (let i = 0; i < 5; i++) {
+        expect(parseFloat(boundaryRows.rows[i]!.regular_hours)).toBe(8.0);
+        expect(parseFloat(boundaryRows.rows[i]!.overtime_hours)).toBe(0.0);
+      }
+      // 金曜(6日目): 所定0.00h, 時間外8.00h
+      expect(parseFloat(boundaryRows.rows[5]!.regular_hours)).toBe(0.0);
+      expect(parseFloat(boundaryRows.rows[5]!.overtime_hours)).toBe(8.0);
+      // 土曜(7日目): 所定0.00h, 時間外8.00h
+      expect(parseFloat(boundaryRows.rows[6]!.regular_hours)).toBe(0.0);
+      expect(parseFloat(boundaryRows.rows[6]!.overtime_hours)).toBe(8.0);
+
+      // 週集計SUMクエリによる確認: 所定40.00h, 時間外16.00h
+      const boundarySum = await boundaryCheckClient.query<{ reg_sum: string; ot_sum: string }>(
+        `SELECT SUM(regular_hours)::text as reg_sum, SUM(overtime_hours)::text as ot_sum
+         FROM attendance_records
+         WHERE tenant_id = $1 AND employee_id = $2
+           AND work_date >= '2026-10-18' AND work_date <= '2026-10-24'`,
+        [tenantA, boundaryEmp],
+      );
+      expect(parseFloat(boundarySum.rows[0]!.reg_sum)).toBe(40.0);
+      expect(parseFloat(boundarySum.rows[0]!.ot_sum)).toBe(16.0);
+      console.log('  [PASS] FIX3 週40h境界並行検証: 日〜木40h登録済みからの金土並行登録で所定40h/時間外16hに完全収束');
+    } finally {
+      boundaryCheckClient.release();
     }
 
     // --------------------------------------------------------------------------

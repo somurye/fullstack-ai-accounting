@@ -549,6 +549,28 @@ export class AttendanceService {
     return this.db.transaction(tenantId, userId, async (client) => {
       await this.assertUserPermission(client, tenantId, userId, 'attendance.edit');
 
+      // ① 対象レコードの特定（※ここではFOR UPDATEを取得しない！Advisory Lock取得前の行ロックを防ぎデッドロックを防止 - FIX3対応）
+      const checkRes = await client.query<AttendanceRecordRow>(
+        `SELECT a.*, e.employee_no, e.name AS employee_name
+         FROM attendance_records a
+         JOIN employees e ON e.id = a.employee_id
+         WHERE a.tenant_id = $1 AND a.id = $2`,
+        [tenantId, id],
+      );
+      const targetRecord = checkRes.rows[0];
+      if (!targetRecord) {
+        throw AppException.notFound('指定された勤怠記録が見つかりません');
+      }
+
+      await this.assertEmployeeManageAccess(client, tenantId, userId, targetRecord.employee_id);
+
+      // ② 週単位のアドバイザリロックを取得（行ロックより先にAdvisory Lockを取得して循環待ちを防止）
+      await acquireAdvisoryLock(
+        client,
+        getAttendanceWeekLockKey(tenantId, targetRecord.employee_id, toDateString(targetRecord.work_date)),
+      );
+
+      // ③ Advisory Lock取得後に対象行を FOR UPDATE でロック＆最新状態を取得
       const existingRes = await client.query<AttendanceRecordRow>(
         `SELECT a.*, e.employee_no, e.name AS employee_name
          FROM attendance_records a
@@ -561,14 +583,6 @@ export class AttendanceService {
       if (!existing) {
         throw AppException.notFound('指定された勤怠記録が見つかりません');
       }
-
-      await this.assertEmployeeManageAccess(client, tenantId, userId, existing.employee_id);
-
-      // 週単位のアドバイザリロックを取得して同一従業員・同一週の並行更新を直列化 (BLOCKER-01対応)
-      await acquireAdvisoryLock(
-        client,
-        getAttendanceWeekLockKey(tenantId, existing.employee_id, toDateString(existing.work_date)),
-      );
 
       const clockIn = input.clock_in !== undefined ? input.clock_in : existing.clock_in;
       const clockOut = input.clock_out !== undefined ? input.clock_out : existing.clock_out;

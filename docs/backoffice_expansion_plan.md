@@ -2515,7 +2515,7 @@ fail-closed運用）を踏襲しつつ、本Phaseは他のPhaseと質的に異�
 
 | タスクID | タスク名 | 概要 | 依存 | ステータス |
 |----------|----------|------|------|-----------|
-| P3-T1 | 従業員マスタ・勤怠管理 | 従業員情報、打刻（出勤・退勤・休憩）、労働時間集計（所定内・時間外・深夜・休日労働の区分） | P0-T1, P0-T4 | ⚠️ SO判定REQUEST CHANGES（コミット0a04626、前回2 BLOCKERは解消。週次再計算の同時実行競合、未退勤への修正時の週次再計算漏れ、RBACロール定義とisManager()の不一致が新たに判明。修正指示済み・再レビュー待ち） |
+| P3-T1 | 従業員マスタ・勤怠管理 | 従業員情報、打刻（出勤・退勤・休憩）、労働時間集計（所定内・時間外・深夜・休日労働の区分） | P0-T1, P0-T4 | ⚠️ SO判定REQUEST CHANGES（コミット805297a、前回3点は解消。updateRecord()のadvisory lock取得順序がcreateRecord()と逆でデッドロックの可能性。修正指示済み・再レビュー待ち） |
 | P3-T2 | 保険料率・税率マスタ管理 | 健康保険・厚生年金・雇用保険の料率、所得税源泉徴収税額表、住民税率を有効期間付きで管理する基盤（5.2節の原則①に対応） | P0-T1 | 未着手 |
 | P3-T3 | 給与計算エンジン | 勤怠実績・基本給・手当・控除から給与を計算し、AI提案パターンで人間確認を経て確定する（5.2節の原則②に対応） | P3-T1, P3-T2 | 未着手 |
 | P3-T4 | 給与明細発行・年末調整 | 給与明細のPDF発行、年末調整の計算・書類生成 | P3-T3 | 未着手 |
@@ -2747,6 +2747,70 @@ attendance.create/editが付与されておらず、isManager()には含まれ�
 
 ---
 
+#### 【フォローアップ指示プロンプト P3-T1-FIX3】REQUEST CHANGES対応（updateRecord()のロック取得順序によるデッドロックリスク）
+
+ChatGPT(SO)よりP3-T1-FIX2が「REQUEST CHANGES」と判定された。前回の3点
+（週次再計算のrace condition、未退勤化時の再計算漏れ、RBACロール不一致）はすべて
+正しく解消されている。今回の指摘は、修正時に新たに生まれたロック取得順序の不整合1点。
+
+```
+# SOレビュー結果：P3-T1-FIX2 REQUEST CHANGES
+main...feature/p3-t1-employees-attendance の実差分（コミット805297a）を確認した結果、
+現状はマージ不可です。
+
+# BLOCKER: updateRecord()とcreateRecord()でadvisory lockの取得順序が逆になっている
+createRecord()は「① advisory lock取得 → ② INSERT等 → ③ 週次再計算」の順序ですが、
+updateRecord()は「① SELECT...FOR UPDATE → ② advisory lock取得 → ③ UPDATE → ④ 週次再計算」
+の順序になっています。同じ週について、Transaction Aがupdaterecord()で既存レコードの
+行ロックを保持しながらadvisory lock待ちになり、同時にTransaction Bがcreatorecord()で
+advisory lockを保持しながら（週次再計算経由で）Aが保持する行のロック待ちになると、
+循環待ち（デッドロック）が成立し得ます。
+
+# 修正方針
+updateRecord()のロック取得順序を、createRecord()と統一してください。
+  ① 対象employee_id/work_dateを確認（クエリ自体は必要）
+  ② advisory lock取得（tenant_id + employee_id + 週開始日）
+  ③ SELECT ... FOR UPDATE
+  ④ UPDATE
+  ⑤ 週次再計算
+「advisory lockを先に取得してから行ロックを取る」という順序を、勤怠の作成・更新・
+週次再計算の全操作で統一してください。
+
+# 追加すべき実DB E2E（必須、2種類）
+1. 同一従業員・同一週について、既存レコードのupdateRecord()と、別日の新規createRecord()を
+   同時実行し、デッドロックが発生せず両方が正常に完了し、最終的な週次合計が正しいことを
+   確認する。
+2. より強い証拠として、既存で月〜金の40時間が既に登録された状態から、土曜8時間・日曜8時間を
+   同時に（2つの並行トランザクションで）登録し、最終的にregular=40h、overtime=16hに
+   正しく収束することを確認する（前回のケース9「月火の同時登録」よりも週40時間境界を
+   直接検証する内容にする）。
+
+# 修正不要（今回は記録のみ）
+- DEBT-013（break_minutesの拘束時間超過検証なし。既存DEBT-016と重複するため統合して
+  記録する）、DEBT-014（既存clock-in更新時の監査ログ欠落。既存DEBT-017と同一）は
+  今回のブロッカーにしません。
+
+# 受け入れ基準（Definition of Done）
+- [ ] updateRecord()のadvisory lock取得が、SELECT...FOR UPDATEより先に行われるよう
+      修正されている
+- [ ] updateRecord()とcreateRecord()の並行実行でデッドロックが発生しないことを実DB E2Eで確認
+- [ ] 週40時間境界をまたぐ並行登録（月〜金40h + 土日を並行登録）で、最終的な週次集計が
+      正しい値に収束することを実DB E2Eで確認
+- [ ] 前回までに解消済みのBLOCKER（週次計算の実運用接続、object-level authorization、
+      未退勤化時の再計算、RBAC整合性）に回帰がない
+- [ ] 完了報告に正確なコミットSHA（git rev-parse HEAD）・ブランチ名を明記する
+      （本計画書0.4節ルール4に従う）
+- [ ] feature/p3-t1-employees-attendance ブランチに追加コミット・pushし、比較URLを
+      報告に含める
+
+# ChatGPTレビュー時の確認観点
+- ロック取得順序の統一が、clock()・recalculateWeeklyWorkHours()を含む全操作で
+  一貫しているか（updateRecord/createRecordだけの部分修正になっていないか）
+- 週40時間境界の並行E2Eが、本当に境界（39h→40h→41h相当）を跨ぐデータで構成されているか
+```
+
+---
+
 ## 6. 既知の技術的負債・フォローアップ事項
 
 タスク完了時にSOが「修正不要だが記録すべき」と判定した事項を追跡する。将来の関連タスク着手時に必ず参照すること。
@@ -2833,3 +2897,4 @@ attendance.create/editが付与されておらず、isManager()には含まれ�
 | 6.0.0 | **Phase 3（人事労務）のセクションを新設**。給与計算・社保を含めて一気に計画する方針を確認。5.2節に本Phase特有の設計原則（保険料率・税率のマスタ化、AI提案+人間承認パターンの適用、専門家レビューの推奨、監査可能性）を明記。タスク分解（P3-T1〜T4）とP3-T1（従業員マスタ・勤怠管理）の実装指示プロンプトを追加。ロードマップ表のPhase 3を着手中に更新。以降のセクション番号を1つずつ繰り下げ |
 | 6.1.0 | P3-T1がSO判定REQUEST CHANGES（週40時間計算関数は実装・単体テストされているが実際の勤怠登録フローに未接続、employeeロールに本人限定のobject-level authorizationがなく他人の勤怠を操作可能）。フォローアップ指示プロンプト（P3-T1-FIX）を追加。DEBT-016（break_minutesの拘束時間超過検証なし）、DEBT-017（clock-in更新時の監査ログ欠落）を記録。0.4節ルール5に3件目の実例（P3-T1）を追記し「関数の存在≠実運用経路での動作」という教訓を明文化 |
 | 6.2.0 | P3-T1-FIXがSO判定REQUEST CHANGES（前回2 BLOCKERは解消。週次再計算の同時実行競合、未退勤への修正時の週次再計算漏れ、RBACロール定義とisManager()の不一致が新規判明）。フォローアップ指示プロンプト（P3-T1-FIX2、advisory lockによる週次直列化＋常時週次再計算＋RBAC定義の統一）を追加 |
+| 6.3.0 | P3-T1-FIX2がSO判定REQUEST CHANGES（前回3点は解消。updateRecord()とcreateRecord()でadvisory lock取得順序が逆になっておりデッドロックの可能性）。フォローアップ指示プロンプト（P3-T1-FIX3、ロック取得順序の統一＋週40時間境界を跨ぐ並行E2Eの追加）を追加 |
