@@ -1805,8 +1805,8 @@ migrationのappend-only・fail-closed運用）をそのまま踏襲し、発注�
 |----------|----------|------|------|-----------|
 | P2-T1 | `purchase_requests`テーブル設計・実装 | 発注申請本体（品目、数量、単価、サプライヤー、金額、納期、ステータス）、既存承認エンジン統合、RBAC強制 | P0-T1, P1-T1, P1-T3 | ✅ SO正式PASS（コミット9e4fe21、初回レビューでPASS。DEBT-013を記録、mainマージ指示済み） |
 | P2-T2 | サプライヤー（取引先）マスタ管理 | サプライヤー登録・編集・検索、連絡先・支払条件等の管理、purchase_requestsとの関連付け | P0-T1, P2-T1 | ✅ SO正式PASS・mainマージ完了（マージコミット`05ffb6f`、main上でE2E 114/114・Jest 133/133・build成功を再確認済み） |
-| P2-T3 | 発注〜検収〜請求の連携 | purchase_requestsが承認完了した後の発注確定、検収記録、既存vendor_bills（請求書管理）との紐付け | P2-T1, P2-T2 | ⏸️ レビュー待ち（DELETE WORM修正の設計内容は妥当と評価されたが、FIX後のコミットSHA未報告のためGitHub実装を特定できず。push状態・SHA報告を指示済み） |
-| P2-T4 | 購買ダッシュボード・レポート | テナント内の購買状況（申請中・承認済み・発注済み件数、サプライヤー別支出等）の可視化 | P2-T1, P2-T2, P2-T3 | 未着手 |
+| P2-T3 | 発注〜検収〜請求の連携 | purchase_requestsが承認完了した後の発注確定、検収記録、既存vendor_bills（請求書管理）との紐付け | P2-T1, P2-T2 | ✅ SO正式PASS（コミット87fec94、DELETE WORM防御を追加解消、DEBT-014を記録、mainマージ指示済み） |
+| P2-T4 | 購買ダッシュボード・レポート | テナント内の購買状況（申請中・承認済み・発注済み件数、サプライヤー別支出等）の可視化 | P2-T1, P2-T2, P2-T3 | プロンプト発行済み・着手待ち（Phase 2最終タスク） |
 
 P2-T2以降の詳細タスク分解・実装指示プロンプトは、P2-T1の実装結果（実際のテーブル定義・
 API形状）を踏まえてClaudeが都度作成する（Phase 0/1と同じ方針）。
@@ -2237,13 +2237,13 @@ catch句が存在しないか確認してください。存在する場合は同
   リンクが自動解除されない点は、今回のDoD範囲外です。DEBT-014として計画書側で追跡します。
 
 # 受け入れ基準（Definition of Done）
-- [x] purchase_receiptsへのDELETEがDBトリガーで拒否される
-- [x] app_runtimeのDELETE権限が削除されている（可能な場合）
-- [x] 既存のUPDATE拒否・数量超過防御・tenant整合性等のE2Eに回帰がない
-- [x] hasPurchaseReceiptsTable() / hasVendorBillPurchaseRequestId() のDBエラー処理を確認し、
+- [ ] purchase_receiptsへのDELETEがDBトリガーで拒否される
+- [ ] app_runtimeのDELETE権限が削除されている（可能な場合）
+- [ ] 既存のUPDATE拒否・数量超過防御・tenant整合性等のE2Eに回帰がない
+- [ ] hasPurchaseReceiptsTable() / hasVendorBillPurchaseRequestId() のDBエラー処理を確認し、
       広すぎるcatchがあれば修正する（なければその旨を報告に明記する）
-- [x] クリーンDBで001〜019（および今回の追加migration）を再適用し、全件PASSを確認する
-- [x] feature/p2-t3-purchase-receipts-billing ブランチに追加コミット・pushし、比較URLを
+- [ ] クリーンDBで001〜019（および今回の追加migration）を再適用し、全件PASSを確認する
+- [ ] feature/p2-t3-purchase-receipts-billing ブランチに追加コミット・pushし、比較URLを
       報告に含める（本計画書0.4節に従う）
 
 # ChatGPTレビュー時の確認観点
@@ -2280,11 +2280,88 @@ GitHub上で実装現物を特定できないため、正式なレビューが�
 先にコミット・pushを完了させてから報告してください。
 
 # 受け入れ基準（Definition of Done）
-- [x] git rev-parse HEADの結果が報告に明記されている
-- [x] git ls-remoteの結果、ローカルとリモートのSHAが一致している
-- [x] main...ブランチ名の比較URLが報告に含まれている
-- [x] 前回報告した修正内容（DELETEトリガー、REVOKE DELETE、E2E）が、そのSHA時点で
+- [ ] git rev-parse HEADの結果が報告に明記されている
+- [ ] git ls-remoteの結果、ローカルとリモートのSHAが一致している
+- [ ] main...ブランチ名の比較URLが報告に含まれている
+- [ ] 前回報告した修正内容（DELETEトリガー、REVOKE DELETE、E2E）が、そのSHA時点で
       実際にコミットされていることをGemini自身も再確認する
+```
+
+---
+
+#### 【マージ指示プロンプト P2-T3-MERGE】mainへのマージ
+
+ChatGPT(SO)よりP2-T3-FIXが正式PASS（purchase_receiptsのDELETE WORM防御を追加、既存機能への回帰なし、実DB E2E 124/124）と判定された。
+
+```
+# 指示
+feature/p2-t3-purchase-receipts-billing を main へマージしてください。
+SO(ChatGPT)による正式PASS判定を得ています（020マイグレーションによるDELETE WORM防御の
+追加、app_runtimeからのDELETE権限REVOKE、既存のUPDATE WORM・数量超過防御・tenant整合性・
+RBAC・vendor_bills連携に回帰がないことを実DB E2E 124/124・Jest 137/137で確認済み）。
+DEBT-014（terminated後のvendor_billsリンク未解除）は計画書側で追跡することとし、
+今回のマージをブロックするものではありません。
+マージ後、以下を確認し報告してください（本計画書0.4節に従い、コミットSHA・ブランチ名を
+必ず明記すること）。
+- main上でクリーンDBに対しverify_schema.pyを含む実DB E2Eを再実行し、全件PASSを確認する
+- Backend/Frontendのテストを再実行して確認
+- マージコミットハッシュ（git rev-parse HEAD）
+- 作業ブランチ feature/p2-t3-purchase-receipts-billing の削除（マージ済み後）
+```
+
+これでP2-T3は完了。次はP2-T4（購買ダッシュボード・レポート）へ進む。**これでPhase 2の全4タスクが出揃う。**
+
+---
+
+#### 【指示プロンプト P2-T4】購買ダッシュボード・レポート
+
+```
+# 背景・目的
+P2-T1〜T3で発注申請・サプライヤー・検収・請求連携が揃った。本タスクでは、テナント内の
+購買状況を可視化するダッシュボードを実装し、Phase 2を締めくくる。これはこれまでと異なり
+読み取り専用（集計・表示のみ）の機能であり、新しい書き込み系のリスクは少ないが、
+集計クエリがtenant境界を越えないことは引き続き最重要の確認事項となる。
+
+# 前提となる既存実装
+- P2-T1: purchase_requests（ステータス別件数、金額集計の対象）
+- P2-T2: suppliers（サプライヤー別集計の対象）
+- P2-T3: purchase_receipts, vendor_bills連携（発注〜検収〜請求の進捗状況）
+- Phase 0/1/2で確立したRLS・RBACパターン全般
+
+# やってはいけないこと
+- 集計クエリを実装する際、パフォーマンス上の理由でRLSを迂回する特別なDB接続や
+  BYPASSRLS権限を使わない。P1-T4（全テナント横断バッチ）で確立した「RLSバイパスに
+  頼らずテナントごとに処理する」原則は、今回は単一テナント内の集計なので該当しないが、
+  念のためRLSが常に有効な接続で集計することを徹底する。
+- 集計結果に他テナントのデータが混入するような、JOIN条件のtenant_id漏れを起こさない。
+
+# 実装対象
+1. ダッシュボードAPI（例: GET /purchase-dashboard/summary）を実装し、以下を返す。
+   - ステータス別件数（draft/pending_approval/active/rejected/terminated）
+   - サプライヤー別の発注金額合計（上位N件）
+   - 今月/今期の発注金額合計
+   - 検収待ち（activeだが未検収）の発注件数
+2. purchase_request.view権限を持つユーザーのみアクセス可能にする（Controller/Service両層）。
+3. フロントエンドにダッシュボード画面（KPIカード、簡易グラフ、サプライヤー別ランキング等）を
+   実装する。
+4. 集計クエリは既存のRLSに依存しつつ、アプリケーション層でも明示的にtenant_idを
+   条件に含める（P1-T6の類似検索APIで確立した二重防御パターンを踏襲する）。
+
+# 受け入れ基準（Definition of Done）
+- [ ] ダッシュボードAPIが正しい集計結果を返す
+- [ ] 他テナントのデータが集計結果に一切混入しないことを実DB E2Eで確認する
+      （2テナントにそれぞれ発注データを用意し、互いの集計に影響しないことを確認）
+- [ ] purchase_request.view権限がないユーザーはダッシュボードにアクセスできない
+- [ ] 大量データでの集計クエリのパフォーマンスに明らかな問題がないか簡易的に確認する
+      （インデックスが必要な場合は追加する）
+- [ ] Phase 0で確立した実DB E2E検証基盤で、上記すべてを確認し結果を報告に添付する
+- [ ] feature/p2-t4-purchase-dashboard ブランチにコミット・pushし、比較URLを報告に含める
+      （本計画書0.4節に従う。コミットSHA・ブランチ名を必ず明記すること）
+
+# ChatGPTレビュー時の確認観点
+- 集計クエリのJOIN/WHERE条件すべてにtenant_idが明示的に含まれているか（1箇所でも
+  漏れがあれば他テナントのデータが混入し得る）
+- 読み取り専用機能であっても、RBAC（purchase_request.view）のチェックが省略されていないか
 ```
 
 ---
@@ -2364,3 +2441,4 @@ GitHub上で実装現物を特定できないため、正式なレビューが�
 | 4.7.0 | P2-T3について、完了報告に対応する実装コミットがGitHub main上でまだ確認できず、SOがレビュー保留（レビュー待ち⏸️）。フォローアップ指示プロンプト（P2-T3-VERIFY）を追加し、push状態の確認・是正を指示（0.4節の既存ルールの再徹底、P1-T5-FIX3-VERIFYと同型の対応） |
 | 4.8.0 | P2-T3がSO判定REQUEST CHANGES（purchase_receiptsがUPDATEはWORM防御されているがDELETEはトリガー・権限とも未防御。数量超過防御・concurrency race対策・tenant整合性・RBACは良好）。フォローアップ指示プロンプト（P2-T3-FIX、DELETEトリガー追加＋権限REVOKE）を追加。DEBT-014（terminated後のvendor_billsリンク未解除）を記録 |
 | 4.9.0 | P2-T3-FIXについて、修正設計自体は妥当と評価されたが、完了報告にコミットSHA・ブランチ情報が欠落し実装を特定できずレビュー保留。この問題が複数回（P0-T1, P1-T5-FIX3, P2-T3, P2-T3-FIX）発生したことを受け、**0.4節ルール4を強化し「全ての完了報告にコミットSHA・ブランチ名の明記を必須」と明文化**。フォローアップ指示プロンプト（P2-T3-FIX-VERIFY）を追加 |
+| 5.0.0 | P2-T3-FIXが正式PASS（DELETE WORM防御の追加を確認、実DB E2E 124/124・Jest 137/137）。マージ指示プロンプト（P2-T3-MERGE）を追加しP2-T3を完了扱いに更新。**P2-T4（購買ダッシュボード・レポート）の実装指示プロンプトを新規作成**。これでPhase 2の全4タスクの指示プロンプトが出揃った |
