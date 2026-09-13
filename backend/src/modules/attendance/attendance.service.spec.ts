@@ -48,16 +48,18 @@ describe('AttendanceService', () => {
     it('出勤打刻が正常に記録される', async () => {
       // 1. assertUserPermission PASS
       mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{}] });
-      // 2. isManager PASS (管理者ロール所持)
+      // 2. isAttendanceManager PASS (管理者ロール所持)
       mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{}] });
-      // 3. 従業員取得 (active)
+      // 3. acquireAdvisoryLock PASS
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{}] });
+      // 4. 従業員取得 (active)
       mockClient.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [{ id: 'emp-1', name: '山田 太郎', employee_no: 'EMP001' }],
       });
-      // 4. 既存レコードなし (0 rows)
+      // 5. 既存レコードなし (0 rows)
       mockClient.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
-      // 5. INSERT
+      // 6. INSERT
       const createdRow = {
         id: 'att-1',
         tenant_id: 'tenant-1',
@@ -96,14 +98,16 @@ describe('AttendanceService', () => {
     it('退勤打刻時に労働時間区分が自動計算され、週次再計算が行われる', async () => {
       // 1. assertUserPermission PASS
       mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{}] });
-      // 2. isManager PASS (管理者ロール所持)
+      // 2. isAttendanceManager PASS (管理者ロール所持)
       mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{}] });
-      // 3. 従業員取得 (active)
+      // 3. acquireAdvisoryLock PASS
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{}] });
+      // 4. 従業員取得 (active)
       mockClient.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [{ id: 'emp-1', name: '山田 太郎', employee_no: 'EMP001' }],
       });
-      // 4. 既存レコードあり (09:00出勤済み)
+      // 5. 既存レコードあり (09:00出勤済み)
       const existingRow = {
         id: 'att-1',
         tenant_id: 'tenant-1',
@@ -118,7 +122,7 @@ describe('AttendanceService', () => {
         rowCount: 1,
         rows: [existingRow],
       });
-      // 5. UPDATE (18:30退勤 -> 拘束9.5h, 休憩1h, 実働8.5h -> 所定8h, 残業0.5h)
+      // 6. UPDATE (18:30退勤 -> 拘束9.5h, 休憩1h, 実働8.5h -> 所定8h, 残業0.5h)
       const updatedRow = {
         ...existingRow,
         clock_out: new Date(2026, 8, 13, 18, 30, 0),
@@ -132,17 +136,22 @@ describe('AttendanceService', () => {
         rowCount: 1,
         rows: [updatedRow],
       });
-      // 6. recalculateWeeklyWorkHours: 当該週のレコード取得
+      // 7. recalculateWeeklyWorkHours: acquireAdvisoryLock
+      mockClient.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{}],
+      });
+      // 8. recalculateWeeklyWorkHours: 当該週のレコード取得
       mockClient.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [updatedRow],
       });
-      // 7. recalculateWeeklyWorkHours: UPDATE
+      // 9. recalculateWeeklyWorkHours: UPDATE
       mockClient.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [],
       });
-      // 8. 再読み込み
+      // 10. 再読み込み
       mockClient.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [updatedRow],

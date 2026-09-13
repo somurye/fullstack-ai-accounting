@@ -4,6 +4,7 @@ import { DatabaseService } from '../../database/database.service';
 import { AppException } from '../../common/exceptions/app.exception';
 import { buildPagination, type PaginationMeta } from '../../common/http/envelope';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import { acquireAdvisoryLock } from '../../common/database/advisory-lock';
 import type {
   AttendanceListQuery,
   AttendanceRecordCreateInput,
@@ -53,6 +54,15 @@ function getWeekRange(workDateStr: string): { weekStart: string; weekEnd: string
   return { weekStart: toDateString(start), weekEnd: toDateString(end) };
 }
 
+/**
+ * 同一テナント・同一従業員・同一暦週に対する並行操作を直列化するアドバイザリロックキー
+ * 他のキー空間（supplier:, purchase_request_no: 等）と衝突しないよう attendance_week: プレフィックスを付与
+ */
+function getAttendanceWeekLockKey(tenantId: string, employeeId: string, workDateStr: string): string {
+  const { weekStart } = getWeekRange(workDateStr);
+  return `attendance_week:${tenantId}:${employeeId}:${weekStart}`;
+}
+
 @Injectable()
 export class AttendanceService {
   constructor(
@@ -88,16 +98,21 @@ export class AttendanceService {
   }
 
   /**
-   * 操作者が管理者ロール（owner, payroll_admin, accounting_manager）を所持しているか判定
+   * 操作者が勤怠管理者ロール（owner, payroll_admin）を所持しているか判定
+   * 勤怠の打刻代行・手動登録・編集などの管理者操作を行う権限
    */
-  private async isManager(client: PoolClient, tenantId: string, userId: string | null): Promise<boolean> {
+  private async isAttendanceManager(
+    client: PoolClient,
+    tenantId: string,
+    userId: string | null,
+  ): Promise<boolean> {
     if (!userId) return false;
     const managerCheck = await client.query(
       `SELECT 1
        FROM user_roles ur
        JOIN roles r ON r.id = ur.role_id
        WHERE ur.tenant_id = $1 AND ur.user_id = $2
-         AND r.code::text IN ('owner', 'payroll_admin', 'accounting_manager')
+         AND r.code::text IN ('owner', 'payroll_admin')
        LIMIT 1`,
       [tenantId, userId],
     );
@@ -105,10 +120,32 @@ export class AttendanceService {
   }
 
   /**
-   * 操作者が管理者ロールか、または対象従業員本人であるかを検証 (DEBT-005 / object-level authorization)
-   * employeeロールのユーザーが同一テナント内の他人の勤怠データを不正操作・閲覧することを防止
+   * 操作者が全従業員の勤怠閲覧権限ロール（owner, payroll_admin, accounting_manager, approver）を所持しているか判定
+   * accounting_manager / approver は閲覧専用管理者としてテナント内の全勤怠を閲覧可能
    */
-  private async assertEmployeeAccess(
+  private async canViewAllAttendance(
+    client: PoolClient,
+    tenantId: string,
+    userId: string | null,
+  ): Promise<boolean> {
+    if (!userId) return false;
+    const viewerCheck = await client.query(
+      `SELECT 1
+       FROM user_roles ur
+       JOIN roles r ON r.id = ur.role_id
+       WHERE ur.tenant_id = $1 AND ur.user_id = $2
+         AND r.code::text IN ('owner', 'payroll_admin', 'accounting_manager', 'approver')
+       LIMIT 1`,
+      [tenantId, userId],
+    );
+    return (viewerCheck.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * 勤怠操作（打刻・作成・更新）における Object-level Authorization チェック
+   * 勤怠管理者（owner, payroll_admin）または対象従業員本人のみ許可
+   */
+  private async assertEmployeeManageAccess(
     client: PoolClient,
     tenantId: string,
     userId: string | null,
@@ -118,12 +155,10 @@ export class AttendanceService {
       throw AppException.unauthorized('ユーザー認証が必要です');
     }
 
-    // 1. 管理者ロール所持者はテナント内の任意の従業員を操作可能
-    if (await this.isManager(client, tenantId, userId)) {
+    if (await this.isAttendanceManager(client, tenantId, userId)) {
       return;
     }
 
-    // 2. 非管理者の場合: 自身に紐づく employee レコードを取得して照合
     const selfEmpRes = await client.query<{ id: string }>(
       `SELECT id FROM employees WHERE tenant_id = $1 AND user_id = $2 AND status = 'active' LIMIT 1`,
       [tenantId, userId],
@@ -131,7 +166,36 @@ export class AttendanceService {
     const selfEmp = selfEmpRes.rows[0];
 
     if (!selfEmp || selfEmp.id !== targetEmployeeId) {
-      throw AppException.forbidden('他人の勤怠データに対する操作・閲覧は許可されていません');
+      throw AppException.forbidden('他人の勤怠データに対する操作・編集は許可されていません');
+    }
+  }
+
+  /**
+   * 勤怠閲覧（詳細取得）における Object-level Authorization チェック
+   * 閲覧権限ロール（owner, payroll_admin, accounting_manager, approver）または対象従業員本人のみ許可
+   */
+  private async assertEmployeeViewAccess(
+    client: PoolClient,
+    tenantId: string,
+    userId: string | null,
+    targetEmployeeId: string,
+  ): Promise<void> {
+    if (!userId) {
+      throw AppException.unauthorized('ユーザー認証が必要です');
+    }
+
+    if (await this.canViewAllAttendance(client, tenantId, userId)) {
+      return;
+    }
+
+    const selfEmpRes = await client.query<{ id: string }>(
+      `SELECT id FROM employees WHERE tenant_id = $1 AND user_id = $2 AND status = 'active' LIMIT 1`,
+      [tenantId, userId],
+    );
+    const selfEmp = selfEmpRes.rows[0];
+
+    if (!selfEmp || selfEmp.id !== targetEmployeeId) {
+      throw AppException.forbidden('他人の勤怠データに対する閲覧は許可されていません');
     }
   }
 
@@ -145,6 +209,9 @@ export class AttendanceService {
     workDate: string,
   ): Promise<void> {
     const { weekStart, weekEnd } = getWeekRange(workDate);
+
+    // 週単位のアドバイザリロックを取得して同一従業員・同一週の並行変更を直列化 (BLOCKER-01対応)
+    await acquireAdvisoryLock(client, getAttendanceWeekLockKey(tenantId, employeeId, workDate));
 
     // 当該週の退勤済みレコードを全件取得 (FOR UPDATE)
     const recordsRes = await client.query<AttendanceRecordRow>(
@@ -195,7 +262,7 @@ export class AttendanceService {
   ): Promise<AttendanceRecordDto> {
     return this.db.transaction(tenantId, userId, async (client) => {
       await this.assertUserPermission(client, tenantId, userId, 'attendance.create');
-      await this.assertEmployeeAccess(client, tenantId, userId, input.employee_id);
+      await this.assertEmployeeManageAccess(client, tenantId, userId, input.employee_id);
 
       const now = input.timestamp ? new Date(input.timestamp) : new Date();
       // YYYY-MM-DD 形式の日付を取得
@@ -203,6 +270,9 @@ export class AttendanceService {
       const month = String(now.getMonth() + 1).padStart(2, '0');
       const day = String(now.getDate()).padStart(2, '0');
       const workDate = `${year}-${month}-${day}`;
+
+      // 週単位のアドバイザリロックを取得して同一従業員・同一週の並行操作を直列化 (BLOCKER-01対応)
+      await acquireAdvisoryLock(client, getAttendanceWeekLockKey(tenantId, input.employee_id, workDate));
 
       // 従業員の存在とactiveステータスを確認
       const empRes = await client.query<{ id: string; name: string; employee_no: string }>(
@@ -378,7 +448,13 @@ export class AttendanceService {
   ): Promise<AttendanceRecordDto> {
     return this.db.transaction(tenantId, userId, async (client) => {
       await this.assertUserPermission(client, tenantId, userId, 'attendance.create');
-      await this.assertEmployeeAccess(client, tenantId, userId, input.employee_id);
+      await this.assertEmployeeManageAccess(client, tenantId, userId, input.employee_id);
+
+      // 週単位のアドバイザリロックを取得して同一従業員・同一週の並行登録を直列化 (BLOCKER-01対応)
+      await acquireAdvisoryLock(
+        client,
+        getAttendanceWeekLockKey(tenantId, input.employee_id, input.work_date),
+      );
 
       // 従業員確認
       const empRes = await client.query<{ id: string; name: string; employee_no: string }>(
@@ -446,22 +522,18 @@ export class AttendanceService {
         },
       });
 
-      // 退勤済みレコードの場合、週40時間を超える時間外を当該週のレコード群に反映
-      if (input.clock_in && input.clock_out) {
-        await this.recalculateWeeklyWorkHours(client, tenantId, input.employee_id, input.work_date);
+      // 勤怠レコード作成時は未退勤・退勤済みを問わず常にその週を再計算する (BLOCKER-02対応)
+      await this.recalculateWeeklyWorkHours(client, tenantId, input.employee_id, input.work_date);
 
-        const reloadedRes = await client.query<AttendanceRecordRow>(
-          `SELECT a.*, e.employee_no, e.name AS employee_name
-           FROM attendance_records a
-           JOIN employees e ON e.id = a.employee_id
-           WHERE a.id = $1`,
-          [created.id],
-        );
+      const reloadedRes = await client.query<AttendanceRecordRow>(
+        `SELECT a.*, e.employee_no, e.name AS employee_name
+         FROM attendance_records a
+         JOIN employees e ON e.id = a.employee_id
+         WHERE a.id = $1`,
+        [created.id],
+      );
 
-        return mapAttendanceRecordRow(reloadedRes.rows[0] ?? created);
-      }
-
-      return mapAttendanceRecordRow(created);
+      return mapAttendanceRecordRow(reloadedRes.rows[0] ?? created);
     });
   }
 
@@ -490,7 +562,13 @@ export class AttendanceService {
         throw AppException.notFound('指定された勤怠記録が見つかりません');
       }
 
-      await this.assertEmployeeAccess(client, tenantId, userId, existing.employee_id);
+      await this.assertEmployeeManageAccess(client, tenantId, userId, existing.employee_id);
+
+      // 週単位のアドバイザリロックを取得して同一従業員・同一週の並行更新を直列化 (BLOCKER-01対応)
+      await acquireAdvisoryLock(
+        client,
+        getAttendanceWeekLockKey(tenantId, existing.employee_id, toDateString(existing.work_date)),
+      );
 
       const clockIn = input.clock_in !== undefined ? input.clock_in : existing.clock_in;
       const clockOut = input.clock_out !== undefined ? input.clock_out : existing.clock_out;
@@ -564,22 +642,18 @@ export class AttendanceService {
         },
       });
 
-      // 退勤済みレコードの場合、週40時間を超える時間外を当該週のレコード群に反映
-      if (clockIn && clockOut) {
-        await this.recalculateWeeklyWorkHours(client, tenantId, existing.employee_id, toDateString(existing.work_date));
+      // 勤怠レコードに変更が加えられたら、未退勤化・退勤済みを問わず常にその週を再計算する (BLOCKER-02対応)
+      await this.recalculateWeeklyWorkHours(client, tenantId, existing.employee_id, toDateString(existing.work_date));
 
-        const reloadedRes = await client.query<AttendanceRecordRow>(
-          `SELECT a.*, e.employee_no, e.name AS employee_name
-           FROM attendance_records a
-           JOIN employees e ON e.id = a.employee_id
-           WHERE a.id = $1`,
-          [updated.id],
-        );
+      const reloadedRes = await client.query<AttendanceRecordRow>(
+        `SELECT a.*, e.employee_no, e.name AS employee_name
+         FROM attendance_records a
+         JOIN employees e ON e.id = a.employee_id
+         WHERE a.id = $1`,
+        [updated.id],
+      );
 
-        return mapAttendanceRecordRow(reloadedRes.rows[0] ?? updated);
-      }
-
-      return mapAttendanceRecordRow(updated);
+      return mapAttendanceRecordRow(reloadedRes.rows[0] ?? updated);
     });
   }
 
@@ -594,10 +668,10 @@ export class AttendanceService {
     return this.db.transaction(tenantId, userId, async (client) => {
       await this.assertUserPermission(client, tenantId, userId, 'attendance.view');
 
-      const isManager = await this.isManager(client, tenantId, userId);
+      const canViewAll = await this.canViewAllAttendance(client, tenantId, userId);
       let targetEmployeeId = query.employee_id;
 
-      if (!isManager) {
+      if (!canViewAll) {
         const selfEmpRes = await client.query<{ id: string }>(
           `SELECT id FROM employees WHERE tenant_id = $1 AND user_id = $2 AND status = 'active' LIMIT 1`,
           [tenantId, userId],
@@ -607,7 +681,7 @@ export class AttendanceService {
           throw AppException.forbidden('有効な従業員プロファイルが紐づいていません');
         }
         if (targetEmployeeId && targetEmployeeId !== selfEmp.id) {
-          throw AppException.forbidden('他人の勤怠データに対する操作・閲覧は許可されていません');
+          throw AppException.forbidden('他人の勤怠データに対する閲覧は許可されていません');
         }
         targetEmployeeId = selfEmp.id;
       }
@@ -682,7 +756,7 @@ export class AttendanceService {
         throw AppException.notFound('指定された勤怠記録が見つかりません');
       }
 
-      await this.assertEmployeeAccess(client, tenantId, userId, row.employee_id);
+      await this.assertEmployeeViewAccess(client, tenantId, userId, row.employee_id);
 
       return mapAttendanceRecordRow(row);
     });

@@ -78,6 +78,8 @@ async function run() {
     const userA_Employee = randomUUID();
     const userA_NoPerm = randomUUID();
     const userB_Owner = randomUUID();
+    const userA_PayrollAdmin = randomUUID();
+    const userA_AccountingManager = randomUUID();
 
     const empA1 = randomUUID();
     const empA2_inactive = randomUUID();
@@ -100,30 +102,38 @@ async function run() {
          ($1, 'owner_a_${tenantA.slice(0, 8)}@example.com', 'hash', 'Owner A'),
          ($2, 'emp_a_${tenantA.slice(0, 8)}@example.com', 'hash', 'Employee A'),
          ($3, 'noperm_a_${tenantA.slice(0, 8)}@example.com', 'hash', 'No Perm A'),
-         ($4, 'owner_b_${tenantB.slice(0, 8)}@example.com', 'hash', 'Owner B')`,
-        [userA_Owner, userA_Employee, userA_NoPerm, userB_Owner],
+         ($4, 'owner_b_${tenantB.slice(0, 8)}@example.com', 'hash', 'Owner B'),
+         ($5, 'payroll_a_${tenantA.slice(0, 8)}@example.com', 'hash', 'Payroll Admin A'),
+         ($6, 'acctmgr_a_${tenantA.slice(0, 8)}@example.com', 'hash', 'Acct Manager A')`,
+        [userA_Owner, userA_Employee, userA_NoPerm, userB_Owner, userA_PayrollAdmin, userA_AccountingManager],
       );
 
       // tenant_users
       await client.query(
         `INSERT INTO tenant_users (tenant_id, user_id) VALUES
-         ($1, $2), ($1, $3), ($1, $4), ($5, $6)`,
-        [tenantA, userA_Owner, userA_Employee, userA_NoPerm, tenantB, userB_Owner],
+         ($1, $2), ($1, $3), ($1, $4), ($1, $5), ($1, $6), ($7, $8)`,
+        [tenantA, userA_Owner, userA_Employee, userA_NoPerm, userA_PayrollAdmin, userA_AccountingManager, tenantB, userB_Owner],
       );
 
       // ロール割り当て
-      // userA_Owner -> owner
-      // userA_Employee -> employee
+      // userA_Owner -> owner (全権限)
+      // userA_Employee -> employee (本人限定権限)
+      // userA_PayrollAdmin -> payroll_admin (勤怠管理者権限)
+      // userA_AccountingManager -> accounting_manager (勤怠・従業員閲覧専用権限)
       // userA_NoPerm -> なし (権限なし)
-      // userB_Owner -> owner
+      // userB_Owner -> owner (Tenant B)
       await client.query(
         `INSERT INTO user_roles (tenant_id, user_id, role_id)
          SELECT $1::uuid, $2::uuid, id FROM roles WHERE code = 'owner'
          UNION ALL
          SELECT $1::uuid, $3::uuid, id FROM roles WHERE code = 'employee'
          UNION ALL
-         SELECT $4::uuid, $5::uuid, id FROM roles WHERE code = 'owner'`,
-        [tenantA, userA_Owner, userA_Employee, tenantB, userB_Owner],
+         SELECT $1::uuid, $4::uuid, id FROM roles WHERE code = 'payroll_admin'
+         UNION ALL
+         SELECT $1::uuid, $5::uuid, id FROM roles WHERE code = 'accounting_manager'
+         UNION ALL
+         SELECT $6::uuid, $7::uuid, id FROM roles WHERE code = 'owner'`,
+        [tenantA, userA_Owner, userA_Employee, userA_PayrollAdmin, userA_AccountingManager, tenantB, userB_Owner],
       );
 
       // 従業員登録 (Tenant A: active 2名, inactive 1名)
@@ -192,10 +202,10 @@ async function run() {
     console.log('  [PASS] Service層: attendance.create 未保持ユーザーを403拒否 (二重防御)');
 
     // --------------------------------------------------------------------------
-    // 2.1 Object-level Authorization 実DB検証 (BLOCKER-02対応)
+    // 2.1 Object-level Authorization 実DB検証 (BLOCKER-02対応 & RBACロール定義整合性)
     // employeeロールのユーザーが他人のemployee_idを操作しようとすると5メソッド全てで403拒否されることを実証
     // --------------------------------------------------------------------------
-    console.log('2.1 Object-level Authorization 実DB検証 (BLOCKER-02: 5メソッドの403拒否)...');
+    console.log('2.1 Object-level Authorization & RBAC定義整合性実DB検証 (BLOCKER-02 / ロール境界)...');
 
     // (1) clock: employeeが他人のemployee_idで打刻試行 -> 403
     let objClockBlocked = false;
@@ -280,21 +290,43 @@ async function run() {
     expect(objListBlocked).toBe(true);
     console.log('  [PASS] Object-Auth 5/5: list() - employeeロールによる他人employee_id一覧取得を403拒否');
 
-    // (補足検証) list: employeeがemployee_id未指定の場合、自身のレコードのみにスコープ強制限定されることを実証
+    // (補足検証1) list: employeeがemployee_id未指定の場合、自身のレコードのみにスコープ強制限定されることを実証
     const empSelfList = await attendanceService.list(tenantA, userA_Employee, {});
     for (const r of empSelfList.records) {
       expect(r.employee_id).toBe(empA1);
     }
-    console.log('  [PASS] Object-Auth 補足: list() - employeeロール未指定時は自動的に自身の勤怠のみに限定');
+    console.log('  [PASS] Object-Auth 補足1: list() - employeeロール未指定時は自動的に自身の勤怠のみに限定');
 
-    // (補足検証) 管理者(owner)は他人の勤怠レコードを正常に閲覧・更新できることを実証
+    // (補足検証2) 管理者ロール(owner, payroll_admin)は他人の勤怠レコードを正常に閲覧・更新できることを実証
     const ownerGetRes = await attendanceService.getById(tenantA, userA_Owner, otherRecord.id);
     expect(ownerGetRes.employee_id).toBe(empA3_other);
-    const ownerUpdateRes = await attendanceService.updateRecord(tenantA, userA_Owner, otherRecord.id, {
-      note: '管理者による正当な更新',
+    const payrollAdminUpdateRes = await attendanceService.updateRecord(tenantA, userA_PayrollAdmin, otherRecord.id, {
+      note: 'payroll_adminによる正当な更新',
     });
-    expect(ownerUpdateRes.note).toBe('管理者による正当な更新');
-    console.log('  [PASS] 管理者ロール(owner): テナント内の全従業員の勤怠を正常に閲覧・更新可能であることを実証');
+    expect(payrollAdminUpdateRes.note).toBe('payroll_adminによる正当な更新');
+    console.log('  [PASS] 勤怠管理者ロール(owner, payroll_admin): テナント内の全従業員の勤怠を正常に閲覧・更新可能であることを実証');
+
+    // (補足検証3) accounting_manager は閲覧専用管理者: 全従業員の勤怠閲覧(getById, list)は可能だが、作成・更新は403拒否
+    const acctMgrGetRes = await attendanceService.getById(tenantA, userA_AccountingManager, otherRecord.id);
+    expect(acctMgrGetRes.employee_id).toBe(empA3_other);
+    const acctMgrListRes = await attendanceService.list(tenantA, userA_AccountingManager, { employee_id: empA3_other });
+    expect(acctMgrListRes.records.length).toBeGreaterThan(0);
+
+    let acctMgrCreateBlocked = false;
+    try {
+      await attendanceService.createRecord(tenantA, userA_AccountingManager, {
+        employee_id: empA3_other,
+        work_date: '2026-09-02',
+        clock_in: '2026-09-02T09:00:00+09:00',
+        clock_out: '2026-09-02T18:00:00+09:00',
+      });
+    } catch (e: any) {
+      if (e instanceof AppException && e.getStatus() === 403) {
+        acctMgrCreateBlocked = true;
+      }
+    }
+    expect(acctMgrCreateBlocked).toBe(true);
+    console.log('  [PASS] RBAC定義整合性: accounting_managerは閲覧専用(getById/list可、create/edit不可403)であることを実証');
 
     // --------------------------------------------------------------------------
     // 3. テナント完全分離実証 (RLS + テナント境界)
@@ -563,8 +595,83 @@ async function run() {
       expect(parseFloat(satAfterUpdateRes.rows[0]!.regular_hours)).toBe(1.0);
       expect(parseFloat(satAfterUpdateRes.rows[0]!.overtime_hours)).toBe(7.0);
       console.log('  [PASS] 境界値8: 実運用フロー週40時間超過の実DB反映 & 更新時自動再計算 (所定40h/時間外8h -> 更新後所定40h/時間外7h) 完全一致');
+
+      // (BLOCKER-02検証) 未退勤状態への修正(clock_out = null)による週次自動再計算の実証
+      // 登録されている金曜日(2026-09-25)の勤怠を clock_out = null に更新
+      // -> 金曜日自体の実働は0となり、週の確定実働が 月(8)+火(8)+水(7)+木(8)+土(8) の計39hに減少 (< 40h)
+      // -> 土曜日(2026-09-26)の時間外が 0.00h、所定が 8.00h に再計算されてDBに保存されることを実証
+      const friRecordRes = await checkDbClient.query<{ id: string }>(
+        `SELECT id FROM attendance_records WHERE tenant_id = $1 AND employee_id = $2 AND work_date = '2026-09-25'`,
+        [tenantA, empA1],
+      );
+      const updatedFri = await attendanceService.updateRecord(tenantA, userA_Owner, friRecordRes.rows[0]!.id, {
+        clock_out: null,
+      });
+      expect(updatedFri.clock_out).toBe(null);
+      expect(updatedFri.regular_hours).toBe(0.0);
+      expect(updatedFri.overtime_hours).toBe(0.0);
+
+      // 土曜日のレコードが自動再計算され、時間外0h・所定8hに戻っていることを実DBから確認
+      const satAfterFriReset = await checkDbClient.query<{ regular_hours: string; overtime_hours: string }>(
+        `SELECT regular_hours::text, overtime_hours::text
+         FROM attendance_records
+         WHERE tenant_id = $1 AND employee_id = $2 AND work_date = '2026-09-26'`,
+        [tenantA, empA1],
+      );
+      expect(parseFloat(satAfterFriReset.rows[0]!.regular_hours)).toBe(8.0);
+      expect(parseFloat(satAfterFriReset.rows[0]!.overtime_hours)).toBe(0.0);
+      console.log('  [PASS] BLOCKER-02: 未退勤化(clock_out=NULL)修正時の週次自動再計算 (土曜の時間外が0hに正常収束) 完全一致');
     } finally {
       checkDbClient.release();
+    }
+
+    // ケース9: 同一従業員・同一週の並行勤怠登録におけるAdvisory Lock直列化実証 (BLOCKER-01対応)
+    // 異なる2つのDBセッション/トランザクションから、同一従業員・同一週の異なる曜日(月・火)に対して
+    // 同時に createRecord() を実行。pg_advisory_xact_lock により安全に直列化され、
+    // レースコンディションやデッドロックなく正常終了し、集計が一致することを検証。
+    console.log('  -> ケース9: 同一従業員・同一週の並行勤怠登録のAdvisory Lock直列化実証 (BLOCKER-01)...');
+    const parallelEmp = empA3_other;
+    const parallelWeekDays = [
+      { work_date: '2026-10-05', clock_in: '2026-10-05T09:00:00+09:00', clock_out: '2026-10-05T18:00:00+09:00', break_minutes: 60 },
+      { work_date: '2026-10-06', clock_in: '2026-10-06T09:00:00+09:00', clock_out: '2026-10-06T18:00:00+09:00', break_minutes: 60 },
+    ];
+
+    // 2つの並行リクエストを Promise.all で同時に発行
+    const [parallelRes1, parallelRes2] = await Promise.all([
+      attendanceService.createRecord(tenantA, userA_Owner, {
+        employee_id: parallelEmp,
+        work_date: parallelWeekDays[0]!.work_date,
+        clock_in: parallelWeekDays[0]!.clock_in,
+        clock_out: parallelWeekDays[0]!.clock_out,
+        break_minutes: parallelWeekDays[0]!.break_minutes,
+      }),
+      attendanceService.createRecord(tenantA, userA_Owner, {
+        employee_id: parallelEmp,
+        work_date: parallelWeekDays[1]!.work_date,
+        clock_in: parallelWeekDays[1]!.clock_in,
+        clock_out: parallelWeekDays[1]!.clock_out,
+        break_minutes: parallelWeekDays[1]!.break_minutes,
+      }),
+    ]);
+
+    expect(parallelRes1.regular_hours).toBe(8.0);
+    expect(parallelRes2.regular_hours).toBe(8.0);
+
+    const parallelCheckClient = await pool.connect();
+    try {
+      const parallelSum = await parallelCheckClient.query<{ reg_sum: string; ot_sum: string; cnt: string }>(
+        `SELECT SUM(regular_hours)::text as reg_sum, SUM(overtime_hours)::text as ot_sum, COUNT(*)::text as cnt
+         FROM attendance_records
+         WHERE tenant_id = $1 AND employee_id = $2
+           AND work_date >= '2026-10-05' AND work_date <= '2026-10-11'`,
+        [tenantA, parallelEmp],
+      );
+      expect(parseInt(parallelSum.rows[0]!.cnt, 10)).toBe(2);
+      expect(parseFloat(parallelSum.rows[0]!.reg_sum)).toBe(16.0);
+      expect(parseFloat(parallelSum.rows[0]!.ot_sum)).toBe(0.0);
+      console.log('  [PASS] BLOCKER-01: 同一従業員・同一週の並行登録がAdvisory Lockにより直列化され、正常集計に収束することを実証');
+    } finally {
+      parallelCheckClient.release();
     }
 
     // --------------------------------------------------------------------------

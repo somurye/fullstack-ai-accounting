@@ -2515,7 +2515,7 @@ fail-closed運用）を踏襲しつつ、本Phaseは他のPhaseと質的に異�
 
 | タスクID | タスク名 | 概要 | 依存 | ステータス |
 |----------|----------|------|------|-----------|
-| P3-T1 | 従業員マスタ・勤怠管理 | 従業員情報、打刻（出勤・退勤・休憩）、労働時間集計（所定内・時間外・深夜・休日労働の区分） | P0-T1, P0-T4 | ⚠️ SO判定REQUEST CHANGES（コミットe1537ec、週40時間ロジックが実運用経路に未接続、employeeロールが他人の勤怠を操作できるobject-level authorization欠如。修正指示済み・再レビュー待ち） |
+| P3-T1 | 従業員マスタ・勤怠管理 | 従業員情報、打刻（出勤・退勤・休憩）、労働時間集計（所定内・時間外・深夜・休日労働の区分） | P0-T1, P0-T4 | ⚠️ SO判定REQUEST CHANGES（コミット0a04626、前回2 BLOCKERは解消。週次再計算の同時実行競合、未退勤への修正時の週次再計算漏れ、RBACロール定義とisManager()の不一致が新たに判明。修正指示済み・再レビュー待ち） |
 | P3-T2 | 保険料率・税率マスタ管理 | 健康保険・厚生年金・雇用保険の料率、所得税源泉徴収税額表、住民税率を有効期間付きで管理する基盤（5.2節の原則①に対応） | P0-T1 | 未着手 |
 | P3-T3 | 給与計算エンジン | 勤怠実績・基本給・手当・控除から給与を計算し、AI提案パターンで人間確認を経て確定する（5.2節の原則②に対応） | P3-T1, P3-T2 | 未着手 |
 | P3-T4 | 給与明細発行・年末調整 | 給与明細のPDF発行、年末調整の計算・書類生成 | P3-T3 | 未着手 |
@@ -2670,6 +2670,83 @@ createRecord/updateRecordを呼び出すと拒否される（403等）ことを�
 
 ---
 
+#### 【フォローアップ指示プロンプト P3-T1-FIX2】REQUEST CHANGES対応（週次再計算の競合・未退勤修正時の再計算漏れ・RBAC不一致）
+
+ChatGPT(SO)よりP3-T1-FIXが「REQUEST CHANGES」と判定された。前回2つのBLOCKER
+（週40時間計算の未接続、object-level authorization欠如）はいずれも正しく解消されている。
+今回の指摘は、「週40時間超過をDB確定値として保存する」という設計を採用したことで
+新たに顕在化した週次データ整合性の問題である。
+
+```
+# SOレビュー結果：P3-T1-FIX REQUEST CHANGES
+main...feature/p3-t1-employees-attendance の実差分（コミット0a04626）を確認した結果、
+現状はマージ不可です。前回の2つのBLOCKERは解消されていますが、以下2点の新規BLOCKERと
+1点の要確認事項があります。
+
+# BLOCKER-01: 週次再計算の同時実行競合
+recalculateWeeklyWorkHours()は対象週の「既存レコード」をFOR UPDATEでロックしていますが、
+「まだ存在しない別日のレコードが同時に追加されるケース」を直列化できません。同じ従業員の
+同じ週について、異なる曜日の勤怠がほぼ同時に登録されると、互いの未commitの行が見えないため、
+週40時間超過の判定が漏れる可能性があります（これはP1-T3のDEBT-006、P2-T2のFIX2で
+対応した並行実行race conditionと同型の問題です）。
+
+## 修正方針
+P2-T2で確立したpg_advisory_xact_lockのパターンを踏襲し、「tenant_id + employee_id + 週の
+開始日」をキーとしたtransaction advisory lockを、勤怠の作成・更新・週次再計算の冒頭で
+取得してください。これにより同一従業員・同一週への並行変更を直列化します。
+
+## 追加すべき実DB E2E（必須）
+同一従業員・同一週の異なる曜日について、2つのDB接続/トランザクションで同時に勤怠を
+登録し、最終的な週次集計（regular_hours/overtime_hours）が正しい値に収束することを
+確認してください。
+
+# BLOCKER-02: 未退勤状態への修正時に週次再計算が行われない
+updateRecord()が「clockInかつclockOutが両方存在する場合のみ」recalculateWeeklyWorkHours()
+を呼んでいるため、既に退勤済みだった勤怠のclock_outをNULLに戻す（未退勤状態に戻す）
+修正を行った場合、影響を受ける週の他の日のovertime_hours等が古い値のまま残ります。
+これは後続の給与計算（P3-T3）に古い時間外データが渡るリスクがあります。
+
+## 修正方針
+「clockInとclockOutが両方揃った場合のみ再計算」ではなく、「対象employee/work_dateの
+勤怠レコードに変更が加えられたら、常にその週を再計算する」という設計に変更してください。
+clock_outがNULLになった当日自体の時間は0として扱い、その上で週の他の日を含めて
+再集計してください。
+
+## 追加すべき実DB E2E（必須）
+6日分の勤怠を登録して週40時間超過が発生する状態を作った後、そのうち1日をclock_out=NULLに
+戻す更新を行い、残りの日のovertime_hours等が正しく再集計されることを確認してください。
+
+# 要確認事項: RBACロール定義とisManager()の実装不一致
+完了報告では「owner, payroll_admin, accounting_managerはテナント管理者ロール」として
+いますが、実際のrole_permissionsではaccounting_manager/approverにemployee.create/edit,
+attendance.create/editが付与されておらず、isManager()には含まれているのにpermissionが
+不足しているため実質的に管理者操作ができません。以下のどちらかに揃えてください。
+  (a) accounting_manager/approverにも管理者相当のattendance.create/edit等を正式に付与する
+  (b) isManager()からaccounting_manager/approverを除外し、これらのロールは
+      employee.view/attendance.viewの閲覧専用として明確化する
+どちらを採用するか判断し、SQLのrole_permissionsとisManager()の実装、および完了報告の
+記述を一致させてください。
+
+# 受け入れ基準（Definition of Done）
+- [ ] 同一従業員・同一週への並行勤怠登録が、advisory lockにより直列化され、
+      最終的な週次集計が正しい値に収束することを実DB E2Eで確認する
+- [ ] clock_outをNULLに戻す更新後も、対象週の他の日の時間外集計が正しく再計算される
+- [ ] role_permissionsとisManager()の実装、完了報告の記述が一致している
+- [ ] 前回のBLOCKER-01/02（週次計算の実運用接続、object-level authorization）に回帰がない
+- [ ] 完了報告に正確なコミットSHA（git rev-parse HEAD）・ブランチ名を明記する
+      （本計画書0.4節ルール4に従う）
+- [ ] feature/p3-t1-employees-attendance ブランチに追加コミット・pushし、比較URLを
+      報告に含める
+
+# ChatGPTレビュー時の確認観点
+- advisory lockのキー（tenant_id + employee_id + 週開始日）が、他タスクで既に使われている
+  lockキー空間（supplier:等）と衝突しない設計になっているか
+- 「常に週を再計算する」という変更が、パフォーマンス上明らかな悪化（不要な再計算の多発）を
+  招いていないか
+```
+
+---
+
 ## 6. 既知の技術的負債・フォローアップ事項
 
 タスク完了時にSOが「修正不要だが記録すべき」と判定した事項を追跡する。将来の関連タスク着手時に必ず参照すること。
@@ -2755,3 +2832,4 @@ createRecord/updateRecordを呼び出すと拒否される（403等）ことを�
 | 5.3.0 | P2-T4-MERGE完了報告を反映（マージコミットb0a6756、main上でE2E 125/125・Jest 141/141・build成功を再確認）。Phase 2が正式クローズ |
 | 6.0.0 | **Phase 3（人事労務）のセクションを新設**。給与計算・社保を含めて一気に計画する方針を確認。5.2節に本Phase特有の設計原則（保険料率・税率のマスタ化、AI提案+人間承認パターンの適用、専門家レビューの推奨、監査可能性）を明記。タスク分解（P3-T1〜T4）とP3-T1（従業員マスタ・勤怠管理）の実装指示プロンプトを追加。ロードマップ表のPhase 3を着手中に更新。以降のセクション番号を1つずつ繰り下げ |
 | 6.1.0 | P3-T1がSO判定REQUEST CHANGES（週40時間計算関数は実装・単体テストされているが実際の勤怠登録フローに未接続、employeeロールに本人限定のobject-level authorizationがなく他人の勤怠を操作可能）。フォローアップ指示プロンプト（P3-T1-FIX）を追加。DEBT-016（break_minutesの拘束時間超過検証なし）、DEBT-017（clock-in更新時の監査ログ欠落）を記録。0.4節ルール5に3件目の実例（P3-T1）を追記し「関数の存在≠実運用経路での動作」という教訓を明文化 |
+| 6.2.0 | P3-T1-FIXがSO判定REQUEST CHANGES（前回2 BLOCKERは解消。週次再計算の同時実行競合、未退勤への修正時の週次再計算漏れ、RBACロール定義とisManager()の不一致が新規判明）。フォローアップ指示プロンプト（P3-T1-FIX2、advisory lockによる週次直列化＋常時週次再計算＋RBAC定義の統一）を追加 |
