@@ -63,7 +63,7 @@ SQL_DIR = REPO_ROOT / "sql"
 
 DOCKER_CONTAINER_NAME = "keiri_kaikei_verify_pg"
 DOCKER_IMAGE = "pgvector/pgvector:pg16"
-DOCKER_PORT = 55432
+DOCKER_PORT = int(os.environ.get("VERIFY_DOCKER_PORT", "54320"))
 DOCKER_PASSWORD = "verify_pw"
 DOCKER_DB = "keiri_kaikei_verify"
 
@@ -1938,13 +1938,62 @@ def run_verification(dsn: str) -> int:
     r.ok("段階的アップグレード検証 7: 019を2回連続適用してもエラーにならず正常終了する (ALTER TABLE / DDL 冪等性保証)",
          idempotent_019_ok)
 
-    # 16-7. 【P2-T3実証】発注〜検収〜請求 実DB E2Eテスト
+    # 16-7. 020_purchase_receipt_worm_delete.sql を適用 (P2-T3-FIX: DELETE防止WORMトリガー & app_runtime権限剥奪)
+    file_020 = SQL_DIR / "020_purchase_receipt_worm_delete.sql"
+    with open(file_020, encoding="utf-8") as f:
+        sql_020 = f.read()
+    conn = psycopg2.connect(dsn)
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql_020)
+    finally:
+        conn.close()
+    print("[schema] 020_purchase_receipt_worm_delete.sql を適用しました")
+
+    # 16-8. purchase_receipts に DELETE 防止トリガー (trg_prevent_purchase_receipt_delete) が存在することを確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute(
+            """SELECT tgname FROM pg_trigger
+               WHERE tgrelid = 'purchase_receipts'::regclass
+                 AND tgname = 'trg_prevent_purchase_receipt_delete'"""
+        )
+        trg_del = cur.fetchone()
+    r.ok("purchase_receipts に DELETE 防止トリガー (trg_prevent_purchase_receipt_delete) が存在する (P2-T3-FIX WORM保証)",
+         trg_del is not None)
+
+    # 16-9. app_runtime ロールから DELETE 権限が剥奪されていることを確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute(
+            """SELECT has_table_privilege('app_runtime', 'purchase_receipts', 'DELETE') AS can_delete"""
+        )
+        can_del = cur.fetchone()["can_delete"]
+    r.ok("app_runtime ロールから purchase_receipts の DELETE 権限が剥奪されている (最小権限の原則)",
+         not can_del)
+
+    # 16-10. 冪等性保証: 020を2回連続適用してもエラーにならないこと
+    idempotent_020_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_020)
+        finally:
+            conn.close()
+    except Exception as e:
+        idempotent_020_ok = False
+        print(f"  [ERROR] 020 re-apply failed: {e}")
+    r.ok("段階的アップグレード検証 8: 020を2回連続適用してもエラーにならず正常終了する (DDL 冪等性保証)",
+         idempotent_020_ok)
+
+    # 16-11. 【P2-T3実証】発注〜検収〜請求 実DB E2Eテスト (DELETE WORM防止含む)
     cmd_p2t3 = f"npx ts-node src/scripts/verify-purchase-receipts-billing-e2e.ts \"{dsn}\""
     p2t3_run = subprocess.run(cmd_p2t3, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
     if p2t3_run.returncode != 0:
         err_msg = f"\n[P2-T3 E2E ERROR STDOUT]:\n{p2t3_run.stdout}\n[P2-T3 E2E ERROR STDERR]:\n{p2t3_run.stderr}"
         print(err_msg.encode("cp932", errors="replace").decode("cp932"))
-    r.ok("発注〜検収〜請求E2E: 分納・状態一貫性・数量超過防止・Advisory Lock同時実行直列化・tenant整合性・請求紐付け・WORM・RBACが動作する (P2-T3)",
+    r.ok("発注〜検収〜請求E2E: 分納・状態一貫性・数量超過防止・Advisory Lock同時実行直列化・tenant整合性・請求紐付け・WORM(UPDATE/DELETE)・RBACが動作する (P2-T3)",
          p2t3_run.returncode == 0)
 
     return r.summary()
@@ -1978,9 +2027,9 @@ def main() -> int:
         # 2. 検証実行 (セクション12で015、セクション13で016、セクション14で017、セクション15で018、セクション16で019段階適用 -> E2E実行)
         exit_code = run_verification(dsn)
 
-        # 3. クリーンDBに最初から001〜019を一括適用した場合の回帰なし確認
+        # 3. クリーンDBに最初から001〜020を一括適用した場合の回帰なし確認
         if exit_code == 0:
-            fresh_db_name = "keiri_kaikei_fresh_019"
+            fresh_db_name = "keiri_kaikei_fresh_020"
             conn_raw = psycopg2.connect(dsn)
             conn_raw.autocommit = True
             try:
@@ -1991,9 +2040,9 @@ def main() -> int:
                 conn_raw.close()
 
             dsn_fresh = dsn.rsplit("/", 1)[0] + f"/{fresh_db_name}"
-            print("\n--- クリーンDBへの001〜019一括適用検証 (新規環境回帰なし確認) ---")
+            print("\n--- クリーンDBへの001〜020一括適用検証 (新規環境回帰なし確認) ---")
             apply_schema(dsn_fresh)
-            print("[schema] クリーンDBへの001〜019一括適用が正常終了しました (回帰なし確認完了)")
+            print("[schema] クリーンDBへの001〜020一括適用が正常終了しました (回帰なし確認完了)")
     finally:
         if args.use_docker and not args.keep_docker:
             docker_stop()

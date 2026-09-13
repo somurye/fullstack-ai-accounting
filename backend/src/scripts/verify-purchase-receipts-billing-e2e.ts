@@ -482,19 +482,63 @@ async function run() {
     // --------------------------------------------------------------------------
     // 9. 改ざん防止 (WORM) トリガー検証
     // --------------------------------------------------------------------------
-    console.log('9. 検収記録の改ざん防止 (WORM) トリガー検証...');
-    let wormError: any = null;
+    // --------------------------------------------------------------------------
+    // 9. 検収記録の改ざん・削除防止 (WORM) トリガー & 権限検証 (P2-T3-FIX)
+    // --------------------------------------------------------------------------
+    console.log('9. 検収記録の改ざん・削除防止 (WORM) トリガー & 権限検証...');
+    // 9-1. UPDATE試行 -> 23514 で拒否
+    let wormUpdateError: any = null;
     try {
       await pool.query(
         `UPDATE purchase_receipts SET received_quantity = 99 WHERE id = $1`,
         [rec1.id],
       );
     } catch (err: any) {
-      wormError = err;
+      wormUpdateError = err;
     }
-    expect(wormError).not.toBeNull();
-    expect(wormError.code).toBe('23514');
-    console.log('   -> [PASS] purchase_receipts の UPDATE が DBトリガーで安全に遮断された (追記専用 WORM 特性の維持)');
+    expect(wormUpdateError).not.toBeNull();
+    expect(wormUpdateError.code).toBe('23514');
+    console.log('   -> [PASS] purchase_receipts の UPDATE が DBトリガーで安全に遮断された (23514)');
+
+    // 9-2. DELETE試行 (DBトリガーによる23514拒否: スーパーユーザー/トリガー検証)
+    let wormDeleteError: any = null;
+    try {
+      await pool.query(
+        `DELETE FROM purchase_receipts WHERE id = $1`,
+        [rec1.id],
+      );
+    } catch (err: any) {
+      wormDeleteError = err;
+    }
+    expect(wormDeleteError).not.toBeNull();
+    expect(wormDeleteError.code).toBe('23514');
+    console.log('   -> [PASS] purchase_receipts の DELETE が DBトリガーで安全に遮断された (23514)');
+
+    // 9-3. app_runtime ロールでの DELETE 権限剥奪検証 (42501 / 23514)
+    let appRuntimeDeleteError: any = null;
+    await db.transaction(tenantA, userA_Owner, async (client) => {
+      await client.query(`SET LOCAL ROLE app_runtime`);
+      try {
+        await client.query(
+          `DELETE FROM purchase_receipts WHERE id = $1`,
+          [rec1.id],
+        );
+      } catch (err: any) {
+        appRuntimeDeleteError = err;
+      }
+    });
+    expect(appRuntimeDeleteError).not.toBeNull();
+    expect(appRuntimeDeleteError.code === '42501' || appRuntimeDeleteError.code === '23514').toBe(true);
+    console.log('   -> [PASS] app_runtime ロールでの DELETE 試行が多層防御で安全に遮断された');
+
+    // 9-4. 操作後もレコードが変更されずに残存していることの確認
+    const { rows: survivingRows } = await pool.query<{ id: string; received_quantity: string }>(
+      `SELECT id, received_quantity FROM purchase_receipts WHERE id = $1`,
+      [rec1.id],
+    );
+    expect(survivingRows).toHaveLength(1);
+    expect(Number(survivingRows[0].received_quantity)).toBe(4); // 作成時の数量4のまま無傷
+    console.log('   -> [PASS] UPDATE/DELETE 試行後も検収レコードが改変・削除されずに完全に残存していることを確認');
 
     // --------------------------------------------------------------------------
     // 10. 完全テナント分離 (RLS)

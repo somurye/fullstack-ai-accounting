@@ -1805,7 +1805,7 @@ migrationのappend-only・fail-closed運用）をそのまま踏襲し、発注�
 |----------|----------|------|------|-----------|
 | P2-T1 | `purchase_requests`テーブル設計・実装 | 発注申請本体（品目、数量、単価、サプライヤー、金額、納期、ステータス）、既存承認エンジン統合、RBAC強制 | P0-T1, P1-T1, P1-T3 | ✅ SO正式PASS（コミット9e4fe21、初回レビューでPASS。DEBT-013を記録、mainマージ指示済み） |
 | P2-T2 | サプライヤー（取引先）マスタ管理 | サプライヤー登録・編集・検索、連絡先・支払条件等の管理、purchase_requestsとの関連付け | P0-T1, P2-T1 | ✅ SO正式PASS・mainマージ完了（マージコミット`05ffb6f`、main上でE2E 114/114・Jest 133/133・build成功を再確認済み） |
-| P2-T3 | 発注〜検収〜請求の連携 | purchase_requestsが承認完了した後の発注確定、検収記録、既存vendor_bills（請求書管理）との紐付け | P2-T1, P2-T2 | ⏸️ レビュー待ち（完了報告に対応するコミットがGitHub main(f014b9a)上でまだ確認できず。push状態の確認・是正を指示済み） |
+| P2-T3 | 発注〜検収〜請求の連携 | purchase_requestsが承認完了した後の発注確定、検収記録、既存vendor_bills（請求書管理）との紐付け | P2-T1, P2-T2 | ⚠️ SO判定REQUEST CHANGES（コミットc5bc30a、purchase_receiptsがUPDATEはWORM防御されているがDELETEはトリガー・権限とも未防御。修正指示済み・再レビュー待ち） |
 | P2-T4 | 購買ダッシュボード・レポート | テナント内の購買状況（申請中・承認済み・発注済み件数、サプライヤー別支出等）の可視化 | P2-T1, P2-T2, P2-T3 | 未着手 |
 
 P2-T2以降の詳細タスク分解・実装指示プロンプトは、P2-T1の実装結果（実際のテーブル定義・
@@ -2195,6 +2195,66 @@ SOはコミットSHAを受け取り次第、main...HEADの実差分を確認し�
 
 ---
 
+#### 【フォローアップ指示プロンプト P2-T3-FIX】REQUEST CHANGES対応（purchase_receiptsのDELETE WORMが未防御）
+
+ChatGPT(SO)よりP2-T3が「REQUEST CHANGES」と判定された。部分納品の数量超過防御・
+concurrency race対策・tenant整合性・RBAC・vendor_bills連携は評価されており、
+修正対象はDELETEに対するWORM防御の欠落1点に限定される。
+
+```
+# SOレビュー結果：P2-T3 REQUEST CHANGES
+main...feature/p2-t3-purchase-receipts-billing の実差分（コミットc5bc30a）を確認した結果、
+現状はマージ不可です。purchase_receiptsは「追記専用（append-only）」という仕様であるにも
+かかわらず、UPDATEに対するWORMトリガーはあるものの、DELETEに対する防御が存在しません。
+さらにapp_runtimeロールにDELETE権限そのものが付与されているため、APIにDELETE
+エンドポイントが存在しないことに頼るだけの状態になっています。APIレベルで防いでいるだけ
+ではDBを最終防衛線とする原則を満たしません。
+
+# 修正方針
+1. purchase_receiptsへのDELETEを拒否するBEFORE DELETEトリガーを追加する。
+   （UPDATEトリガーと同様のパターンで、RAISE EXCEPTION ... USING ERRCODE = '23514'とする）
+2. 可能であれば、app_runtimeロールに対するDELETE権限自体をREVOKEする
+   （GRANT SELECT, INSERT, UPDATE ON purchase_receipts TO app_runtime; のようにDELETEを
+   含めない形に修正する）。トリガーとGRANT制限の両方を防御層として持たせる。
+3. 既存のmigrationを書き換えるのではなく、新規migrationとして今回の修正を追加する
+   （本計画書0.4節のappend-only原則に従う）。
+
+# 追加すべき実DB E2E（必須）
+purchase_receiptsに対して以下を実PostgreSQLで確認してください。
+  1. INSERT成功
+  2. UPDATE試行 → 23514で拒否（既存確認分の維持）
+  3. DELETE試行 → 23514で拒否（新規追加）
+  4. 上記の操作後もレコードが変更されずに残存していることを確認
+
+# あわせて確認してほしいこと（今回のブロッカーではないが、報告に含めること）
+hasPurchaseReceiptsTable() / hasVendorBillPurchaseRequestId() について、P2-T2の
+hasSupplierIdColumn()で問題になった「DBエラーをcatchでfalseに変換する」という広すぎる
+catch句が存在しないか確認してください。存在する場合は同じ方針（列/テーブルの非存在は
+正常なクエリ結果として判定し、クエリ自体の失敗は例外として伝播させる）で修正してください。
+
+# 修正不要（今回は記録のみ）
+- purchase_requestsがactiveからterminatedへ遷移した後もvendor_bills.purchase_request_idの
+  リンクが自動解除されない点は、今回のDoD範囲外です。DEBT-014として計画書側で追跡します。
+
+# 受け入れ基準（Definition of Done）
+- [x] purchase_receiptsへのDELETEがDBトリガーで拒否される
+- [x] app_runtimeのDELETE権限が削除されている（可能な場合）
+- [x] 既存のUPDATE拒否・数量超過防御・tenant整合性等のE2Eに回帰がない
+- [x] hasPurchaseReceiptsTable() / hasVendorBillPurchaseRequestId() のDBエラー処理を確認し、
+      広すぎるcatchがあれば修正する（なければその旨を報告に明記する）
+- [x] クリーンDBで001〜019（および今回の追加migration）を再適用し、全件PASSを確認する
+- [x] feature/p2-t3-purchase-receipts-billing ブランチに追加コミット・pushし、比較URLを
+      報告に含める（本計画書0.4節に従う）
+
+# ChatGPTレビュー時の確認観点
+- DELETEトリガーの追加によって、既存の正常なINSERT/UPDATEフローに意図しない副作用が
+  出ていないか
+- app_runtimeのDELETE権限REVOKEが、他の正当な運用上のDELETE操作（もしあれば）を
+  阻害していないか
+```
+
+---
+
 ## 5. 既知の技術的負債・フォローアップ事項
 
 タスク完了時にSOが「修正不要だが記録すべき」と判定した事項を追跡する。将来の関連タスク着手時に必ず参照すること。
@@ -2214,6 +2274,7 @@ SOはコミットSHAを受け取り次第、main...HEADの実差分を確認し�
 | DEBT-011 | P1-T6 | 契約書全文検索のembeddingは、外部embedding APIを呼ばず文字n-gramのハッシュによる疑似embedding（`pseudo-char-ngram-hash-v1`）で生成されている。MVPとしては許容範囲（model_nameも実態を正しく表しており、DEBT-003のような虚偽表示問題は回避できている）が、実運用での検索精度は限定的。将来的には実際のembeddingモデル（OpenAI/Anthropic/オープンソース等）への切り替えを検討する必要がある。 | LOW（検索精度の課題、セキュリティ上の問題ではない） | 契約書全文検索の実運用フィードバックを見て、精度不足が問題になった場合に対応 | 🔴 未対応（意図的なMVP実装として現状維持） |
 | DEBT-012 | P1-T6-FIX | 契約書全文検索の対象は`status='active'`のみに限定されており、`terminated`（解約済み）・`expired`（満了）の過去契約は検索対象に含まれない。「過去契約も参照したい」という業務ニーズが将来生じた場合、`include_inactive`のような明示的なオプションを別タスクとして設計する必要がある。 | LOW（意図的な保守的設計、機能制約） | 過去契約検索の必要性が具体化したタイミングで別タスクとして対応 | 🔴 未対応（意図的な機能制約として現状維持） |
 | DEBT-013 | P2-T1 | `purchase_requests.request_no`の採番が「現存レコード数（COUNT）+1」方式になっており、advisory lockにより同時実行時の重複は防げるものの、厳密な連番カウンタではない。draftレコードが物理削除可能な設計と組み合わさると、削除されたレコードの番号が将来別の申請で再利用され得る。監査要件が厳格化した場合は、専用sequence/counterテーブル方式への変更を検討する。 | LOW（現仕様の範囲では実害なし） | 監査要件強化、またはrequest_noの一意性・不再利用が業務上必須になったタイミングで対応 | 🔴 未対応 |
+| DEBT-014 | P2-T3 | `purchase_requests`がactiveから`terminated`へ遷移した後も、`vendor_bills.purchase_request_id`によるリンクが自動解除されずに残る。発注取消後も請求書との紐付けが残存し得るため、発注終了・取消と請求書のライフサイクルの関係を厳密に扱う必要が生じた場合は、リンク解除ロジックまたは`terminated`への遷移自体の制限（未精算の紐付けがある場合の遷移拒否等）を別途検討する。 | LOW〜MEDIUM（今回のDoD範囲外、将来の業務要件次第） | 発注取消と請求書処理の関係が業務上重要になったタイミングで別タスクとして対応 | 🔴 未対応 |
 
 ---
 
@@ -2267,3 +2328,4 @@ SOはコミットSHAを受け取り次第、main...HEADの実差分を確認し�
 | 4.5.0 | P2-T2-FIX2が正式PASS（3つのBLOCKER全解消、並行実行の両方向を実DBで確認、Schema E2E 114/114・Jest 133/133）。マージ指示プロンプト（P2-T2-MERGE）を追加しP2-T2を完了扱いに更新。**P2-T3（発注〜検収〜請求の連携）の実装指示プロンプトを新規作成** |
 | 4.6.0 | P2-T2-MERGE完了報告を反映（マージコミット05ffb6f、main上での再検証結果全PASS）。P2-T2が正式クローズ |
 | 4.7.0 | P2-T3について、完了報告に対応する実装コミットがGitHub main上でまだ確認できず、SOがレビュー保留（レビュー待ち⏸️）。フォローアップ指示プロンプト（P2-T3-VERIFY）を追加し、push状態の確認・是正を指示（0.4節の既存ルールの再徹底、P1-T5-FIX3-VERIFYと同型の対応） |
+| 4.8.0 | P2-T3がSO判定REQUEST CHANGES（purchase_receiptsがUPDATEはWORM防御されているがDELETEはトリガー・権限とも未防御。数量超過防御・concurrency race対策・tenant整合性・RBACは良好）。フォローアップ指示プロンプト（P2-T3-FIX、DELETEトリガー追加＋権限REVOKE）を追加。DEBT-014（terminated後のvendor_billsリンク未解除）を記録 |
