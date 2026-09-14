@@ -2,6 +2,7 @@ import {
   BarChart3,
   BookOpen,
   Building2,
+  Calculator,
   Clock,
   FileCheck,
   FileStack,
@@ -96,6 +97,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: '従業員マスタ', to: '/employees', icon: Users },
       { label: '勤怠管理・打刻', to: '/attendance', icon: Clock },
+      { label: '保険料率・税率マスタ', to: '/rate-masters', icon: Calculator },
     ],
   },
   {
