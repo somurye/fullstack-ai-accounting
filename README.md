@@ -118,4 +118,9 @@ npm run dev
 - `.env` および実際のAPIキー・DB接続情報はコミットしないこと（`.gitignore` で除外済み）。
 - 本番環境の `JWT_SECRET` / `SETTINGS_ENCRYPTION_KEY` / DB認証情報は、必ずシークレットマネージャ経由で注入すること。
 - `NODE_ENV=production` 起動時、`JWT_SECRET` / `SETTINGS_ENCRYPTION_KEY` が未設定、または `.env.example` 由来のデフォルト値のままの場合はfail-fastでプロセスが即座に終了する（`backend/src/config/validate-production-env.ts`）。
+- **DB最終防御の限界と受容するセキュリティ境界（計画書0.5節）**:
+  - 本システムは単一の共有DBロール（`app_runtime`）で全DB操作を行うアーキテクチャを採用しています。そのため、DBトリガーが検証できるのはDBに格納された事実に基づく構造的な業務ルール（テナント完全分離・自己承認の禁止・承認権限ロールの保有等）であり、「生SQL文を実行している主体の本人性」そのものをDB単独で検証することはできません。
+  - 正規のAPI・Service層を経由する限り、`approval_history.approver_id` を含む操作主体IDは常にサーバー側の認証済みセッション（JWT等）から強制導出され、クライアント入力（リクエストボディやクエリ）で上書きすることは構造的に不可能です。
+  - **したがって、本システムの防御境界は「正規のAPI・Service層を経由した操作である限り、構造的業務ルールを確実に守る」という範囲までとし、`app_runtime` のDB認証情報自体を奪取した攻撃者による生SQL実行（本人性偽造）までは防御対象外（受容境界）とします。**
+
 

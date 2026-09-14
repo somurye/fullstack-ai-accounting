@@ -22,6 +22,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { DatabaseService } from '../database/database.service';
 import { AuditLogsService } from '../modules/audit-logs/audit-logs.service';
 import { ApprovalRequestsService } from '../modules/approval-requests/approval-requests.service';
+import { approvalRequestApproveSchema } from '../modules/approval-requests/dto/approval-request.schemas';
 import { PayrollCalculationsService } from '../modules/payroll-calculations/payroll-calculations.service';
 
 const rawDsn = process.argv[2] || process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/postgres';
@@ -784,6 +785,59 @@ async function main() {
     assert(
       fix4CalcActiveBlocked,
       '[P3-T3-FIX4 攻撃シナリオ4] 承認偽造失敗により payroll_calculations の active 化もDBトリガーで安全に拒否された',
+    );
+
+    // ------------------------------------------------------------------------
+    // 9-D. 【P3-T3-FIX5 実証】API経路における approver_id なりすまし不可能性の検証 (SO指摘シナリオ)
+    // ------------------------------------------------------------------------
+    console.log('\n9-D. 【P3-T3-FIX5 実証】API経路における approver_id なりすまし不可能性の検証...');
+
+    // 新規に計算レコードと承認依頼を作成
+    const fix5CalcRes = await client.query<{ id: string }>(
+      `INSERT INTO payroll_calculations (
+         tenant_id, employee_id, payroll_period, calculation_type,
+         total_gross_pay, total_deductions, net_pay, status
+       ) VALUES ($1, $2, '2026-06', 'regular', 300000, 50000, 250000, 'draft')
+       RETURNING id`,
+      [tenantA, employeeA],
+    );
+    const fix5CalcId = fix5CalcRes.rows[0].id;
+
+    const fix5ArResult = await client.query<{ id: string }>(
+      `INSERT INTO approval_requests (
+         tenant_id, target_type, target_id, submitted_by, total_steps, current_step, status
+       ) VALUES ($1, 'payroll', $2, $3, 1, 1, 'pending')
+       RETURNING id`,
+      [tenantA, fix5CalcId, payrollAdminA],
+    );
+    const fix5ArId = fix5ArResult.rows[0].id;
+
+    // 攻撃者がAPIリクエストボディに別ユーザー(ownerA)のapprover_idを含めて送信したと想定
+    const maliciousClientPayload = {
+      comment: 'なりすまし承認試行',
+      approver_id: ownerA,
+      userId: ownerA,
+      user_id: ownerA,
+    };
+
+    // Controller層の挙動を模倣: DTOスキーマパーサーを通す
+    const parsedDto = approvalRequestApproveSchema.parse(maliciousClientPayload);
+    assert(
+      (parsedDto as any).approver_id === undefined && (parsedDto as any).userId === undefined,
+      '[P3-T3-FIX5 攻撃遮断1] DTOパーサーによりクライアントが指定した approver_id / userId は完全に除外(strip)された',
+    );
+
+    // Controller層は常に認証セッション(approverA)から得た userId を Service に渡す
+    await approvalRequests.approve(tenantA, approverA, fix5ArId, parsedDto);
+
+    // 実DBの approval_history を確認: approver_id が ownerA ではなく approverA で記録されたことを検証
+    const fix5HistoryRes = await client.query<{ approver_id: string }>(
+      `SELECT approver_id FROM approval_history WHERE tenant_id = $1 AND approval_request_id = $2`,
+      [tenantA, fix5ArId],
+    );
+    assert(
+      fix5HistoryRes.rowCount === 1 && fix5HistoryRes.rows[0].approver_id === approverA,
+      '[P3-T3-FIX5 攻撃遮断2] 実DBの approval_history.approver_id はクライアント指定の偽造IDではなく正規の認証ユーザー(approverA)として記録された',
     );
 
     // ------------------------------------------------------------------------
