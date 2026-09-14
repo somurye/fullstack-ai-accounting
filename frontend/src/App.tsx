@@ -146,6 +146,9 @@ const AttendancePage = lazy(() =>
 const RateMastersPage = lazy(() =>
   import('./pages/rate-masters/RateMastersPage').then((m) => ({ default: m.RateMastersPage })),
 );
+const PayrollCalculationsPage = lazy(() =>
+  import('./pages/payroll-calculations/PayrollCalculationsPage').then((m) => ({ default: m.PayrollCalculationsPage })),
+);
 const SettingsPage = lazy(() => import('./pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
 const MobileExpenseApplyPage = lazy(() =>
   import('./pages/mobile/MobileExpenseApplyPage').then((m) => ({ default: m.MobileExpenseApplyPage })),
@@ -237,6 +240,7 @@ export default function App() {
             <Route path="/employees" element={<EmployeeListPage />} />
             <Route path="/attendance" element={<AttendancePage />} />
             <Route path="/rate-masters" element={<RateMastersPage />} />
+            <Route path="/payroll-calculations" element={<PayrollCalculationsPage />} />
             <Route path="/forbidden" element={<ForbiddenPage />} />
 
             {/* 職務分掌(SoD)RBAC: 財務諸表は ADMIN / ACCOUNTANT のみ */}

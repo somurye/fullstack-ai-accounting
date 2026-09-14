@@ -31,7 +31,8 @@ type TargetType =
   | 'vendor_bill'
   | 'contract'
   | 'purchase_request'
-  | 'general_request';
+  | 'general_request'
+  | 'payroll';
 
 /**
  * ApprovalRequestsService
@@ -275,6 +276,23 @@ export class ApprovalRequestsService {
       }
     }
 
+    // 給与計算(target_type='payroll')の場合、実行ユーザーが payroll.approve パーミッションを保持していることを検証
+    if (ar.target_type === 'payroll') {
+      const permCheck = await client.query(
+        `SELECT 1
+         FROM user_roles ur
+         JOIN role_permissions rp ON rp.role_id = ur.role_id
+         JOIN permissions p ON p.id = rp.permission_id
+         WHERE ur.tenant_id = $1 AND ur.user_id = $2
+           AND p.code = 'payroll.approve'
+         LIMIT 1`,
+        [tenantId, userId],
+      );
+      if (permCheck.rowCount === 0) {
+        throw AppException.forbidden('給与計算の承認・却下を行う権限(payroll.approve)がありません');
+      }
+    }
+
     const result = await client.query(
       `SELECT 1 FROM approval_rules rule
        WHERE rule.tenant_id = $1 AND rule.target_type = $2
@@ -395,6 +413,21 @@ export class ApprovalRequestsService {
         actorUserId: userId,
         action: 'purchase_request.approved',
         targetType: 'purchase_request',
+        targetId,
+        afterData: { status: 'active' },
+      });
+      return;
+    }
+
+    if (targetType === 'payroll') {
+      await client.query(
+        `UPDATE payroll_calculations SET status = 'active', approved_at = now(), updated_at = now() WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, targetId],
+      );
+      await this.auditLogs.record(client, tenantId, {
+        actorUserId: userId,
+        action: 'payroll.approved',
+        targetType: 'payroll',
         targetId,
         afterData: { status: 'active' },
       });
@@ -531,6 +564,21 @@ export class ApprovalRequestsService {
         actorUserId: userId,
         action: 'purchase_request.rejected',
         targetType: 'purchase_request',
+        targetId,
+        afterData: { status: 'rejected' },
+      });
+      return;
+    }
+
+    if (targetType === 'payroll') {
+      await client.query(
+        `UPDATE payroll_calculations SET status = 'rejected', updated_at = now() WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, targetId],
+      );
+      await this.auditLogs.record(client, tenantId, {
+        actorUserId: userId,
+        action: 'payroll.rejected',
+        targetType: 'payroll',
         targetId,
         afterData: { status: 'rejected' },
       });

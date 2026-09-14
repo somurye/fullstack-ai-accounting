@@ -274,10 +274,15 @@ export class VendorBillsService {
 
       if (totalSteps === 0) {
         // 承認ルール未設定 = 承認不要。仕訳を即座にpostedへ確定させる。
-        await client.query(
+        const arResult = await client.query<{ id: string }>(
           `INSERT INTO approval_requests (tenant_id, target_type, target_id, submitted_by, total_steps, current_step, status)
-           VALUES ($1, 'vendor_bill', $2, $3, 1, 1, 'approved')`,
+           VALUES ($1, 'vendor_bill', $2, $3, 1, 1, 'pending')
+           RETURNING id`,
           [tenantId, id, userId],
+        );
+        await client.query(
+          `UPDATE approval_requests SET status = 'approved', updated_at = now() WHERE id = $1`,
+          [arResult.rows[0].id],
         );
         await client.query(
           `UPDATE journal_entries SET status = 'posted', posted_by = $3 WHERE tenant_id = $1 AND id = $2`,
