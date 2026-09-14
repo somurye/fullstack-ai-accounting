@@ -2517,7 +2517,7 @@ fail-closed運用）を踏襲しつつ、本Phaseは他のPhaseと質的に異�
 |----------|----------|------|------|-----------|
 | P3-T1 | 従業員マスタ・勤怠管理 | 従業員情報、打刻（出勤・退勤・休憩）、労働時間集計（所定内・時間外・深夜・休日労働の区分） | P0-T1, P0-T4 | ✅ SO正式PASS（コミット35185ba、5回の往復を経てロック取得順序の統一・週40時間境界の並行E2Eを確認、mainマージ指示済み） |
 | P3-T2 | 保険料率・税率マスタ管理 | 健康保険・厚生年金・雇用保険の料率、所得税源泉徴収税額表、住民税率を有効期間付きで管理する基盤（5.2節の原則①に対応） | P0-T1 | ✅ SO正式PASS（適用開始後のレコードをDBトリガーでfail-closedに変更禁止、JST基準・法改正close+INSERT運用を確認、mainマージ指示済み） |
-| P3-T3 | 給与計算エンジン | 勤怠実績・基本給・手当・控除から給与を計算し、AI提案パターンで人間確認を経て確定する（5.2節の原則②に対応） | P3-T1, P3-T2 | ⚠️ SO判定REQUEST CHANGES（コミットfb41d47、approval_requestsに直接status='approved'のレコードを偽造INSERTできれば確定境界を突破できる。承認エンジン全体（P0-T1）に関わる問題として修正指示済み・再レビュー待ち） |
+| P3-T3 | 給与計算エンジン | 勤怠実績・基本給・手当・控除から給与を計算し、AI提案パターンで人間確認を経て確定する（5.2節の原則②に対応） | P3-T1, P3-T2 | ⚠️ SO判定REQUEST CHANGES（コミットb2beb30、approval_requestsの偽造INSERTは解消したが、pending→approvedへの直接UPDATE経路がDB最終防御になっていない。承認エンジンのapprove操作の正当性検証自体をDBに持たせる必要あり。修正指示済み・再レビュー待ち） |
 | P3-T4 | 給与明細発行・年末調整 | 給与明細のPDF発行、年末調整の計算・書類生成 | P3-T3 | 未着手 |
 
 P3-T2以降の詳細タスク分解・実装指示プロンプトは、P3-T1の実装結果を踏まえてClaudeが
@@ -3296,6 +3296,83 @@ purchase_requestsの既存承認フローすべてに影響します。修正後
 
 ---
 
+#### 【フォローアップ指示プロンプト P3-T3-FIX4】REQUEST CHANGES対応（pending→approvedの直接UPDATEがDB最終防御になっていない）
+
+ChatGPT(SO)よりP3-T3-FIX3が「REQUEST CHANGES」と判定された。approved単発INSERTの偽造は
+解消されたが、次の防御層（pending→approvedへの直接UPDATE）が未実装のため、依然として
+承認エンジンを経由しない確定が可能。今回の修正で、単なる状態フラグの検証ではなく
+「承認が正当に行われたことの根拠」自体をDBが検証する設計に到達させる。
+
+```
+# SOレビュー結果：P3-T3-FIX3 REQUEST CHANGES
+main...feature/p3-t3-payroll-engine の実差分（コミットb2beb30）を確認した結果、
+現状はマージ不可です。approval_requestsへの「approved単発INSERT」はDBで拒否できるように
+なりましたが、「pending でINSERT → 直接UPDATE status='approved'」という2段階の偽造は
+依然として可能です。これは、statusという単なる値の遷移だけを見ている限り、
+本質的に解決できない問題です（値そのものは誰でも書き換えられるため）。
+
+# 根本的な修正方針
+「statusがapprovedになっているか」ではなく、「その承認が正当な根拠（実際に承認権限を
+持つユーザーによる、正しいステップの承認アクション）に基づいているか」をDBが直接
+検証する設計に変更してください。具体的には、fn_prevent_self_approval()と同様の
+考え方で、以下をBEFORE UPDATEトリガー（pending → approvedへの遷移時）に追加する。
+
+1. **ステップ完了の検証**: NEW.current_step >= NEW.total_steps であること
+   （承認ステップが最後まで進んでいない状態でapprovedにできないようにする）。
+2. **承認履歴の実在確認**: 最終ステップに対応するapproval_historyのレコードが
+   実際に存在すること。このapproval_historyレコードのapprover_user_idについて、
+   以下をDBトリガー内のSQLで直接検証する（Service層のassertAssignedApprover()に
+   相当するロジックをDBトリガーへ移植する）。
+   - user_roles / role_permissions をJOINし、approver_user_idが対象target_typeの
+     承認権限（例: payroll.approve）を実際に保持していること
+   - approver_user_id が approval_requests.submitted_by と異なること
+     （既存のfn_prevent_self_approval()のロジックと重複してもよいので、
+     この経路でも確実に検証されるようにする）
+3. **approval_historyへのINSERT自体の保護**: 上記2の検証が機能するためには、
+   approval_history側にも「実際に権限を持つユーザーの行動としてしか承認履歴を
+   作れない」という保証が必要です。approval_historyへのINSERT時にも、
+   approver_user_idの権限保有をDBトリガーで検証するようにしてください
+   （まだ実装されていない場合は追加する）。
+
+この設計により、攻撃者が「pending → approved」を直接UPDATEしようとしても、
+対応する正当な承認履歴（実際に権限を持つユーザーによる、自己承認でない承認アクション）が
+存在しない限り、DBトリガーが拒否します。単なる状態フラグの偽装では突破できなくなります。
+
+# 追加すべき実DB E2E（必須、SOが今回指摘した攻撃シナリオ）
+1. approval_requestsをpendingでINSERT → 対応するapproval_historyを一切作らずに
+   直接status='approved'へUPDATE → DBで拒否される
+2. 正当な承認権限を持たないユーザーのapprover_user_idでapproval_historyを
+   偽造INSERTしてから、approval_requestsをapprovedへUPDATE → DBで拒否される
+   （実装した場合）
+3. 正規の多段階承認・明示的0-step自動承認、それぞれで従来通りapproved/active化が成功する
+4. 前回までに解消済みのケース（approved単発INSERT拒否等）に回帰がない
+5. 既存のcontracts/general_requests/purchase_requestsの承認フローE2Eに回帰がない
+
+# 受け入れ基準（Definition of Done）
+- [ ] pending→approvedへの直接UPDATEが、正当な承認履歴の裏付けなしには成功しないことを
+      実DB E2Eで確認する
+- [ ] 正規の承認フロー（多段階・0-step）に回帰がない
+- [ ] 既存4ドメイン（contract/general_request/purchase_request/payroll）の承認E2Eに
+      回帰がない
+- [ ] 完了報告に正確なコミットSHA・ブランチ名を明記する（本計画書0.4節ルール4に従う）
+- [ ] feature/p3-t3-payroll-engine ブランチに追加コミット・pushし、比較URLを報告に
+      含める
+
+# 重要な注記（スコープについて）
+今回の修正は承認エンジン全体（approval_requests / approval_history）の中核ロジックに
+及ぶため、実装が想定より大規模になる場合は、遠慮なくその旨を報告してください。
+その場合、Claudeが計画書側でこのタスクを独立したサブタスクとして切り出す判断を
+行います。
+
+# ChatGPTレビュー時の確認観点
+- 承認履歴の実在確認ロジックが、既存のfn_prevent_self_approval()と重複しつつも
+  矛盾しない形で共存しているか
+- 「権限保有の検証」がuser_roles/role_permissionsという実データに基づいており、
+  session変数のような自己申告要素に依存していないか
+```
+
+---
+
 ## 6. 既知の技術的負債・フォローアップ事項
 
 タスク完了時にSOが「修正不要だが記録すべき」と判定した事項を追跡する。将来の関連タスク着手時に必ず参照すること。
@@ -3319,7 +3396,6 @@ purchase_requestsの既存承認フローすべてに影響します。修正後
 | DEBT-015 | P2-T4 | 購買ダッシュボードの今期集計は`fiscal_years`テーブルの年度設定に追従する設計だが、実DB E2Eでは単純な暦年（2026-01-01〜2026-12-31）のケースしか検証されていない。非暦年の会計年度（例: 4月始まり）や年度またぎのケースでの動作は未確認。 | LOW（現状の実装ロジック自体は妥当と評価されている） | 非暦年の会計年度を持つテナントでの利用実績が出たタイミングで追加検証 | 🔴 未対応 |
 | DEBT-016 | P3-T1 | 勤怠登録時に`break_minutes`（休憩時間）が実際の拘束時間（clock_out - clock_in）を超えないことのバリデーションがAPI/DBいずれにもない。例えば1時間の勤務に対して2時間の休憩を登録できてしまう（計算結果は0時間になるため実害は限定的だが、データとしては不整合）。 | LOW（計算結果への実害は限定的） | 勤怠データの品質チェック機能を追加するタイミングで対応 | 🔴 未対応 |
 | DEBT-017 | P3-T1 | 新規clock-in（新規勤怠レコード作成）では監査ログが記録されるが、既存の未退勤レコードへのclock-in更新では監査ログが記録されない分岐がある。勤怠は労務監査の対象になり得るため、将来的にはすべての変更経路で一貫して監査ログを記録するよう統一する必要がある。 | LOW〜MEDIUM（労務監査の観点で改善余地） | 監査ログの網羅性を見直すタイミングで対応 | 🔴 未対応 |
-| DEBT-018 | P3-T3-FIX3 | 汎用承認エンジン（`approval_requests`）において、pending → approved へのUPDATE遷移時に実行ユーザーが正当に割り当てられた承認者（`approver_user_id` / `approver_role_id`）であるかの検証は、現状Service層（`assertAssignedApprover()`）のみでガードされている。DBトリガー（`fn_prevent_self_approval`等）では起票者本人による自己承認の防止のみが検証されており、割当承認者の整合性検証までは行われていない。DB最終防御として承認者割当を検証するには多段階承認の各ステップごとのロール・ユーザー解決をDB層で行う必要があり、承認エンジン全体の改修が必要となるため、技術的負債として記録する。 | MEDIUM | 承認エンジンの本格リファクタリング、または権限昇格リスク対策の強化タイミングで対応 | 🔴 未対応 |
 
 ---
 
@@ -3390,3 +3466,4 @@ purchase_requestsの既存承認フローすべてに影響します。修正後
 | 6.7.0 | P3-T3がSO判定REQUEST CHANGES（重大: 確定境界（draft/rejected/pending_approval→activeの直接UPDATE）がDB最終防御になっておらず、承認エンジンを経由しない確定が可能だった。計算エンジン・料率参照・tenant整合性・RBACは良好）。フォローアップ指示プロンプト（P3-T3-FIX、SET LOCALによるコンテキスト伝達パターンを応用したDB確定境界の実装）を追加 |
 | 6.8.0 | P3-T3-FIXがSO判定REQUEST CHANGES（app.approval_contextがapp_runtime自身で自由に設定できる自己申告フラグに過ぎず、承認エンジンの迂回を防げていなかった）。フォローアップ指示プロンプト（P3-T3-FIX2、session変数方式を撤去しapproval_requestsの実在確認による確定境界へ変更）を追加 |
 | 6.9.0 | P3-T3-FIX2がSO判定REQUEST CHANGES（重大: approval_requestsへ直接status='approved'を偽造INSERTすれば確定境界を突破できる。これはpayroll固有ではなくP0-T1承認エンジン全体に関わる問題と判明）。フォローアップ指示プロンプト（P3-T3-FIX3、approval_requestsへのINSERT時statusを常にpending_approvalに強制するDBトリガーの追加）を追加。承認者割当のDB検証が未実装の場合はDEBTとして許容する方針を明記 |
+| 7.0.0 | P3-T3-FIX3がSO判定REQUEST CHANGES（approved単発INSERTの偽造は解消したが、pending→approvedへの直接UPDATE経路が依然DB最終防御になっていない）。フォローアップ指示プロンプト（P3-T3-FIX4、承認履歴の実在・権限保有をDBトリガーで検証する根本設計への変更）を追加。実装規模が想定を超える場合は独立サブタスクへ切り出す方針を明記 |

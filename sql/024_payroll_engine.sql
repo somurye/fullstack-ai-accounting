@@ -484,6 +484,187 @@ CREATE TRIGGER trg_enforce_approval_requests_initial_status
 
 
 -- ----------------------------------------------------------------------------
+-- 5-B. approval_history 登録時の承認権限検証 (DB最終防御: 権限なき承認履歴偽造の遮断)
+-- ----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION fn_enforce_approval_history_authority()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_req RECORD;
+    v_required_permission TEXT;
+    v_has_permission BOOLEAN;
+BEGIN
+    -- 1. approval_requests の取得
+    SELECT id, tenant_id, target_type, submitted_by, current_step, total_steps, status
+    INTO v_req
+    FROM approval_requests
+    WHERE id = NEW.approval_request_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'approval_request % does not exist', NEW.approval_request_id
+            USING ERRCODE = '23503';
+    END IF;
+
+    -- テナント一致検証
+    IF NEW.tenant_id != v_req.tenant_id THEN
+        RAISE EXCEPTION 'Tenant mismatch: approval_history (%) vs approval_request (%)',
+            NEW.tenant_id, v_req.tenant_id
+            USING ERRCODE = '23503';
+    END IF;
+
+    -- 承認操作(action = 'approve')時の自己承認禁止 (既存トリガーに加えDB二重防御)
+    IF NEW.action = 'approve' AND NEW.approver_id = v_req.submitted_by THEN
+        RAISE EXCEPTION 'Self-approval is not permitted (submitter=%, approver=%)',
+            v_req.submitted_by, NEW.approver_id
+            USING ERRCODE = '23514';
+    END IF;
+
+    -- 2. target_type に応じた承認権限コードの特定
+    CASE v_req.target_type
+        WHEN 'payroll' THEN v_required_permission := 'payroll.approve';
+        WHEN 'contract' THEN v_required_permission := 'contract.approve';
+        WHEN 'general_request' THEN v_required_permission := 'general_request.approve';
+        WHEN 'purchase_request' THEN v_required_permission := 'purchase_request.approve';
+        WHEN 'vendor_bill' THEN v_required_permission := 'vendor_bill.approve';
+        WHEN 'journal_entry' THEN v_required_permission := 'journal_entry.post';
+        WHEN 'expense_report' THEN v_required_permission := 'expense_report.approve';
+        ELSE v_required_permission := NULL;
+    END CASE;
+
+    -- 3. 権限保有の検証 (user_roles / role_permissions / permissions 実データによる検証)
+    IF v_required_permission IS NOT NULL THEN
+        SELECT EXISTS (
+            SELECT 1
+            FROM user_roles ur
+            JOIN role_permissions rp ON rp.role_id = ur.role_id
+            JOIN permissions p ON p.id = rp.permission_id
+            WHERE ur.tenant_id = NEW.tenant_id
+              AND ur.user_id = NEW.approver_id
+              AND p.code = v_required_permission
+        ) INTO v_has_permission;
+
+        IF NOT v_has_permission THEN
+            RAISE EXCEPTION 'Approver % does not hold required permission % for target %',
+                NEW.approver_id, v_required_permission, v_req.target_type
+                USING ERRCODE = '42501';
+        END IF;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_enforce_approval_history_authority ON approval_history;
+CREATE TRIGGER trg_enforce_approval_history_authority
+    BEFORE INSERT ON approval_history
+    FOR EACH ROW EXECUTE FUNCTION fn_enforce_approval_history_authority();
+
+
+-- ----------------------------------------------------------------------------
+-- 5-C. approval_requests approved 遷移時の正当根拠検証 (DB最終防御: 承認根拠なきUPDATE遮断)
+-- ----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION fn_enforce_approval_requests_transition()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_is_explicit_auto_approve BOOLEAN := FALSE;
+    v_rule_count INT := 0;
+    v_history_approver_id UUID;
+    v_required_permission TEXT;
+    v_has_permission BOOLEAN;
+BEGIN
+    -- status が approved へ遷移する場合の厳格な根拠検証
+    IF NEW.status = 'approved' AND (OLD.status IS NULL OR OLD.status <> 'approved') THEN
+        -- 1. 明示的0-step自動承認ルール (is_explicit_auto_approve = TRUE) の確認
+        SELECT COUNT(*),
+               COALESCE(bool_or(is_explicit_auto_approve), FALSE)
+        INTO v_rule_count, v_is_explicit_auto_approve
+        FROM approval_rules
+        WHERE tenant_id = NEW.tenant_id
+          AND target_type = NEW.target_type
+          AND is_active = TRUE;
+
+        IF v_is_explicit_auto_approve THEN
+            -- 0-step自動承認: 1人テナント運用として承認履歴なしでの承認遷移を許可
+            RETURN NEW;
+        END IF;
+
+        IF v_rule_count = 0 AND NEW.target_type IN ('journal_entry', 'vendor_bill') THEN
+            -- レガシー後方互換: 承認ルール未設定の仕訳・仕入請求書は即時確定を許可
+            RETURN NEW;
+        END IF;
+
+        -- 2. ステップ完了の検証: current_step >= total_steps
+        IF NEW.current_step < NEW.total_steps THEN
+            RAISE EXCEPTION 'Cannot transition to approved before completing all steps (current: %, total: %)',
+                NEW.current_step, NEW.total_steps
+                USING ERRCODE = '55000';
+        END IF;
+
+        -- 3. 承認履歴の実在確認: 最終ステップに対応する approval_history (action = 'approve') レコードの存在
+        SELECT approver_id INTO v_history_approver_id
+        FROM approval_history
+        WHERE approval_request_id = NEW.id
+          AND tenant_id = NEW.tenant_id
+          AND step_number = NEW.current_step
+          AND action = 'approve'
+        ORDER BY acted_at DESC
+        LIMIT 1;
+
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Cannot approve approval_request %: no valid approval_history record exists for step %',
+                NEW.id, NEW.current_step
+                USING ERRCODE = '55000';
+        END IF;
+
+        -- 4. 自己承認の禁止: approver_id <> submitted_by
+        IF v_history_approver_id = NEW.submitted_by THEN
+            RAISE EXCEPTION 'Cannot approve approval_request %: approver (%) cannot be the submitter (%)',
+                NEW.id, v_history_approver_id, NEW.submitted_by
+                USING ERRCODE = '23514';
+        END IF;
+
+        -- 5. 承認権限の検証: approver_id が対象 target_type の承認権限を保持していること
+        CASE NEW.target_type
+            WHEN 'payroll' THEN v_required_permission := 'payroll.approve';
+            WHEN 'contract' THEN v_required_permission := 'contract.approve';
+            WHEN 'general_request' THEN v_required_permission := 'general_request.approve';
+            WHEN 'purchase_request' THEN v_required_permission := 'purchase_request.approve';
+            WHEN 'vendor_bill' THEN v_required_permission := 'vendor_bill.approve';
+            WHEN 'journal_entry' THEN v_required_permission := 'journal_entry.post';
+            WHEN 'expense_report' THEN v_required_permission := 'expense_report.approve';
+            ELSE v_required_permission := NULL;
+        END CASE;
+
+        IF v_required_permission IS NOT NULL THEN
+            SELECT EXISTS (
+                SELECT 1
+                FROM user_roles ur
+                JOIN role_permissions rp ON rp.role_id = ur.role_id
+                JOIN permissions p ON p.id = rp.permission_id
+                WHERE ur.tenant_id = NEW.tenant_id
+                  AND ur.user_id = v_history_approver_id
+                  AND p.code = v_required_permission
+            ) INTO v_has_permission;
+
+            IF NOT v_has_permission THEN
+                RAISE EXCEPTION 'Cannot approve approval_request %: approver % lacks permission %',
+                    NEW.id, v_history_approver_id, v_required_permission
+                    USING ERRCODE = '42501';
+            END IF;
+        END IF;
+    END IF;
+
+    NEW.updated_at := now();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_enforce_approval_requests_transition ON approval_requests;
+CREATE TRIGGER trg_enforce_approval_requests_transition
+    BEFORE UPDATE ON approval_requests
+    FOR EACH ROW EXECUTE FUNCTION fn_enforce_approval_requests_transition();
+
+
+-- ----------------------------------------------------------------------------
 -- 6. RBAC パーミッション登録およびロール割当
 -- ----------------------------------------------------------------------------
 INSERT INTO permissions (code, description) VALUES

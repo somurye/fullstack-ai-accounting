@@ -632,7 +632,14 @@ async function main() {
         [spoofCalcId, tenantA, spoofPeriodId, spoofEmpId, ownerA],
       );
 
-      // 他テナント(Tenant B)で approval_requests を作成 (pending) → approved へ更新
+      // 他テナント(Tenant B)で明示的0-step自動承認ルールを設定し、approval_requests を approved へ更新
+      await client.query(`DELETE FROM approval_rules WHERE tenant_id = $1 AND target_type = 'payroll'`, [tenantB]);
+      await client.query(
+        `INSERT INTO approval_rules (tenant_id, target_type, step_number, approver_role_id, is_active, is_explicit_auto_approve)
+         VALUES ($1, 'payroll', 0, $2, TRUE, TRUE)`,
+        [tenantB, roleMap.get('owner')],
+      );
+
       const crossAr = await client.query<{ id: string }>(
         `INSERT INTO approval_requests (tenant_id, target_type, target_id, submitted_by, total_steps, current_step, status)
          VALUES ($1, 'payroll', $2, $3, 1, 1, 'pending')
@@ -653,6 +660,131 @@ async function main() {
       crossTenantApprovalSpoofBlocked = true;
     }
     assert(crossTenantApprovalSpoofBlocked, '[SO他テナント偽装ケース] 他テナントの承認レコードを流用した active 遷移が DBトリガーにより安全に拒否された');
+
+    // ------------------------------------------------------------------------
+    // 9-C. 【P3-T3-FIX4 実証】pending→approved への直接UPDATE遮断 & 承認根拠・権限のDB最終防御
+    // ------------------------------------------------------------------------
+    console.log('\n9-C. 【P3-T3-FIX4 実証】pending→approved への直接UPDATE遮断 & 承認根拠・権限のDB最終防御...');
+
+    // 多段階承認ルール（1ステップ）を再設定
+    await client.query(`DELETE FROM approval_rules WHERE tenant_id = $1 AND target_type = 'payroll'`, [tenantA]);
+    await client.query(
+      `INSERT INTO approval_rules (
+        tenant_id, target_type, step_number, approver_role_id, is_active, is_explicit_auto_approve
+      ) VALUES ($1, 'payroll', 1, $2, TRUE, FALSE)`,
+      [tenantA, roleMap.get('owner')],
+    );
+
+    const fix4PeriodId = uuidv4();
+    const fix4EmpId = uuidv4();
+    const fix4CalcId = uuidv4();
+    await client.query(
+      `INSERT INTO payroll_periods (id, tenant_id, name, period_start, period_end, payment_date)
+       VALUES ($1, $2, 'FIX4 Period', '2026-08-01', '2026-08-31', '2026-09-10')`,
+      [fix4PeriodId, tenantA],
+    );
+    await client.query(
+      `INSERT INTO employees (id, tenant_id, employee_no, name, hire_date)
+       VALUES ($1, $2, 'EMP-FIX4', 'FIX4 テスト従業員', '2026-01-01')`,
+      [fix4EmpId, tenantA],
+    );
+    await client.query(
+      `INSERT INTO payroll_calculations (id, tenant_id, payroll_period_id, employee_id, created_by, status)
+       VALUES ($1, $2, $3, $4, $5, 'draft')`,
+      [fix4CalcId, tenantA, fix4PeriodId, fix4EmpId, payrollAdminA],
+    );
+
+    // approval_requests を pending で起票
+    const fix4ArResult = await client.query<{ id: string }>(
+      `INSERT INTO approval_requests (
+         tenant_id, target_type, target_id, submitted_by, total_steps, current_step, status
+       ) VALUES ($1, 'payroll', $2, $3, 1, 1, 'pending')
+       RETURNING id`,
+      [tenantA, fix4CalcId, payrollAdminA],
+    );
+    const fix4ArId = fix4ArResult.rows[0].id;
+
+    // [SO攻撃シナリオ1] approval_history を作らずに pending → approved へ直接UPDATE試行 → DB拒否
+    let directPendingToApprovedBlocked = false;
+    let directPendingToApprovedError: any = null;
+    try {
+      await client.query(
+        `UPDATE approval_requests SET status = 'approved' WHERE id = $1`,
+        [fix4ArId],
+      );
+    } catch (err: any) {
+      directPendingToApprovedBlocked = true;
+      directPendingToApprovedError = err;
+    }
+    assert(
+      directPendingToApprovedBlocked,
+      '[P3-T3-FIX4 攻撃シナリオ1] approval_history なしでの pending → approved 直接UPDATEがDBトリガーにより拒否された',
+    );
+    assert(
+      directPendingToApprovedError?.code === '55000',
+      `[P3-T3-FIX4 攻撃シナリオ1] エラーコード 55000 が返却された (got: ${directPendingToApprovedError?.code})`,
+    );
+
+    // [SO攻撃シナリオ2] 承認権限を持たないユーザー (employeeA) による approval_history 偽造INSERT試行 → DB拒否
+    let unauthorizedHistoryInsertBlocked = false;
+    let unauthorizedHistoryError: any = null;
+    try {
+      await client.query(
+        `INSERT INTO approval_history (
+           tenant_id, approval_request_id, step_number, approver_id, action, comment
+         ) VALUES ($1, $2, 1, $3, 'approve', '権限なき不正承認履歴偽造')`,
+        [tenantA, fix4ArId, employeeA],
+      );
+    } catch (err: any) {
+      unauthorizedHistoryInsertBlocked = true;
+      unauthorizedHistoryError = err;
+    }
+    assert(
+      unauthorizedHistoryInsertBlocked,
+      '[P3-T3-FIX4 攻撃シナリオ2] 承認権限を持たないユーザーによる approval_history 偽造INSERTがDBトリガーにより拒否された',
+    );
+    assert(
+      unauthorizedHistoryError?.code === '42501',
+      `[P3-T3-FIX4 攻撃シナリオ2] 権限不足エラーコード 42501 が返却された (got: ${unauthorizedHistoryError?.code})`,
+    );
+
+    // [SO攻撃シナリオ3] 起票者本人 (payrollAdminA) による自己承認 approval_history INSERT試行 → DB拒否
+    let selfApprovalHistoryBlocked = false;
+    let selfApprovalError: any = null;
+    try {
+      await client.query(
+        `INSERT INTO approval_history (
+           tenant_id, approval_request_id, step_number, approver_id, action, comment
+         ) VALUES ($1, $2, 1, $3, 'approve', '自己承認試行')`,
+        [tenantA, fix4ArId, payrollAdminA],
+      );
+    } catch (err: any) {
+      selfApprovalHistoryBlocked = true;
+      selfApprovalError = err;
+    }
+    assert(
+      selfApprovalHistoryBlocked,
+      '[P3-T3-FIX4 攻撃シナリオ3] 起票者本人による自己承認 approval_history INSERTがDBトリガーにより拒否された',
+    );
+    assert(
+      selfApprovalError?.code === '23514',
+      `[P3-T3-FIX4 攻撃シナリオ3] 自己承認禁止エラーコード 23514 が返却された (got: ${selfApprovalError?.code})`,
+    );
+
+    // [SO攻撃シナリオ4] 偽造失敗により approval_history が存在しないため、依然として給与も active 化できないことを確認
+    let fix4CalcActiveBlocked = false;
+    try {
+      await client.query(
+        `UPDATE payroll_calculations SET status = 'active' WHERE id = $1`,
+        [fix4CalcId],
+      );
+    } catch (err: any) {
+      fix4CalcActiveBlocked = true;
+    }
+    assert(
+      fix4CalcActiveBlocked,
+      '[P3-T3-FIX4 攻撃シナリオ4] 承認偽造失敗により payroll_calculations の active 化もDBトリガーで安全に拒否された',
+    );
 
     // ------------------------------------------------------------------------
     // 10. 確定後WORM不変性検証 (SOケース 6 & 7 / fail-closed)
