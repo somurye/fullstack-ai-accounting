@@ -1,0 +1,563 @@
+/**
+ * verify-payroll-engine-e2e.ts
+ * =============================
+ * Phase 3 Task 3 (P3-T3): 給与計算エンジン 実DB包括E2E検証スクリプト
+ *
+ * 検証対象:
+ * 1. テナント・ユーザー・RBACロールの初期化 (owner, payroll_admin, accounting_manager, employee)
+ * 2. 従業員および給与プロファイル (有効期間・標準報酬・扶養数・WORM不変性) の登録
+ * 3. 勤怠実績 (規定内・残業・深夜・休日) の登録
+ * 4. 保険料率マスタおよび所得税源泉徴収税額表の適用
+ * 5. ルールエンジンによる給与計算実行 (提案 draft 生成、労働時間・支給・控除・手取りの算出)
+ * 6. 計算根拠マスタID (applied_rate_ids) の追跡可能性検証
+ * 7. 同一期間・同一従業員の重複計算防止 (DB UNIQUE制約)
+ * 8. RBAC二重防御 (employee自身による給与計算・確定の拒否)
+ * 9. 承認フロー検証 (承認ルール未設定時の400エラー暗黙自動承認防止、明示的0-step即時active、多段承認連携)
+ * 10. 確定後WORM不変性 (activeレコードの通常UPDATE拒否・物理DELETE拒否)
+ * 11. テナント完全分離 (RLS) & 他テナント料率参照の遮断 (テナント整合性トリガー)
+ */
+
+import { Pool } from 'pg';
+import { v4 as uuidv4 } from 'uuid';
+import { DatabaseService } from '../database/database.service';
+import { AuditLogsService } from '../modules/audit-logs/audit-logs.service';
+import { ApprovalRequestsService } from '../modules/approval-requests/approval-requests.service';
+import { PayrollCalculationsService } from '../modules/payroll-calculations/payroll-calculations.service';
+
+const rawDsn = process.argv[2] || process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/postgres';
+
+async function main() {
+  console.log('=== P3-T3 給与計算エンジン 実DB E2E検証開始 ===');
+  console.log(`接続先: ${rawDsn.replace(/:[^:@]+@/, ':****@')}`);
+
+  process.env.DATABASE_URL = rawDsn;
+  const pool = new Pool({ connectionString: rawDsn });
+  const client = await pool.connect();
+
+  const db = new DatabaseService();
+  const auditLogs = new AuditLogsService(db);
+  const approvalRequests = new ApprovalRequestsService(db, auditLogs);
+  const payrollService = new PayrollCalculationsService(db, auditLogs);
+
+  let passed = 0;
+  let failed = 0;
+
+  function assert(condition: boolean, msg: string) {
+    if (condition) {
+      console.log(`  [PASS] ${msg}`);
+      passed++;
+    } else {
+      console.error(`  [FAIL] ${msg}`);
+      failed++;
+    }
+  }
+
+  try {
+    // ------------------------------------------------------------------------
+    // 1. テナント・ユーザー・RBACロールのセットアップ
+    // ------------------------------------------------------------------------
+    console.log('\n1. テナント・ユーザー・RBACロールの初期化...');
+
+    const tenantA = uuidv4();
+    const tenantB = uuidv4();
+
+    const ownerA = uuidv4();
+    const payrollAdminA = uuidv4();
+    const accountingMgrA = uuidv4();
+    const employeeA = uuidv4();
+    const approverA = uuidv4();
+
+    const ownerB = uuidv4();
+
+    await client.query(`INSERT INTO tenants (id, name) VALUES ($1, 'Tenant A'), ($2, 'Tenant B')`, [tenantA, tenantB]);
+
+    // ユーザー作成
+    const users = [
+      { id: ownerA, email: `owner_a_${Date.now()}@example.com`, name: 'Owner A' },
+      { id: payrollAdminA, email: `payroll_admin_a_${Date.now()}@example.com`, name: 'Payroll Admin A' },
+      { id: accountingMgrA, email: `acct_mgr_a_${Date.now()}@example.com`, name: 'Accounting Mgr A' },
+      { id: employeeA, email: `employee_a_${Date.now()}@example.com`, name: 'Employee A' },
+      { id: approverA, email: `approver_a_${Date.now()}@example.com`, name: 'Approver A' },
+      { id: ownerB, email: `owner_b_${Date.now()}@example.com`, name: 'Owner B' },
+    ];
+
+    for (const u of users) {
+      await client.query(`INSERT INTO users (id, email, name) VALUES ($1, $2, $3)`, [u.id, u.email, u.name]);
+    }
+
+    // テナントユーザー関連付け
+    await client.query(
+      `INSERT INTO tenant_users (tenant_id, user_id) VALUES
+       ($1, $2), ($1, $3), ($1, $4), ($1, $5), ($1, $6),
+       ($7, $8)`,
+      [tenantA, ownerA, payrollAdminA, accountingMgrA, employeeA, approverA, tenantB, ownerB],
+    );
+
+    // ロールIDの取得
+    const rolesRes = await client.query<{ id: string; code: string }>(`SELECT id, code FROM roles`);
+    const roleMap = new Map(rolesRes.rows.map((r) => [r.code, r.id]));
+
+    // ロール割当
+    await client.query(
+      `INSERT INTO user_roles (tenant_id, user_id, role_id) VALUES
+       ($1, $2, $3), -- owner
+       ($1, $4, $5), -- payroll_admin
+       ($1, $6, $7), -- accounting_manager
+       ($1, $8, $9), -- employee
+       ($1, $10, $11), -- approver
+       ($12, $13, $3) -- owner B`,
+      [
+        tenantA,
+        ownerA,
+        roleMap.get('owner'),
+        payrollAdminA,
+        roleMap.get('payroll_admin'),
+        accountingMgrA,
+        roleMap.get('accounting_manager'),
+        employeeA,
+        roleMap.get('employee'),
+        approverA,
+        roleMap.get('approver'),
+        tenantB,
+        ownerB,
+      ],
+    );
+
+    assert(true, 'テナント・ユーザー・ロールの初期化完了');
+
+    // ------------------------------------------------------------------------
+    // 2. 従業員および給与プロファイルの登録
+    // ------------------------------------------------------------------------
+    console.log('\n2. 従業員および給与プロファイルの登録・WORM検証...');
+
+    const emp1Id = uuidv4();
+    const emp2Id = uuidv4();
+
+    // 従業員マスタ登録 (Tenant A)
+    await client.query(
+      `INSERT INTO employees (id, tenant_id, employee_no, name, hire_date, employment_type, status)
+       VALUES
+       ($1, $2, 'EMP-001', '山田 太郎', '2025-04-01', 'full_time', 'active'),
+       ($3, $2, 'EMP-002', '佐藤 花子', '2025-05-01', 'part_time', 'active')`,
+      [emp1Id, tenantA, emp2Id],
+    );
+
+    // 給与プロファイル作成 (EMP-001: 月給300,000円、標準報酬300,000円、扶養0、健保/年金/雇用加入)
+    const profile1 = await payrollService.createProfile(tenantA, payrollAdminA, {
+      employee_id: emp1Id,
+      salary_type: 'monthly',
+      base_salary: 300000,
+      hourly_wage: 0,
+      standard_monthly_remuneration: 300000,
+      dependents_count: 0,
+      has_health_insurance: true,
+      has_care_insurance: false,
+      has_pension: true,
+      has_employment_insurance: true,
+      resident_tax_amount: 12000,
+      prefecture: 'tokyo',
+      effective_from: '2025-04-01',
+      effective_to: null,
+    });
+
+    assert(profile1.base_salary === '300000.00', 'EMP-001 の月給給与プロファイルが登録された');
+
+    // 給与プロファイル作成 (EMP-002: 時給1,500円、扶養0、雇用保険のみ加入)
+    const profile2 = await payrollService.createProfile(tenantA, payrollAdminA, {
+      employee_id: emp2Id,
+      salary_type: 'hourly',
+      base_salary: 0,
+      hourly_wage: 1500,
+      standard_monthly_remuneration: 0,
+      dependents_count: 0,
+      has_health_insurance: false,
+      has_care_insurance: false,
+      has_pension: false,
+      has_employment_insurance: true,
+      resident_tax_amount: 0,
+      prefecture: 'tokyo',
+      effective_from: '2025-04-01',
+      effective_to: null,
+    });
+
+    assert(profile2.hourly_wage === '1500.00', 'EMP-002 の時給給与プロファイルが登録された');
+
+    // EXCLUDE制約検証: 同一従業員の有効期間重複INSERTがDBレベルで拒否されること
+    let duplicateProfileBlocked = false;
+    try {
+      await payrollService.createProfile(tenantA, payrollAdminA, {
+        employee_id: emp1Id,
+        salary_type: 'monthly',
+        base_salary: 350000,
+        hourly_wage: 0,
+        standard_monthly_remuneration: 350000,
+        dependents_count: 0,
+        has_health_insurance: true,
+        has_care_insurance: false,
+        has_pension: true,
+        has_employment_insurance: true,
+        resident_tax_amount: 15000,
+        effective_from: '2025-06-01',
+        effective_to: '2025-12-31',
+      });
+    } catch (err: any) {
+      duplicateProfileBlocked = true;
+    }
+    assert(duplicateProfileBlocked, '給与プロファイルの期間重複がDB EXCLUDE制約により拒否された');
+
+    // WORM不変性検証: 過去プロファイルの直接業務値変更がDBトリガーで遮断されること
+    let pastProfileUpdateBlocked = false;
+    try {
+      await client.query(
+        `UPDATE employee_payroll_profiles SET base_salary = 400000 WHERE id = $1`,
+        [profile1.id],
+      );
+    } catch (err: any) {
+      pastProfileUpdateBlocked = true;
+    }
+    assert(pastProfileUpdateBlocked, '過去給与プロファイルの直接UPDATEがDBトリガー(WORM)により拒否された');
+
+    // ------------------------------------------------------------------------
+    // 3. 保険料率マスタおよび所得税源泉徴収税額表の登録
+    // ------------------------------------------------------------------------
+    console.log('\n3. 保険料率マスタおよび所得税源泉徴収税額表の登録...');
+
+    const rateHiId = uuidv4();
+    const ratePenId = uuidv4();
+    const rateEiId = uuidv4();
+
+    // 保険料率マスタ (Tenant A)
+    await client.query(
+      `INSERT INTO insurance_rate_tables (
+        id, tenant_id, rate_type, description, prefecture, rate_employee, rate_employer, effective_from, effective_to, created_by
+      ) VALUES
+       ($1, $2, 'health_insurance', '東京都健康保険料率', 'tokyo', 0.04985, 0.04985, '2025-04-01', NULL, $3),
+       ($4, $2, 'pension', '厚生年金保険料率', NULL, 0.09150, 0.09150, '2025-04-01', NULL, $3),
+       ($5, $2, 'employment_insurance', '雇用保険料率(一般)', NULL, 0.00600, 0.00950, '2025-04-01', NULL, $3)`,
+      [rateHiId, tenantA, ownerA, ratePenId, rateEiId],
+    );
+
+    // 所得税源泉徴収税額表 (Tenant A: 扶養0人、所得帯 250,000〜300,000円: 税額6,000円、300,000〜350,000円: 税額8,500円)
+    const bracket1Id = uuidv4();
+    const bracket2Id = uuidv4();
+
+    await client.query(
+      `INSERT INTO income_tax_withholding_brackets (
+        id, tenant_id, dependents_count, income_min, income_max, tax_amount, effective_from, effective_to, description, created_by
+      ) VALUES
+       ($1, $2, 0, 250000, 300000, 6000, '2025-04-01', NULL, '月額甲欄25万-30万', $3),
+       ($4, $2, 0, 300000, 350000, 8500, '2025-04-01', NULL, '月額甲欄30万-35万', $3)`,
+      [bracket1Id, tenantA, ownerA, bracket2Id],
+    );
+
+    assert(true, '保険料率マスタおよび所得税源泉徴収税額表の登録完了');
+
+    // ------------------------------------------------------------------------
+    // 4. 勤怠実績の登録
+    // ------------------------------------------------------------------------
+    console.log('\n4. 勤怠実績の登録...');
+
+    // EMP-001 (月給社員): 2026年5月分 (規定内160h, 残業20h, 深夜5h, 休日0h)
+    await client.query(
+      `INSERT INTO attendance_records (
+        tenant_id, employee_id, work_date, regular_hours, overtime_hours, late_night_hours, holiday_hours, status
+      ) VALUES
+       ($1, $2, '2026-05-10', 80.00, 10.00, 2.00, 0.00, 'approved'),
+       ($1, $2, '2026-05-20', 80.00, 10.00, 3.00, 0.00, 'approved')`,
+      [tenantA, emp1Id],
+    );
+
+    // EMP-002 (時給パート): 2026年5月分 (規定内60h, 残業10h, 深夜0h, 休日0h)
+    await client.query(
+      `INSERT INTO attendance_records (
+        tenant_id, employee_id, work_date, regular_hours, overtime_hours, late_night_hours, holiday_hours, status
+      ) VALUES
+       ($1, $2, '2026-05-15', 60.00, 10.00, 0.00, 0.00, 'approved')`,
+      [tenantA, emp2Id],
+    );
+
+    assert(true, '勤怠実績の登録完了');
+
+    // ------------------------------------------------------------------------
+    // 5. 給与計算エンジンによる提案生成 (ルールエンジンの実行)
+    // ------------------------------------------------------------------------
+    console.log('\n5. 給与計算エンジンによる提案生成 (ルール計算)...');
+
+    const period = await payrollService.createPeriod(tenantA, payrollAdminA, {
+      name: '2026年05月度給与',
+      period_start: '2026-05-01',
+      period_end: '2026-05-31',
+      payment_date: '2026-06-10',
+    });
+
+    assert(period.status === 'draft', '給与計算期間が draft で作成された');
+
+    // 給与計算実行 (提案生成)
+    const calcs = await payrollService.calculateForPeriod(tenantA, payrollAdminA, period.id);
+
+    assert(calcs.length === 2, '2名の従業員に対する給与計算提案が生成された');
+
+    const calc1 = calcs.find((c) => c.employee_id === emp1Id)!;
+    const calc2 = calcs.find((c) => c.employee_id === emp2Id)!;
+
+    // 設計原則②: 計算結果は直ちに確定せず draft であること
+    assert(calc1.status === 'draft', '給与計算結果は直ちに確定せず status = draft (提案) である (設計原則②)');
+
+    // EMP-001 の計算照合:
+    // 基本給: 300,000円, 基礎時給 = 300,000 / 160 = 1,875円
+    // 残業手当: 20h * 1,875 * 1.25 = 46,875円
+    // 深夜手当: 5h * 1,875 * 0.25 = 2,344円
+    // 総支給額: 300,000 + 46,875 + 2,344 = 349,219円
+    assert(Number(calc1.base_salary) === 300000, 'EMP-001: 基本給が正しく反映されている (300,000円)');
+    assert(Number(calc1.overtime_pay) === 46875, 'EMP-001: 残業手当が正しく計算されている (46,875円)');
+    assert(Number(calc1.late_night_pay) === 2344, 'EMP-001: 深夜手当が正しく計算されている (2,344円)');
+    assert(Number(calc1.total_gross_pay) === 349219, 'EMP-001: 総支給額が正しく計算されている (349,219円)');
+
+    // 社会保険料控除照合:
+    // 健保: 300,000 * 0.04985 = 14,955円
+    // 年金: 300,000 * 0.0915 = 27,450円
+    // 雇用: 349,219 * 0.006 = 2,095円
+    // 社保計: 14,955 + 27,450 + 2,095 = 44,500円
+    assert(Number(calc1.health_insurance_amount) === 14955, 'EMP-001: 健康保険料が正しく算出された (14,955円)');
+    assert(Number(calc1.pension_amount) === 27450, 'EMP-001: 厚生年金保険料が正しく算出された (27,450円)');
+    assert(Number(calc1.employment_insurance_amount) === 2095, 'EMP-001: 雇用保険料が正しく算出された (2,095円)');
+
+    // 所得税控除照合:
+    // 課税対象額: 349,219 - 44,500 = 304,719円 → bracket2 (300,000〜350,000円) にヒット → 税額 8,500円
+    assert(Number(calc1.income_tax_amount) === 8500, 'EMP-001: 源泉所得税が税額表から正しく算出された (8,500円)');
+    assert(Number(calc1.resident_tax_amount) === 12000, 'EMP-001: 住民税がプロファイルから反映された (12,000円)');
+
+    // 手取り (差引支給額): 349,219 - (44,500 + 8,500 + 12,000) = 284,219円
+    assert(Number(calc1.net_pay) === 284219, 'EMP-001: 差引支給額 (手取り) が正しく算出された (284,219円)');
+
+    // EMP-002 (時給パート) の計算照合:
+    // 規定内給与: 60h * 1,500 = 90,000円
+    // 残業手当: 10h * 1,500 * 1.25 = 18,750円
+    // 総支給額: 108,750円
+    // 雇用保険: 108,750 * 0.006 = 653円
+    assert(Number(calc2.regular_pay) === 90000, 'EMP-002: 規定内給与が正しく算出された (90,000円)');
+    assert(Number(calc2.overtime_pay) === 18750, 'EMP-002: 残業手当が正しく算出された (18,750円)');
+    assert(Number(calc2.total_gross_pay) === 108750, 'EMP-002: 総支給額が正しく算出された (108,750円)');
+    assert(Number(calc2.employment_insurance_amount) === 653, 'EMP-002: 雇用保険料が正しく算出された (653円)');
+
+    // ------------------------------------------------------------------------
+    // 6. 計算根拠マスタID (applied_rate_ids) の追跡可能性検証
+    // ------------------------------------------------------------------------
+    console.log('\n6. 計算根拠マスタID (applied_rate_ids) の追跡可能性検証...');
+
+    const applied1 = calc1.applied_rate_ids;
+    assert(Array.isArray(applied1) && applied1.length >= 4, '計算結果に複数の料率マスタ参照スナップショットが記録されている');
+
+    const hiRateEntry = applied1.find((r: any) => r.type === 'health_insurance');
+    assert(hiRateEntry?.rate_id === rateHiId, '参照された健康保険料率マスタのIDが正確に記録されている');
+
+    const penRateEntry = applied1.find((r: any) => r.type === 'pension');
+    assert(penRateEntry?.rate_id === ratePenId, '参照された厚生年金保険料率マスタのIDが正確に記録されている');
+
+    const taxBracketEntry = applied1.find((r: any) => r.type === 'income_tax');
+    assert(taxBracketEntry?.rate_id === bracket2Id, '参照された源泉徴収税額表のIDが正確に記録されている');
+
+    // ------------------------------------------------------------------------
+    // 7. 同一期間・同一従業員の重複計算防止 (DB UNIQUE制約)
+    // ------------------------------------------------------------------------
+    console.log('\n7. 同一期間・同一従業員の重複計算防止検証...');
+
+    let duplicateCalcBlocked = false;
+    try {
+      await client.query(
+        `INSERT INTO payroll_calculations (
+          tenant_id, payroll_period_id, employee_id, created_by, status
+        ) VALUES ($1, $2, $3, $4, 'draft')`,
+        [tenantA, period.id, emp1Id, payrollAdminA],
+      );
+    } catch (err: any) {
+      duplicateCalcBlocked = true;
+    }
+    assert(duplicateCalcBlocked, '同一テナント・同一期間・同一従業員の重複計算がDB UNIQUE制約で防止された');
+
+    // ------------------------------------------------------------------------
+    // 8. RBAC二重防御の検証
+    // ------------------------------------------------------------------------
+    console.log('\n8. RBAC二重防御の検証...');
+
+    let employeeCalculateBlocked = false;
+    try {
+      // 一般従業員 employeeA による給与計算実行の試行
+      await payrollService.calculateForPeriod(tenantA, employeeA, period.id);
+    } catch (err: any) {
+      if (err.status === 403 || err.response?.statusCode === 403) {
+        employeeCalculateBlocked = true;
+      }
+    }
+    assert(employeeCalculateBlocked, '一般従業員 (employee) による給与計算実行が 403 Forbidden で拒否された');
+
+    let employeeSubmitApprovalBlocked = false;
+    try {
+      // 一般従業員 employeeA による承認申請の試行
+      await payrollService.submitApproval(tenantA, employeeA, calc1.id);
+    } catch (err: any) {
+      if (err.status === 403 || err.response?.statusCode === 403) {
+        employeeSubmitApprovalBlocked = true;
+      }
+    }
+    assert(employeeSubmitApprovalBlocked, '一般従業員 (employee) による承認申請・確定操作が 403 Forbidden で拒否された');
+
+    // ------------------------------------------------------------------------
+    // 9. 承認フロー検証 (暗黙自動承認防止 & 0-step / 多段階承認)
+    // ------------------------------------------------------------------------
+    console.log('\n9. 承認フロー検証 (暗黙自動承認の防止 & 確定遷移)...');
+
+    // A. 承認ルール未設定時の承認申請 (暗黙自動承認の防止検証)
+    let noRulesBlocked = false;
+    try {
+      await payrollService.submitApproval(tenantA, payrollAdminA, calc1.id);
+    } catch (err: any) {
+      if (err.status === 400 || err.response?.statusCode === 400) {
+        noRulesBlocked = true;
+      }
+    }
+    assert(noRulesBlocked, '承認ルール未設定時の承認申請が 400 Bad Request で安全に遮断された (暗黙自動承認の防止)');
+
+    // B. 多段階承認ルールの設定 (Step 1: approverA による承認)
+    const ruleId = uuidv4();
+    await client.query(
+      `INSERT INTO approval_rules (
+        id, tenant_id, target_type, step_number, approver_role_id, is_active, is_explicit_auto_approve
+      ) VALUES ($1, $2, 'payroll', 1, $3, TRUE, FALSE)`,
+      [ruleId, tenantA, roleMap.get('approver')],
+    );
+
+    // 多段階承認での申請提出
+    const submittedCalc = await payrollService.submitApproval(tenantA, payrollAdminA, calc1.id);
+    assert(submittedCalc.status === 'pending_approval', '承認申請により status = pending_approval に遷移した');
+    assert(submittedCalc.approval_request_id !== null, '汎用 approval_requests が起票された');
+
+    // 承認依頼の確認
+    const arRes = await client.query<{ id: string; status: string }>(
+      `SELECT id, status FROM approval_requests WHERE id = $1`,
+      [submittedCalc.approval_request_id],
+    );
+    assert(arRes.rows[0]?.status === 'pending', 'approval_requests が pending 状態で作成された');
+
+    // approverA による承認実行 (既存承認エンジンの呼び出し)
+    await approvalRequests.approve(tenantA, approverA, arRes.rows[0].id, { comment: '給与計算内容を確認し承認' });
+
+    // 承認完了後の給与計算ステータス確認 (active へ自動連動)
+    const confirmedCalcRes = await client.query<any>(
+      `SELECT status, approved_at FROM payroll_calculations WHERE id = $1`,
+      [calc1.id],
+    );
+    assert(confirmedCalcRes.rows[0]?.status === 'active', '承認完了により payroll_calculations.status が active に遷移した');
+    assert(confirmedCalcRes.rows[0]?.approved_at !== null, '承認完了日時 (approved_at) が記録された');
+
+    // C. 1人テナント向け明示的 0-step 自動承認ルールの検証
+    await client.query(`DELETE FROM approval_rules WHERE tenant_id = $1 AND target_type = 'payroll'`, [tenantA]);
+    await client.query(
+      `INSERT INTO approval_rules (
+        tenant_id, target_type, step_number, approver_role_id, is_active, is_explicit_auto_approve
+      ) VALUES ($1, 'payroll', 0, $2, TRUE, TRUE)`,
+      [tenantA, roleMap.get('owner')],
+    );
+
+    const autoApprovedCalc = await payrollService.submitApproval(tenantA, payrollAdminA, calc2.id);
+    assert(autoApprovedCalc.status === 'active', '明示的0-step自動承認ルールにより即座に status = active に確定した');
+
+    // ------------------------------------------------------------------------
+    // 10. 確定後WORM不変性検証 (fail-closed)
+    // ------------------------------------------------------------------------
+    console.log('\n10. 確定後WORM不変性検証 (fail-closed)...');
+
+    let activeCalcUpdateBlocked = false;
+    try {
+      await client.query(
+        `UPDATE payroll_calculations SET base_salary = 999999 WHERE id = $1`,
+        [calc1.id],
+      );
+    } catch (err: any) {
+      activeCalcUpdateBlocked = true;
+    }
+    assert(activeCalcUpdateBlocked, '確定済み (active) の給与計算レコードの通常UPDATEがDBトリガー(WORM)により拒否された');
+
+    let activeCalcDeleteBlocked = false;
+    try {
+      await client.query(
+        `DELETE FROM payroll_calculations WHERE id = $1`,
+        [calc1.id],
+      );
+    } catch (err: any) {
+      activeCalcDeleteBlocked = true;
+    }
+    assert(activeCalcDeleteBlocked, '確定済み (active) の給与計算レコードの物理DELETEがDBトリガー(WORM)により拒否された');
+
+    // ------------------------------------------------------------------------
+    // 11. テナント完全分離 (RLS) & 他テナント料率参照の遮断検証
+    // ------------------------------------------------------------------------
+    console.log('\n11. テナント完全分離 (RLS) & 他テナント料率参照の遮断検証...');
+
+    // RLS: Tenant B ユーザーから Tenant A の給与計算一覧の取得
+    await client.query('BEGIN');
+    await client.query(`SET LOCAL ROLE app_runtime`);
+    await client.query(`SET LOCAL app.current_tenant_id = '${tenantB}'`);
+    await client.query(`SET LOCAL app.current_user_id = '${ownerB}'`);
+
+    const rlsCalcsRes = await client.query(`SELECT count(*)::int AS cnt FROM payroll_calculations`);
+    assert(rlsCalcsRes.rows[0].cnt === 0, 'Tenant B から Tenant A の給与計算データが一切見えない (RLS完全遮断)');
+
+    const rlsPeriodsRes = await client.query(`SELECT count(*)::int AS cnt FROM payroll_periods`);
+    assert(rlsPeriodsRes.rows[0].cnt === 0, 'Tenant B から Tenant A の給与期間データが一切見えない (RLS完全遮断)');
+    await client.query('COMMIT');
+
+    // テナント整合性トリガー: 他テナントの料率マスタを参照しようとした不正なINSERTの遮断
+    let crossTenantRateBlocked = false;
+    try {
+      const periodB = uuidv4();
+      const empB = uuidv4();
+      await client.query(
+        `INSERT INTO payroll_periods (id, tenant_id, name, period_start, period_end, payment_date)
+         VALUES ($1, $2, 'Tenant B Period', '2026-05-01', '2026-05-31', '2026-06-10')`,
+        [periodB, tenantB],
+      );
+      await client.query(
+        `INSERT INTO employees (id, tenant_id, employee_no, name, hire_date)
+         VALUES ($1, $2, 'EMP-B-001', '田中 B', '2026-01-01')`,
+        [empB, tenantB],
+      );
+
+      // applied_rate_ids に Tenant A の rateHiId を含める
+      const crossRateJson = JSON.stringify([{ type: 'health_insurance', rate_id: rateHiId }]);
+      await client.query(
+        `INSERT INTO payroll_calculations (
+          tenant_id, payroll_period_id, employee_id, created_by, applied_rate_ids, status
+        ) VALUES ($1, $2, $3, $4, $5::jsonb, 'draft')`,
+        [tenantB, periodB, empB, ownerB, crossRateJson],
+      );
+    } catch (err: any) {
+      crossTenantRateBlocked = true;
+    }
+    assert(crossTenantRateBlocked, '他テナントの料率マスタを参照する給与計算INSERTがテナント整合性トリガーで安全に遮断された');
+
+  } catch (err: any) {
+    console.error('\n[FATAL ERROR during E2E]:', err);
+    failed++;
+  } finally {
+    try {
+      client.release();
+    } catch (_) {}
+    try {
+      await pool.end();
+    } catch (_) {}
+  }
+
+  console.log('\n======================================================================');
+  console.log(`P3-T3 給与計算エンジン E2E検証結果: ${passed} passed, ${failed} failed`);
+  console.log('======================================================================\n');
+
+  if (failed > 0) {
+    process.exit(1);
+  }
+}
+
+main().catch((err) => {
+  console.error('Fatal execution error:', err);
+  process.exit(1);
+});

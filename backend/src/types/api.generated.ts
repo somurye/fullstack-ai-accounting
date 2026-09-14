@@ -7887,7 +7887,7 @@ export interface components {
             /** Format: uuid */
             id?: string;
             /** @enum {string} */
-            target_type?: "journal_entry" | "expense_report" | "vendor_bill" | "contract" | "purchase_request" | "general_request";
+            target_type?: "journal_entry" | "expense_report" | "vendor_bill" | "contract" | "purchase_request" | "general_request" | "payroll";
             /** Format: uuid */
             target_id?: string;
             /** Format: uuid */

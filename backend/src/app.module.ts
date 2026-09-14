@@ -45,6 +45,7 @@ import { PurchaseDashboardModule } from './modules/purchase-dashboard/purchase-d
 import { EmployeesModule } from './modules/employees/employees.module';
 import { AttendanceModule } from './modules/attendance/attendance.module';
 import { RateMastersModule } from './modules/rate-masters/rate-masters.module';
+import { PayrollCalculationsModule } from './modules/payroll-calculations/payroll-calculations.module';
 
 /**
  * AppModule
@@ -107,6 +108,7 @@ import { RateMastersModule } from './modules/rate-masters/rate-masters.module';
     EmployeesModule,
     AttendanceModule,
     RateMastersModule,
+    PayrollCalculationsModule,
   ],
   controllers: [],
   providers: [

@@ -11,7 +11,8 @@ export interface ApprovalRequestRow {
     | 'vendor_bill'
     | 'contract'
     | 'purchase_request'
-    | 'general_request';
+    | 'general_request'
+    | 'payroll';
   target_id: string;
   submitted_by: string;
   total_steps: number;
