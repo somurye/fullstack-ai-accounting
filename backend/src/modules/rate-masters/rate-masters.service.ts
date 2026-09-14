@@ -271,6 +271,14 @@ export class RateMastersService {
             '同一料率種別・都道府県において有効期間が既存のマスタデータと重複しています',
           );
         }
+        if (
+          err.message?.includes('Cannot update business values') ||
+          err.message?.includes('Cannot modify effective_to')
+        ) {
+          throw AppException.badRequest(
+            '適用開始日を過ぎた確定済みマスタの業務値または有効期間は変更できません。法改正時は新期間のマスタを追加登録してください',
+          );
+        }
         throw err;
       }
     });
@@ -575,6 +583,14 @@ export class RateMastersService {
         if (err.code === '23P01') {
           throw AppException.badRequest(
             '同一扶養人数・期間において所得範囲が既存の税額表データと重複しています',
+          );
+        }
+        if (
+          err.message?.includes('Cannot update business values') ||
+          err.message?.includes('Cannot modify effective_to')
+        ) {
+          throw AppException.badRequest(
+            '適用開始日を過ぎた確定済み税額表の業務値または有効期間は変更できません。法改正時は新期間の税額表を追加登録してください',
           );
         }
         throw err;

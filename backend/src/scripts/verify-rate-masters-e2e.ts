@@ -585,6 +585,211 @@ async function run() {
       perfClient.release();
     }
 
+    // --------------------------------------------------------------------------
+    // 8. 過去マスタデータ改ざん防止トリガー (WORM / 不変性強制) の実測検証
+    // --------------------------------------------------------------------------
+    console.log('\n8. 過去マスタデータ改ざん防止トリガー (WORM / 不変性強制) の実測検証...');
+
+    // 8-1. 過去（effective_from <= 今日）の保険料率レコードに対する業務値・有効期間変更の拒否
+    // createdRateA1 (effective_from: 2025-04-01, effective_to: 2026-03-31)
+
+    // (1) rate_employee (業務値) の変更試行 -> 拒否
+    try {
+      await rateMastersService.updateInsuranceRate(
+        tenantA,
+        userA_PayrollAdmin,
+        createdRateA1.id,
+        { rate_employee: 0.08 },
+      );
+      throw new Error('Should have thrown error on updating past rate_employee');
+    } catch (err: any) {
+      expect(err instanceof AppException).toBe(true);
+      expect(err.getStatus()).toBe(400);
+      expect(err.message).toContain('確定済みマスタの業務値または有効期間は変更できません');
+      console.log('   -> 過去保険料率の業務値(rate_employee)変更: DBトリガーにより400拒否成功');
+    }
+
+    // (2) effective_from (適用開始日) の変更試行 -> 拒否
+    try {
+      await rateMastersService.updateInsuranceRate(
+        tenantA,
+        userA_PayrollAdmin,
+        createdRateA1.id,
+        { effective_from: '2025-05-01' },
+      );
+      throw new Error('Should have thrown error on updating past effective_from');
+    } catch (err: any) {
+      expect(err instanceof AppException).toBe(true);
+      expect(err.getStatus()).toBe(400);
+      expect(err.message).toContain('確定済みマスタの業務値または有効期間は変更できません');
+      console.log('   -> 過去保険料率の effective_from 変更: DBトリガーにより400拒否成功');
+    }
+
+    // (3) effective_to (終了日確定済みレコードの終了日) の変更試行 -> 拒否
+    try {
+      await rateMastersService.updateInsuranceRate(
+        tenantA,
+        userA_PayrollAdmin,
+        createdRateA1.id,
+        { effective_to: '2026-05-31' },
+      );
+      throw new Error('Should have thrown error on updating historical effective_to');
+    } catch (err: any) {
+      expect(err instanceof AppException).toBe(true);
+      expect(err.getStatus()).toBe(400);
+      expect(err.message).toContain('確定済みマスタの業務値または有効期間は変更できません');
+      console.log('   -> 過去確定保険料率の effective_to 変更: DBトリガーにより400拒否成功');
+    }
+
+    // (4) 過去レコードの物理削除 (DELETE) 試行 -> 拒否
+    const deleteClient = await pool.connect();
+    try {
+      await deleteClient.query('BEGIN');
+      await deleteClient.query(`SELECT set_config('app.current_tenant_id', $1, true)`, [tenantA]);
+      try {
+        await deleteClient.query(
+          `DELETE FROM insurance_rate_tables WHERE id = $1`,
+          [createdRateA1.id],
+        );
+        throw new Error('Should have failed delete on past rate master');
+      } catch (err: any) {
+        expect(String(err.message)).toContain('Cannot delete insurance rate master after effective_from has arrived');
+        console.log('   -> 過去保険料率の物理削除(DELETE): DBトリガーにより拒否成功');
+      }
+      await deleteClient.query('ROLLBACK');
+    } finally {
+      deleteClient.release();
+    }
+
+    // (5) 拒否後もDB上の元データが完全に不変であることを確認
+    const unchangedRateRes = await pool.query(
+      `SELECT *, effective_from::text as eff_from_str, effective_to::text as eff_to_str FROM insurance_rate_tables WHERE id = $1`,
+      [createdRateA1.id],
+    );
+    const unchangedRate = unchangedRateRes.rows[0];
+    expect(Number(unchangedRate.rate_employee)).toBe(0.04985);
+    expect(Number(unchangedRate.rate_employer)).toBe(0.04985);
+    expect(unchangedRate.eff_from_str).toBe('2025-04-01');
+    expect(unchangedRate.eff_to_str).toBe('2026-03-31');
+    console.log('   -> 改ざん試行後もDB上の保険料率元データが完全に不変であることを確認');
+
+    // 8-2. 過去（effective_from <= 今日）の源泉徴収税額表レコードに対する改ざん防止
+    // createdTax1 (effective_from: 2026-01-01, income_min: 88000, income_max: 89000, tax_amount: 130)
+
+    // (1) tax_amount (税額) の変更試行 -> 拒否
+    try {
+      await rateMastersService.updateTaxBracket(
+        tenantA,
+        userA_PayrollAdmin,
+        createdTax1.id,
+        { tax_amount: 500 },
+      );
+      throw new Error('Should have thrown error on updating past tax_amount');
+    } catch (err: any) {
+      expect(err instanceof AppException).toBe(true);
+      expect(err.getStatus()).toBe(400);
+      expect(err.message).toContain('確定済み税額表の業務値または有効期間は変更できません');
+      console.log('   -> 過去税額表の業務値(tax_amount)変更: DBトリガーにより400拒否成功');
+    }
+
+    // (2) income_min (所得下限) の変更試行 -> 拒否
+    try {
+      await rateMastersService.updateTaxBracket(
+        tenantA,
+        userA_PayrollAdmin,
+        createdTax1.id,
+        { income_min: 80000 },
+      );
+      throw new Error('Should have thrown error on updating past income_min');
+    } catch (err: any) {
+      expect(err instanceof AppException).toBe(true);
+      expect(err.getStatus()).toBe(400);
+      expect(err.message).toContain('確定済み税額表の業務値または有効期間は変更できません');
+      console.log('   -> 過去税額表の所得範囲(income_min)変更: DBトリガーにより400拒否成功');
+    }
+
+    // (3) 拒否後もDB上の税額表元データが完全に不変であることを確認
+    const unchangedTaxRes = await pool.query(
+      `SELECT * FROM income_tax_withholding_brackets WHERE id = $1`,
+      [createdTax1.id],
+    );
+    const unchangedTax = unchangedTaxRes.rows[0];
+    expect(Number(unchangedTax.tax_amount)).toBe(130);
+    expect(Number(unchangedTax.income_min)).toBe(88000);
+    expect(Number(unchangedTax.income_max)).toBe(89000);
+    console.log('   -> 改ざん試行後もDB上の税額表元データが完全に不変であることを確認');
+
+    // 8-3. 未来（effective_from > 今日）のレコードは引き続き編集できることの確認
+    const futureRate = await rateMastersService.createInsuranceRate(
+      tenantA,
+      userA_PayrollAdmin,
+      {
+        rate_type: 'employment_insurance',
+        prefecture: null,
+        rate_employee: 0.006,
+        rate_employer: 0.0095,
+        effective_from: '2030-04-01',
+        effective_to: null,
+        description: '未来適用予定の雇用保険料率 (入力テスト)',
+      },
+    );
+    const updatedFutureRate = await rateMastersService.updateInsuranceRate(
+      tenantA,
+      userA_PayrollAdmin,
+      futureRate.id,
+      {
+        rate_employee: 0.0065,
+        description: '訂正後の未来適用予定雇用保険料率',
+      },
+    );
+    expect(Number(updatedFutureRate.rate_employee)).toBe(0.0065);
+    expect(updatedFutureRate.description).toBe('訂正後の未来適用予定雇用保険料率');
+    console.log('   -> 未来適用予定レコード(effective_from > 今日): 入力誤り訂正UPDATE成功');
+
+    // 8-4. 法改正運用フロー（現在有効レコードの終了日クローズ ＋ 新料率INSERT）の実証
+    // 現在無期限の介護保険料率を登録
+    const activeCareRate = await rateMastersService.createInsuranceRate(
+      tenantA,
+      userA_PayrollAdmin,
+      {
+        rate_type: 'care_insurance',
+        prefecture: null,
+        rate_employee: 0.008,
+        rate_employer: 0.008,
+        effective_from: '2026-04-01',
+        effective_to: null,
+        description: '現行介護保険料率 (無期限)',
+      },
+    );
+    // 法改正により、2027-03-31で終了日をクローズ
+    const closedCareRate = await rateMastersService.updateInsuranceRate(
+      tenantA,
+      userA_PayrollAdmin,
+      activeCareRate.id,
+      {
+        effective_to: '2027-03-31',
+      },
+    );
+    expect(closedCareRate.effective_to).toBe('2027-03-31');
+
+    // 翌日 (2027-04-01) からの新料率をINSERT -> EXCLUDE制約違反なく共存登録可能
+    const newCareRate = await rateMastersService.createInsuranceRate(
+      tenantA,
+      userA_PayrollAdmin,
+      {
+        rate_type: 'care_insurance',
+        prefecture: null,
+        rate_employee: 0.0085,
+        rate_employer: 0.0085,
+        effective_from: '2027-04-01',
+        effective_to: null,
+        description: '法改正後 新介護保険料率',
+      },
+    );
+    expect(newCareRate.effective_from).toBe('2027-04-01');
+    expect(Number(newCareRate.rate_employee)).toBe(0.0085);
+    console.log('   -> 法改正運用フロー(現在有効マスタの終了日クローズ＋新料率INSERT): EXCLUDE整合性を保ち成功\n');
+
     console.log('\n=== P3-T2 保険料率・税率マスタ管理 実DB E2E検証: すべてPASS ===');
   } finally {
     await pool.end();
