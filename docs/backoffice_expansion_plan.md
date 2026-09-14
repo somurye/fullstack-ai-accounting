@@ -2517,7 +2517,7 @@ fail-closed運用）を踏襲しつつ、本Phaseは他のPhaseと質的に異�
 |----------|----------|------|------|-----------|
 | P3-T1 | 従業員マスタ・勤怠管理 | 従業員情報、打刻（出勤・退勤・休憩）、労働時間集計（所定内・時間外・深夜・休日労働の区分） | P0-T1, P0-T4 | ✅ SO正式PASS（コミット35185ba、5回の往復を経てロック取得順序の統一・週40時間境界の並行E2Eを確認、mainマージ指示済み） |
 | P3-T2 | 保険料率・税率マスタ管理 | 健康保険・厚生年金・雇用保険の料率、所得税源泉徴収税額表、住民税率を有効期間付きで管理する基盤（5.2節の原則①に対応） | P0-T1 | ✅ SO正式PASS（適用開始後のレコードをDBトリガーでfail-closedに変更禁止、JST基準・法改正close+INSERT運用を確認、mainマージ指示済み） |
-| P3-T3 | 給与計算エンジン | 勤怠実績・基本給・手当・控除から給与を計算し、AI提案パターンで人間確認を経て確定する（5.2節の原則②に対応） | P3-T1, P3-T2 | プロンプト発行済み・着手待ち |
+| P3-T3 | 給与計算エンジン | 勤怠実績・基本給・手当・控除から給与を計算し、AI提案パターンで人間確認を経て確定する（5.2節の原則②に対応） | P3-T1, P3-T2 | ⚠️ SO判定REQUEST CHANGES（コミット6651915、確定境界（draft/rejected/pending_approval→activeの直接UPDATE）がDB最終防御になっていない。承認エンジン以外の経路からも確定できてしまう。修正指示済み・再レビュー待ち） |
 | P3-T4 | 給与明細発行・年末調整 | 給与明細のPDF発行、年末調整の計算・書類生成 | P3-T3 | 未着手 |
 
 P3-T2以降の詳細タスク分解・実装指示プロンプトは、P3-T1の実装結果を踏まえてClaudeが
@@ -3069,6 +3069,81 @@ P3-T1（勤怠実績）とP3-T2（保険料率・税率マスタ）が揃った�
 
 ---
 
+#### 【フォローアップ指示プロンプト P3-T3-FIX】REQUEST CHANGES対応（確定境界がDB最終防御になっていない）
+
+ChatGPT(SO)よりP3-T3が「REQUEST CHANGES」と判定された。計算エンジン・料率マスタ参照・
+tenant整合性・RBAC・active後WORMは高く評価されており、修正対象は「確定境界（誰が
+activeにできるか）」がDB最終防御になっていない1点に限定される。
+
+```
+# SOレビュー結果：P3-T3 REQUEST CHANGES
+main...feature/p3-t3-payroll-engine の実差分（コミット6651915）を確認した結果、
+現状はマージ不可です。
+
+# BLOCKER: draft/rejected/pending_approval → active の直接UPDATEをDBが防いでいない
+現在のWORMトリガーは「OLD.status = 'active'のレコードへのUPDATE/DELETE」のみを拒否します。
+しかし「statusをactiveに変更する操作そのもの」は、正規の承認エンジン
+（ApprovalRequestsService.finalizeApproval()）経由でも、DB直接操作でも、区別なく
+成功してしまいます。これは「防御①: 確定前（誰がactiveにできるか）」が欠けている状態で、
+「防御②: 確定後（activeを変更できない）」しか実装されていません。
+本プロジェクトの設計原則である「ルール計算 → draft → 人間確認 → 既存承認エンジン →
+active」という確定境界を、DB最終防御として成立させる必要があります。
+
+# 修正方針（A案を推奨）
+このプロジェクトで既に確立している「SET LOCAL app.current_tenant_id」という
+セッションローカル変数によるコンテキスト伝達パターンを応用します。
+1. ApprovalRequestsService.finalizeApproval()内で、payroll_calculationsのstatusを
+   activeへ更新する直前に、同一トランザクション内で
+   SET LOCAL app.approval_context = 'true'; を実行する。
+2. payroll_calculationsのUPDATEトリガーに、NEW.status = 'active' AND
+   OLD.status IN ('draft', 'pending_approval', 'rejected') という遷移が発生する場合、
+   current_setting('app.approval_context', true) = 'true' でなければ
+   RAISE EXCEPTIONで拒否するロジックを追加する。
+3. これにより、正規の承認エンジンを経由しないUPDATE（アプリの別コード、DB直接操作を含む）
+   では、draft等からactiveへの遷移が一切成立しなくなる。
+
+# 代替方針（B案、A案が困難な場合）
+statusを直接UPDATEできる権限をapp_runtimeから制限し、専用のSECURITY DEFINER関数
+（承認エンジンのみが呼び出す）経由でのみactiveへの遷移を許可する設計でも構いません。
+どちらの方針を採用したか、理由とともに報告に明記してください。
+
+# 追加すべき実DB E2E（必須、SOが指定した5+2ケース）
+1. draft → active への直接UPDATE試行 → 拒否され、statusはdraftのまま
+2. rejected → active への直接UPDATE試行 → 拒否
+3. pending_approval → active への直接UPDATE試行 → 拒否
+4. 正規の多段階承認エンジンを通した確定 → active成功
+5. 明示的0-step自動承認を通した確定 → active成功
+6. active後の通常UPDATE試行 → 拒否（既存確認分の維持）
+7. active後のDELETE試行 → 拒否（既存確認分の維持）
+
+# 受け入れ基準（Definition of Done）
+- [ ] 正規の承認エンジンを経由しないUPDATEでは、draft/rejected/pending_approvalから
+      activeへの遷移が一切成立しない
+- [ ] 正規の承認エンジン（多段階承認・明示的0-step自動承認の両方）経由では、
+      従来通りactiveへの遷移が成立する
+- [ ] 上記7ケースすべてを実DB E2Eで確認する
+- [ ] 既存のtenant整合性・RBAC・計算根拠追跡（applied_rate_ids）・給与プロファイル
+      重複防止等に回帰がない
+- [ ] 完了報告に正確なコミットSHA・ブランチ名を明記する（本計画書0.4節ルール4に従う）
+- [ ] feature/p3-t3-payroll-engine ブランチに追加コミット・pushし、比較URLを報告に
+      含める
+
+# 重要な注記（今回のレビューコメントより）
+今回実装された給与計算ロジック（基礎時給=base_salary/160、時間外1.25倍、深夜0.25倍、
+休日1.35倍等）は、実際の日本の給与計算制度を完全に再現したものではなく、本計画書が
+定義した簡略モデルとして扱ってください。「法令準拠済み」と断定せず、5.2節の原則③
+（専門家レビューの推奨）を維持したまま進めてください。
+
+# ChatGPTレビュー時の確認観点
+- app.approval_context（またはB案の代替機構）が、他のトランザクションへ意図せず
+  漏れ伝播しないか（トランザクションスコープのSET LOCALであることを確認）
+- 明示的0-step自動承認の経路でも、同じapproval_contextの設定を通ってからactiveに
+  なっているか（承認エンジンの2つの経路（多段階/0-step）で確定境界の実装に
+  抜け漏れがないか）
+```
+
+---
+
 ## 6. 既知の技術的負債・フォローアップ事項
 
 タスク完了時にSOが「修正不要だが記録すべき」と判定した事項を追跡する。将来の関連タスク着手時に必ず参照すること。
@@ -3159,3 +3234,4 @@ P3-T1（勤怠実績）とP3-T2（保険料率・税率マスタ）が揃った�
 | 6.4.0 | P3-T1-FIX3が正式PASS（5回の往復を経て、ロック取得順序の統一によりデッドロックの原因そのものを是正、週40時間境界を跨ぐ並行登録の収束を実DBで確認）。マージ指示プロンプト（P3-T1-MERGE）を追加しP3-T1を完了扱いに更新。**P3-T2（保険料率・税率マスタ管理）の実装指示プロンプトを新規作成**（EXCLUDE制約による有効期間重複防止、5.2節原則のハードコード禁止を明記） |
 | 6.5.0 | P3-T2がSO判定REQUEST CHANGES（DB/RLS/RBAC/EXCLUDE制約は良好だが、過去・適用済みマスタが通常UPDATEで書き換え可能で「追記型・過去データ上書き禁止」の運用原則に反する）。フォローアップ指示プロンプト（P3-T2-FIX、適用開始後のレコードをDBトリガーでfail-closedに変更禁止）を追加 |
 | 6.6.0 | P3-T2-FIXが正式PASS（適用開始後のレコード変更をDBトリガーでfail-closedに禁止、JST基準・法改正close+INSERT運用、実DB E2E 139/139）。マージ指示プロンプト（P3-T2-MERGE）を追加しP3-T2を完了扱いに更新。**P3-T3（給与計算エンジン）の実装指示プロンプトを新規作成**（既存承認エンジンの再利用、AI提案+人間承認パターンの適用、料率マスタIDによる計算根拠の追跡可能性を明記） |
+| 6.7.0 | P3-T3がSO判定REQUEST CHANGES（重大: 確定境界（draft/rejected/pending_approval→activeの直接UPDATE）がDB最終防御になっておらず、承認エンジンを経由しない確定が可能だった。計算エンジン・料率参照・tenant整合性・RBACは良好）。フォローアップ指示プロンプト（P3-T3-FIX、SET LOCALによるコンテキスト伝達パターンを応用したDB確定境界の実装）を追加 |

@@ -420,6 +420,8 @@ export class ApprovalRequestsService {
     }
 
     if (targetType === 'payroll') {
+      // 確定境界のDB最終防御: 承認コンテキストを同一トランザクション内で伝達
+      await client.query(`SET LOCAL app.approval_context = 'true'`);
       await client.query(
         `UPDATE payroll_calculations SET status = 'active', approved_at = now(), updated_at = now() WHERE tenant_id = $1 AND id = $2`,
         [tenantId, targetId],

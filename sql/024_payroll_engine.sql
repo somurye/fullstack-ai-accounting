@@ -372,16 +372,36 @@ CREATE TRIGGER trg_validate_payroll_calculation_consistency
     BEFORE INSERT OR UPDATE ON payroll_calculations
     FOR EACH ROW EXECUTE FUNCTION fn_validate_payroll_calculation_consistency();
 
--- 確定後改変禁止トリガー (WORM / fail-closed)
+-- 確定境界・確定後改変禁止トリガー (WORM / fail-closed / DB最終防御)
 CREATE OR REPLACE FUNCTION fn_enforce_payroll_calculation_immutability()
 RETURNS TRIGGER AS $$
 BEGIN
-    IF TG_OP = 'UPDATE' THEN
-        -- 確定済み (active) のレコードに対する改変は一切禁止
+    IF TG_OP = 'INSERT' THEN
+        -- 初期登録時に直接 active で作成することは禁止 (必ず draft 提案から開始)
+        IF NEW.status = 'active' AND COALESCE(current_setting('app.approval_context', true), 'false') <> 'true' THEN
+            RAISE EXCEPTION 'Payroll calculation cannot be created directly as active (employee_id: %). Must be created as draft first.',
+                NEW.employee_id
+                USING ERRCODE = '55000';
+        END IF;
+
+        RETURN NEW;
+    ELSIF TG_OP = 'UPDATE' THEN
+        -- 確定済み (active) レコードに対する改変は一切禁止 (確定後WORM不変性)
         IF OLD.status = 'active' THEN
             RAISE EXCEPTION 'Active payroll calculation record cannot be modified (id: %, employee_id: %). Confirmed payroll records are immutable.',
                 OLD.id, OLD.employee_id
                 USING ERRCODE = '55000';
+        END IF;
+
+        -- 確定境界のDB最終防御 (誰がactiveにできるか)
+        -- draft / pending_approval / rejected から active への直接遷移をDB層で遮断
+        -- 正規の承認エンジン (SET LOCAL app.approval_context = 'true') 経由でのみ許可
+        IF NEW.status = 'active' AND OLD.status IN ('draft', 'pending_approval', 'rejected') THEN
+            IF COALESCE(current_setting('app.approval_context', true), 'false') <> 'true' THEN
+                RAISE EXCEPTION 'Direct transition to active is prohibited (id: %, employee_id: %). Must be approved via official approval engine.',
+                    OLD.id, OLD.employee_id
+                    USING ERRCODE = '55000';
+            END IF;
         END IF;
 
         NEW.updated_at := now();
@@ -403,7 +423,7 @@ $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS trg_enforce_payroll_calculation_immutability ON payroll_calculations;
 CREATE TRIGGER trg_enforce_payroll_calculation_immutability
-    BEFORE UPDATE OR DELETE ON payroll_calculations
+    BEFORE INSERT OR UPDATE OR DELETE ON payroll_calculations
     FOR EACH ROW EXECUTE FUNCTION fn_enforce_payroll_calculation_immutability();
 
 

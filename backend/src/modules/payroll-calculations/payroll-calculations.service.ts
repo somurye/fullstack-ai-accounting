@@ -792,6 +792,8 @@ export class PayrollCalculationsService {
       // 3. 明示的な0-step自動承認ルール (is_explicit_auto_approve = TRUE) の確認 (1人テナント運用)
       const autoApproveRule = rulesResult.rows.find((r) => r.is_explicit_auto_approve);
       if (autoApproveRule) {
+        // 確定境界のDB最終防御: 承認コンテキストを同一トランザクション内で伝達
+        await client.query(`SET LOCAL app.approval_context = 'true'`);
         const updateResult = await client.query<PayrollCalculationRow>(
           `UPDATE payroll_calculations
            SET status = 'active', approved_at = now(), updated_at = now()
@@ -819,6 +821,13 @@ export class PayrollCalculationsService {
         `INSERT INTO approval_requests (
           tenant_id, target_type, target_id, submitted_by, total_steps, current_step, status
         ) VALUES ($1, 'payroll', $2, $3, $4, 1, 'pending')
+        ON CONFLICT (target_type, target_id)
+        DO UPDATE SET
+          status = 'pending',
+          current_step = 1,
+          submitted_by = $3,
+          total_steps = $4,
+          updated_at = now()
         RETURNING id`,
         [tenantId, calculationId, userId, totalSteps],
       );
@@ -887,6 +896,11 @@ export class PayrollCalculationsService {
       const autoApprove = rulesResult.rows.some((r) => r.is_explicit_auto_approve);
       const totalSteps = autoApprove ? 0 : Math.max(...rulesResult.rows.map((r) => r.step_number));
 
+      if (autoApprove) {
+        // 確定境界のDB最終防御: 承認コンテキストを同一トランザクション内で伝達
+        await client.query(`SET LOCAL app.approval_context = 'true'`);
+      }
+
       for (const row of calcs.rows) {
         if (autoApprove) {
           await client.query(
@@ -900,6 +914,13 @@ export class PayrollCalculationsService {
             `INSERT INTO approval_requests (
               tenant_id, target_type, target_id, submitted_by, total_steps, current_step, status
             ) VALUES ($1, 'payroll', $2, $3, $4, 1, 'pending')
+            ON CONFLICT (target_type, target_id)
+            DO UPDATE SET
+              status = 'pending',
+              current_step = 1,
+              submitted_by = $3,
+              total_steps = $4,
+              updated_at = now()
             RETURNING id`,
             [tenantId, row.id, userId, totalSteps],
           );

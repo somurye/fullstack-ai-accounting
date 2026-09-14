@@ -403,9 +403,9 @@ async function main() {
     assert(employeeSubmitApprovalBlocked, '一般従業員 (employee) による承認申請・確定操作が 403 Forbidden で拒否された');
 
     // ------------------------------------------------------------------------
-    // 9. 承認フロー検証 (暗黙自動承認防止 & 0-step / 多段階承認)
+    // 9. 確定境界のDB最終防御 & 承認フロー検証 (SO指定 5+2 ケース)
     // ------------------------------------------------------------------------
-    console.log('\n9. 承認フロー検証 (暗黙自動承認の防止 & 確定遷移)...');
+    console.log('\n9. 確定境界のDB最終防御 & 承認フロー検証 (SO指定 5+2 ケース)...');
 
     // A. 承認ルール未設定時の承認申請 (暗黙自動承認の防止検証)
     let noRulesBlocked = false;
@@ -418,6 +418,23 @@ async function main() {
     }
     assert(noRulesBlocked, '承認ルール未設定時の承認申請が 400 Bad Request で安全に遮断された (暗黙自動承認の防止)');
 
+    // [SOケース1] draft → active への直接UPDATE試行 → 拒否され、statusはdraftのまま
+    let directDraftToActiveBlocked = false;
+    try {
+      await client.query(
+        `UPDATE payroll_calculations SET status = 'active' WHERE id = $1`,
+        [calc1.id],
+      );
+    } catch (err: any) {
+      directDraftToActiveBlocked = true;
+    }
+    assert(directDraftToActiveBlocked, '[SOケース1] draft → active への直接UPDATE試行がDBトリガーにより拒否された');
+    const checkDraftStatus = await client.query<{ status: string }>(
+      `SELECT status FROM payroll_calculations WHERE id = $1`,
+      [calc1.id],
+    );
+    assert(checkDraftStatus.rows[0]?.status === 'draft', '[SOケース1] 拒否後も status は draft のままである');
+
     // B. 多段階承認ルールの設定 (Step 1: approverA による承認)
     const ruleId = uuidv4();
     await client.query(
@@ -427,10 +444,27 @@ async function main() {
       [ruleId, tenantA, roleMap.get('approver')],
     );
 
-    // 多段階承認での申請提出
+    // 多段階承認での申請提出 (draft → pending_approval)
     const submittedCalc = await payrollService.submitApproval(tenantA, payrollAdminA, calc1.id);
     assert(submittedCalc.status === 'pending_approval', '承認申請により status = pending_approval に遷移した');
     assert(submittedCalc.approval_request_id !== null, '汎用 approval_requests が起票された');
+
+    // [SOケース3] pending_approval → active への直接UPDATE試行 → 拒否
+    let directPendingToActiveBlocked = false;
+    try {
+      await client.query(
+        `UPDATE payroll_calculations SET status = 'active' WHERE id = $1`,
+        [calc1.id],
+      );
+    } catch (err: any) {
+      directPendingToActiveBlocked = true;
+    }
+    assert(directPendingToActiveBlocked, '[SOケース3] pending_approval → active への直接UPDATE試行がDBトリガーにより拒否された');
+    const checkPendingStatus = await client.query<{ status: string }>(
+      `SELECT status FROM payroll_calculations WHERE id = $1`,
+      [calc1.id],
+    );
+    assert(checkPendingStatus.rows[0]?.status === 'pending_approval', '[SOケース3] 拒否後も status は pending_approval のままである');
 
     // 承認依頼の確認
     const arRes = await client.query<{ id: string; status: string }>(
@@ -439,18 +473,51 @@ async function main() {
     );
     assert(arRes.rows[0]?.status === 'pending', 'approval_requests が pending 状態で作成された');
 
-    // approverA による承認実行 (既存承認エンジンの呼び出し)
-    await approvalRequests.approve(tenantA, approverA, arRes.rows[0].id, { comment: '給与計算内容を確認し承認' });
+    // 一旦却下して rejected 状態を作る
+    await approvalRequests.reject(tenantA, approverA, arRes.rows[0].id, { comment: '差し戻しテスト' });
+    const rejectedCalcRes = await client.query<{ status: string }>(
+      `SELECT status FROM payroll_calculations WHERE id = $1`,
+      [calc1.id],
+    );
+    assert(rejectedCalcRes.rows[0]?.status === 'rejected', '却下により status = rejected に遷移した');
+
+    // [SOケース2] rejected → active への直接UPDATE試行 → 拒否
+    let directRejectedToActiveBlocked = false;
+    try {
+      await client.query(
+        `UPDATE payroll_calculations SET status = 'active' WHERE id = $1`,
+        [calc1.id],
+      );
+    } catch (err: any) {
+      directRejectedToActiveBlocked = true;
+    }
+    assert(directRejectedToActiveBlocked, '[SOケース2] rejected → active への直接UPDATE試行がDBトリガーにより拒否された');
+    const checkRejectedStatus = await client.query<{ status: string }>(
+      `SELECT status FROM payroll_calculations WHERE id = $1`,
+      [calc1.id],
+    );
+    assert(checkRejectedStatus.rows[0]?.status === 'rejected', '[SOケース2] 拒否後も status は rejected のままである');
+
+    // [SOケース4] 正規の多段階承認エンジンを通した確定 → active成功
+    // rejected から再申請
+    const resubmittedCalc = await payrollService.submitApproval(tenantA, payrollAdminA, calc1.id);
+    assert(resubmittedCalc.status === 'pending_approval', '再申請により status = pending_approval に遷移した');
+    const newArRes = await client.query<{ id: string; status: string }>(
+      `SELECT id, status FROM approval_requests WHERE id = $1`,
+      [resubmittedCalc.approval_request_id],
+    );
+    // approverA による正規承認実行 (finalizeApproval 経由で SET LOCAL app.approval_context = 'true' が実行される)
+    await approvalRequests.approve(tenantA, approverA, newArRes.rows[0].id, { comment: '給与計算内容を確認し正式承認' });
 
     // 承認完了後の給与計算ステータス確認 (active へ自動連動)
     const confirmedCalcRes = await client.query<any>(
       `SELECT status, approved_at FROM payroll_calculations WHERE id = $1`,
       [calc1.id],
     );
-    assert(confirmedCalcRes.rows[0]?.status === 'active', '承認完了により payroll_calculations.status が active に遷移した');
+    assert(confirmedCalcRes.rows[0]?.status === 'active', '[SOケース4] 正規の多段階承認エンジンを通した確定により status = active に成功した');
     assert(confirmedCalcRes.rows[0]?.approved_at !== null, '承認完了日時 (approved_at) が記録された');
 
-    // C. 1人テナント向け明示的 0-step 自動承認ルールの検証
+    // [SOケース5] 明示的0-step自動承認を通した確定 → active成功
     await client.query(`DELETE FROM approval_rules WHERE tenant_id = $1 AND target_type = 'payroll'`, [tenantA]);
     await client.query(
       `INSERT INTO approval_rules (
@@ -460,13 +527,14 @@ async function main() {
     );
 
     const autoApprovedCalc = await payrollService.submitApproval(tenantA, payrollAdminA, calc2.id);
-    assert(autoApprovedCalc.status === 'active', '明示的0-step自動承認ルールにより即座に status = active に確定した');
+    assert(autoApprovedCalc.status === 'active', '[SOケース5] 明示的0-step自動承認を通した確定により即座に status = active に成功した');
 
     // ------------------------------------------------------------------------
-    // 10. 確定後WORM不変性検証 (fail-closed)
+    // 10. 確定後WORM不変性検証 (SOケース 6 & 7 / fail-closed)
     // ------------------------------------------------------------------------
-    console.log('\n10. 確定後WORM不変性検証 (fail-closed)...');
+    console.log('\n10. 確定後WORM不変性検証 (SOケース 6 & 7 / fail-closed)...');
 
+    // [SOケース6] active後の通常UPDATE試行 → 拒否
     let activeCalcUpdateBlocked = false;
     try {
       await client.query(
@@ -476,8 +544,9 @@ async function main() {
     } catch (err: any) {
       activeCalcUpdateBlocked = true;
     }
-    assert(activeCalcUpdateBlocked, '確定済み (active) の給与計算レコードの通常UPDATEがDBトリガー(WORM)により拒否された');
+    assert(activeCalcUpdateBlocked, '[SOケース6] 確定済み (active) の給与計算レコードの通常UPDATEがDBトリガー(WORM)により拒否された');
 
+    // [SOケース7] active後のDELETE試行 → 拒否
     let activeCalcDeleteBlocked = false;
     try {
       await client.query(
@@ -487,7 +556,21 @@ async function main() {
     } catch (err: any) {
       activeCalcDeleteBlocked = true;
     }
-    assert(activeCalcDeleteBlocked, '確定済み (active) の給与計算レコードの物理DELETEがDBトリガー(WORM)により拒否された');
+    assert(activeCalcDeleteBlocked, '[SOケース7] 確定済み (active) の給与計算レコードの物理DELETEがDBトリガー(WORM)により拒否された');
+
+    // [ボーナスケース] 初期INSERTで status = 'active' を直接指定する試行 → 拒否
+    let directInsertActiveBlocked = false;
+    try {
+      await client.query(
+        `INSERT INTO payroll_calculations (
+          tenant_id, payroll_period_id, employee_id, created_by, status
+        ) VALUES ($1, $2, $3, $4, 'active')`,
+        [tenantA, period.id, uuidv4(), ownerA],
+      );
+    } catch (err: any) {
+      directInsertActiveBlocked = true;
+    }
+    assert(directInsertActiveBlocked, '直接 status = active での不正INSERTが確定境界トリガーにより安全に拒否された');
 
     // ------------------------------------------------------------------------
     // 11. テナント完全分離 (RLS) & 他テナント料率参照の遮断検証
