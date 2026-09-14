@@ -2077,6 +2077,122 @@ def run_verification(dsn: str) -> int:
     r.ok("従業員マスタ・勤怠管理E2E: テナント完全分離・二重RBAC認可・DB整合性トリガー・労働時間区分境界値実測(8h/22h/深夜/休日)が動作する (P3-T1)",
          p3t1_run.returncode == 0)
 
+    # --------------------------------------------------------------------------
+    # 19. 保険料率・税率マスタ管理 (P3-T2) の検証
+    # --------------------------------------------------------------------------
+    print("\n--- 19. 保険料率・税率マスタ管理 (P3-T2) の検証 ---")
+
+    # 19-1. 022_insurance_and_tax_rates.sql を適用
+    file_022 = SQL_DIR / "022_insurance_and_tax_rates.sql"
+    with open(file_022, encoding="utf-8") as f:
+        sql_022 = f.read()
+    conn = psycopg2.connect(dsn)
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql_022)
+    finally:
+        conn.close()
+    print("[schema] 022_insurance_and_tax_rates.sql を適用しました")
+
+    # 19-2. insurance_rate_tables テーブルの作成確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("SELECT to_regclass('insurance_rate_tables') IS NOT NULL AS exists")
+        ins_tbl_exists = cur.fetchone()["exists"]
+    r.ok("insurance_rate_tables テーブルが正常に作成されている", ins_tbl_exists)
+
+    # 19-3. insurance_rate_tables テーブルの RLS 有効化確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'insurance_rate_tables'")
+        row = cur.fetchone()
+        ins_rls_ok = row["relrowsecurity"] and row["relforcerowsecurity"]
+    r.ok("insurance_rate_tables の RLS が有効かつ FORCE されている", ins_rls_ok)
+
+    # 19-4. income_tax_withholding_brackets テーブルの作成確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("SELECT to_regclass('income_tax_withholding_brackets') IS NOT NULL AS exists")
+        tax_tbl_exists = cur.fetchone()["exists"]
+    r.ok("income_tax_withholding_brackets テーブルが正常に作成されている", tax_tbl_exists)
+
+    # 19-5. income_tax_withholding_brackets テーブルの RLS 有効化確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'income_tax_withholding_brackets'")
+        row = cur.fetchone()
+        tax_rls_ok = row["relrowsecurity"] and row["relforcerowsecurity"]
+    r.ok("income_tax_withholding_brackets の RLS が有効かつ FORCE されている", tax_rls_ok)
+
+    # 19-6. 段階的アップグレード・冪等性検証 (022を2回連続適用してもエラーにならないこと)
+    idempotent_022_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_022)
+        finally:
+            conn.close()
+    except Exception as e:
+        idempotent_022_ok = False
+        print(f"  [ERROR] 022 re-apply failed: {e}")
+    r.ok("段階的アップグレード検証 10: 022を2回連続適用してもエラーにならず正常終了する (DDL 冪等性保証)",
+         idempotent_022_ok)
+
+    # 19-7. 023_rate_master_immutability.sql を適用 (改ざん防止トリガー)
+    file_023 = SQL_DIR / "023_rate_master_immutability.sql"
+    with open(file_023, encoding="utf-8") as f:
+        sql_023 = f.read()
+    conn = psycopg2.connect(dsn)
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql_023)
+    finally:
+        conn.close()
+    print("[schema] 023_rate_master_immutability.sql を適用しました")
+
+    # 19-8. トリガー作成確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("""
+            SELECT count(*) = 4 AS all_exist
+            FROM pg_trigger
+            WHERE tgname IN (
+                'trg_prevent_insurance_rate_past_update',
+                'trg_prevent_insurance_rate_past_delete',
+                'trg_prevent_tax_bracket_past_update',
+                'trg_prevent_tax_bracket_past_delete'
+            )
+        """)
+        trg_ok = cur.fetchone()["all_exist"]
+    r.ok("保険料率・税額表の過去マスタ改ざん防止トリガーが正常に作成されている", trg_ok)
+
+    # 19-9. 段階的アップグレード・冪等性検証 (023を2回連続適用してもエラーにならないこと)
+    idempotent_023_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_023)
+        finally:
+            conn.close()
+    except Exception as e:
+        idempotent_023_ok = False
+        print(f"  [ERROR] 023 re-apply failed: {e}")
+    r.ok("段階的アップグレード検証 11: 023を2回連続適用してもエラーにならず正常終了する (DDL 冪等性保証)",
+         idempotent_023_ok)
+
+    # 19-10. 【P3-T2実証】実DB E2Eテスト (RBAC二重防御、テナント完全分離、DB EXCLUDE重複拒否、指定日境界値判定、過去データ改ざん防止WORM、クエリ性能)
+    cmd_p3t2 = f"npx ts-node src/scripts/verify-rate-masters-e2e.ts \"{dsn}\""
+    p3t2_run = subprocess.run(cmd_p3t2, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
+    if p3t2_run.returncode != 0:
+        err_msg = f"\n[P3-T2 E2E ERROR STDOUT]:\n{p3t2_run.stdout}\n[P3-T2 E2E ERROR STDERR]:\n{p3t2_run.stderr}"
+        print(err_msg.encode("cp932", errors="replace").decode("cp932"))
+    else:
+        print("\n=== P3-T2 E2E 実測実行ログ ===")
+        print(p3t2_run.stdout)
+    r.ok("保険料率・税率マスタE2E: テナント完全分離・二重RBAC認可・DB EXCLUDE制約重複拒否・指定日有効判定・過去データ改ざん防止(WORM)が動作する (P3-T2)",
+         p3t2_run.returncode == 0)
+
     return r.summary()
 
 
@@ -2105,12 +2221,12 @@ def main() -> int:
 
         # 1. まず 001〜014 までを適用 (P1-T5マージ直後の既存DB状態を再現)
         apply_schema(dsn, max_file="014_general_requests.sql")
-        # 2. 検証実行 (セクション12で015、セクション13で016、セクション14で017、セクション15で018、セクション16で019段階適用 -> E2E実行)
+        # 2. 検証実行 (セクション12で015、セクション13で016、セクション14で017、セクション15で018、セクション16で019、セクション17で020、セクション18で021、セクション19で022/023段階適用 -> E2E実行)
         exit_code = run_verification(dsn)
 
-        # 3. クリーンDBに最初から001〜021を一括適用した場合の回帰なし確認
+        # 3. クリーンDBに最初から001〜023を一括適用した場合の回帰なし確認
         if exit_code == 0:
-            fresh_db_name = "keiri_kaikei_fresh_021"
+            fresh_db_name = "keiri_kaikei_fresh_023"
             conn_raw = psycopg2.connect(dsn)
             conn_raw.autocommit = True
             try:
@@ -2121,9 +2237,9 @@ def main() -> int:
                 conn_raw.close()
 
             dsn_fresh = dsn.rsplit("/", 1)[0] + f"/{fresh_db_name}"
-            print("\n--- クリーンDBへの001〜021一括適用検証 (新規環境回帰なし確認) ---")
+            print("\n--- クリーンDBへの001〜023一括適用検証 (新規環境回帰なし確認) ---")
             apply_schema(dsn_fresh)
-            print("[schema] クリーンDBへの001〜021一括適用が正常終了しました (回帰なし確認完了)")
+            print("[schema] クリーンDBへの001〜023一括適用が正常終了しました (回帰なし確認完了)")
     finally:
         if args.use_docker and not args.keep_docker:
             docker_stop()
