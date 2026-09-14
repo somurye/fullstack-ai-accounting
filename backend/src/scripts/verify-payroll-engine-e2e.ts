@@ -506,7 +506,7 @@ async function main() {
       `SELECT id, status FROM approval_requests WHERE id = $1`,
       [resubmittedCalc.approval_request_id],
     );
-    // approverA による正規承認実行 (finalizeApproval 経由で SET LOCAL app.approval_context = 'true' が実行される)
+    // approverA による正規承認実行 (approval_requests.status が approved に更新され、finalizeApproval で active に遷移)
     await approvalRequests.approve(tenantA, approverA, newArRes.rows[0].id, { comment: '給与計算内容を確認し正式承認' });
 
     // 承認完了後の給与計算ステータス確認 (active へ自動連動)
@@ -517,7 +517,7 @@ async function main() {
     assert(confirmedCalcRes.rows[0]?.status === 'active', '[SOケース4] 正規の多段階承認エンジンを通した確定により status = active に成功した');
     assert(confirmedCalcRes.rows[0]?.approved_at !== null, '承認完了日時 (approved_at) が記録された');
 
-    // [SOケース5] 明示的0-step自動承認を通した確定 → active成功
+    // [SOケース5] 明示的0-step自動承認を通した確定 → active成功 (approval_requests に approved 証跡が起票される)
     await client.query(`DELETE FROM approval_rules WHERE tenant_id = $1 AND target_type = 'payroll'`, [tenantA]);
     await client.query(
       `INSERT INTO approval_rules (
@@ -528,6 +528,52 @@ async function main() {
 
     const autoApprovedCalc = await payrollService.submitApproval(tenantA, payrollAdminA, calc2.id);
     assert(autoApprovedCalc.status === 'active', '[SOケース5] 明示的0-step自動承認を通した確定により即座に status = active に成功した');
+
+    // 0-step承認でも approval_requests に status = 'approved' の実レコードが作成されていることを確認
+    const zeroStepAr = await client.query<{ id: string; status: string }>(
+      `SELECT id, status FROM approval_requests WHERE target_type = 'payroll' AND target_id = $1`,
+      [calc2.id],
+    );
+    assert(zeroStepAr.rows[0]?.status === 'approved', '[SOケース5] 0-step自動承認でも approval_requests に status = approved の実在レコードが作成された');
+
+    // [SO「偽装」ケース検証] 他テナントの approval_requests を参照して active にしようとする試行 → 拒否
+    let crossTenantApprovalSpoofBlocked = false;
+    try {
+      const spoofPeriodId = uuidv4();
+      const spoofEmpId = uuidv4();
+      const spoofCalcId = uuidv4();
+      await client.query(
+        `INSERT INTO payroll_periods (id, tenant_id, name, period_start, period_end, payment_date)
+         VALUES ($1, $2, 'Spoof Period', '2026-06-01', '2026-06-30', '2026-07-10')`,
+        [spoofPeriodId, tenantA],
+      );
+      await client.query(
+        `INSERT INTO employees (id, tenant_id, employee_no, name, hire_date)
+         VALUES ($1, $2, 'EMP-SPOOF', '偽装 テスト', '2026-01-01')`,
+        [spoofEmpId, tenantA],
+      );
+      await client.query(
+        `INSERT INTO payroll_calculations (id, tenant_id, payroll_period_id, employee_id, created_by, status)
+         VALUES ($1, $2, $3, $4, $5, 'draft')`,
+        [spoofCalcId, tenantA, spoofPeriodId, spoofEmpId, ownerA],
+      );
+
+      // 他テナント(Tenant B)の approval_requests を作成し、Tenant A の給与レコードを active にしようとする
+      await client.query(
+        `INSERT INTO approval_requests (tenant_id, target_type, target_id, submitted_by, total_steps, current_step, status)
+         VALUES ($1, 'payroll', $2, $3, 1, 1, 'approved')`,
+        [tenantB, spoofCalcId, ownerB],
+      );
+
+      // Tenant A の給与計算レコードを active に UPDATE (DBトリガーが tenant_id 一致を要求するため拒否される)
+      await client.query(
+        `UPDATE payroll_calculations SET status = 'active' WHERE id = $1`,
+        [spoofCalcId],
+      );
+    } catch (err: any) {
+      crossTenantApprovalSpoofBlocked = true;
+    }
+    assert(crossTenantApprovalSpoofBlocked, '[SO偽装ケース] 他テナントの承認レコードを流用した active 遷移が DBトリガーにより安全に拒否された');
 
     // ------------------------------------------------------------------------
     // 10. 確定後WORM不変性検証 (SOケース 6 & 7 / fail-closed)

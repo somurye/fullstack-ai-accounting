@@ -85,8 +85,12 @@ describe('PayrollCalculationsService', () => {
         rowCount: 1,
         rows: [{ step_number: 0, is_explicit_auto_approve: true }],
       });
-      // 4. set local app.approval_context
-      mockClient.query.mockResolvedValueOnce({ rowCount: 1 });
+      // 4. insert approval_requests (status = approved)
+      const arId = '77777777-7777-7777-7777-777777777777';
+      mockClient.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{ id: arId }],
+      });
       // 5. update payroll_calculations: active
       mockClient.query.mockResolvedValueOnce({
         rowCount: 1,
@@ -95,7 +99,10 @@ describe('PayrollCalculationsService', () => {
 
       const res = await service.submitApproval(tenantId, userId, calcId);
       expect(res.status).toBe('active');
-      expect(mockClient.query).toHaveBeenCalledWith("SET LOCAL app.approval_context = 'true'");
+      expect(mockClient.query).toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO approval_requests'),
+        [tenantId, calcId, userId],
+      );
       expect(mockAuditLogs.record).toHaveBeenCalledWith(
         mockClient,
         tenantId,

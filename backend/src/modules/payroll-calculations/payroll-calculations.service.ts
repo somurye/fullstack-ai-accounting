@@ -792,14 +792,29 @@ export class PayrollCalculationsService {
       // 3. 明示的な0-step自動承認ルール (is_explicit_auto_approve = TRUE) の確認 (1人テナント運用)
       const autoApproveRule = rulesResult.rows.find((r) => r.is_explicit_auto_approve);
       if (autoApproveRule) {
-        // 確定境界のDB最終防御: 承認コンテキストを同一トランザクション内で伝達
-        await client.query(`SET LOCAL app.approval_context = 'true'`);
+        // 承認リクエストを approved 状態で起票/更新 (監査証跡および確定境界のDB実在証明)
+        const arResult = await client.query<{ id: string }>(
+          `INSERT INTO approval_requests (
+            tenant_id, target_type, target_id, submitted_by, total_steps, current_step, status
+          ) VALUES ($1, 'payroll', $2, $3, 1, 1, 'approved')
+          ON CONFLICT (target_type, target_id)
+          DO UPDATE SET
+            status = 'approved',
+            current_step = 1,
+            total_steps = 1,
+            submitted_by = $3,
+            updated_at = now()
+          RETURNING id`,
+          [tenantId, calculationId, userId],
+        );
+        const approvalRequestId = arResult.rows[0].id;
+
         const updateResult = await client.query<PayrollCalculationRow>(
           `UPDATE payroll_calculations
-           SET status = 'active', approved_at = now(), updated_at = now()
+           SET status = 'active', approved_at = now(), approval_request_id = $3, updated_at = now()
            WHERE tenant_id = $1 AND id = $2
            RETURNING *`,
-          [tenantId, calculationId],
+          [tenantId, calculationId, approvalRequestId],
         );
         const activeCalc = updateResult.rows[0];
 
@@ -808,7 +823,7 @@ export class PayrollCalculationsService {
           action: 'payroll.auto_approved',
           targetType: 'payroll',
           targetId: calculationId,
-          afterData: { status: 'active', auto_approved: true },
+          afterData: { status: 'active', auto_approved: true, approval_request_id: approvalRequestId },
         });
 
         return activeCalc;
@@ -896,18 +911,27 @@ export class PayrollCalculationsService {
       const autoApprove = rulesResult.rows.some((r) => r.is_explicit_auto_approve);
       const totalSteps = autoApprove ? 0 : Math.max(...rulesResult.rows.map((r) => r.step_number));
 
-      if (autoApprove) {
-        // 確定境界のDB最終防御: 承認コンテキストを同一トランザクション内で伝達
-        await client.query(`SET LOCAL app.approval_context = 'true'`);
-      }
-
       for (const row of calcs.rows) {
         if (autoApprove) {
+          const arResult = await client.query<{ id: string }>(
+            `INSERT INTO approval_requests (
+              tenant_id, target_type, target_id, submitted_by, total_steps, current_step, status
+            ) VALUES ($1, 'payroll', $2, $3, 1, 1, 'approved')
+            ON CONFLICT (target_type, target_id)
+            DO UPDATE SET
+              status = 'approved',
+              current_step = 1,
+              total_steps = 1,
+              submitted_by = $3,
+              updated_at = now()
+            RETURNING id`,
+            [tenantId, row.id, userId],
+          );
           await client.query(
             `UPDATE payroll_calculations
-             SET status = 'active', approved_at = now(), updated_at = now()
+             SET status = 'active', approved_at = now(), approval_request_id = $3, updated_at = now()
              WHERE tenant_id = $1 AND id = $2`,
-            [tenantId, row.id],
+            [tenantId, row.id, arResult.rows[0].id],
           );
         } else {
           const arResult = await client.query<{ id: string }>(

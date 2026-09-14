@@ -372,16 +372,24 @@ CREATE TRIGGER trg_validate_payroll_calculation_consistency
     BEFORE INSERT OR UPDATE ON payroll_calculations
     FOR EACH ROW EXECUTE FUNCTION fn_validate_payroll_calculation_consistency();
 
--- 確定境界・確定後改変禁止トリガー (WORM / fail-closed / DB最終防御)
+-- 確定境界・確定後改変禁止トリガー (WORM / fail-closed / DB最終防御: approval_requests実在確認)
 CREATE OR REPLACE FUNCTION fn_enforce_payroll_calculation_immutability()
 RETURNS TRIGGER AS $$
 BEGIN
     IF TG_OP = 'INSERT' THEN
-        -- 初期登録時に直接 active で作成することは禁止 (必ず draft 提案から開始)
-        IF NEW.status = 'active' AND COALESCE(current_setting('app.approval_context', true), 'false') <> 'true' THEN
-            RAISE EXCEPTION 'Payroll calculation cannot be created directly as active (employee_id: %). Must be created as draft first.',
-                NEW.employee_id
-                USING ERRCODE = '55000';
+        -- 初期登録時に直接 active で作成することは禁止 (必ず draft 提案から開始し、承認完了レコードが必要)
+        IF NEW.status = 'active' THEN
+            IF NOT EXISTS (
+                SELECT 1 FROM approval_requests
+                WHERE target_type = 'payroll'
+                  AND target_id = NEW.id
+                  AND tenant_id = NEW.tenant_id
+                  AND status = 'approved'
+            ) THEN
+                RAISE EXCEPTION 'Payroll calculation cannot be created directly as active (id: %, employee_id: %). Approved approval_request record does not exist.',
+                    NEW.id, NEW.employee_id
+                    USING ERRCODE = '55000';
+            END IF;
         END IF;
 
         RETURN NEW;
@@ -393,12 +401,18 @@ BEGIN
                 USING ERRCODE = '55000';
         END IF;
 
-        -- 確定境界のDB最終防御 (誰がactiveにできるか)
+        -- 確定境界のDB最終防御 (誰がactiveにできるか / B案: approval_requests実在確認)
         -- draft / pending_approval / rejected から active への直接遷移をDB層で遮断
-        -- 正規の承認エンジン (SET LOCAL app.approval_context = 'true') 経由でのみ許可
+        -- 同一テナントかつ同一target_idの承認完了レコード (status = 'approved') が実在することを検証
         IF NEW.status = 'active' AND OLD.status IN ('draft', 'pending_approval', 'rejected') THEN
-            IF COALESCE(current_setting('app.approval_context', true), 'false') <> 'true' THEN
-                RAISE EXCEPTION 'Direct transition to active is prohibited (id: %, employee_id: %). Must be approved via official approval engine.',
+            IF NOT EXISTS (
+                SELECT 1 FROM approval_requests
+                WHERE target_type = 'payroll'
+                  AND target_id = NEW.id
+                  AND tenant_id = NEW.tenant_id
+                  AND status = 'approved'
+            ) THEN
+                RAISE EXCEPTION 'Direct transition to active is prohibited (id: %, employee_id: %). Approved approval_request record does not exist.',
                     OLD.id, OLD.employee_id
                     USING ERRCODE = '55000';
             END IF;
