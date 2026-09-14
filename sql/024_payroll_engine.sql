@@ -460,7 +460,31 @@ ALTER TABLE approval_requests
 
 
 -- ----------------------------------------------------------------------------
--- 5. RBAC パーミッション登録およびロール割当
+-- 5. approval_requests 新規INSERT時の初期状態制約 (確定境界DB最終防御の基盤)
+-- ----------------------------------------------------------------------------
+-- 新規 approval_requests は必ず未承認の初期状態 ('pending') で作成されなければならず、
+-- status = 'approved' や 'rejected' を直接INSERTで偽造することはDB層で無条件拒否
+CREATE OR REPLACE FUNCTION fn_enforce_approval_requests_initial_status()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.status <> 'pending' THEN
+        RAISE EXCEPTION 'New approval request must be created with status pending (got: %). Direct insertion as approved is prohibited.',
+            NEW.status
+            USING ERRCODE = '55000';
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_enforce_approval_requests_initial_status ON approval_requests;
+CREATE TRIGGER trg_enforce_approval_requests_initial_status
+    BEFORE INSERT ON approval_requests
+    FOR EACH ROW EXECUTE FUNCTION fn_enforce_approval_requests_initial_status();
+
+
+-- ----------------------------------------------------------------------------
+-- 6. RBAC パーミッション登録およびロール割当
 -- ----------------------------------------------------------------------------
 INSERT INTO permissions (code, description) VALUES
     ('payroll.create', '給与計算・プロファイルの作成および計算実行'),

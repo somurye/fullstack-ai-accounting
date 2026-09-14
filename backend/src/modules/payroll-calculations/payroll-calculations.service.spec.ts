@@ -85,13 +85,18 @@ describe('PayrollCalculationsService', () => {
         rowCount: 1,
         rows: [{ step_number: 0, is_explicit_auto_approve: true }],
       });
-      // 4. insert approval_requests (status = approved)
+      // 4. insert approval_requests (status = pending)
       const arId = '77777777-7777-7777-7777-777777777777';
       mockClient.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [{ id: arId }],
       });
-      // 5. update payroll_calculations: active
+      // 5. update approval_requests (status = approved)
+      mockClient.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{ id: arId }],
+      });
+      // 6. update payroll_calculations: active
       mockClient.query.mockResolvedValueOnce({
         rowCount: 1,
         rows: [{ id: calcId, status: 'active', approved_at: new Date() }],

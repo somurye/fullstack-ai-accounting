@@ -792,14 +792,14 @@ export class PayrollCalculationsService {
       // 3. 明示的な0-step自動承認ルール (is_explicit_auto_approve = TRUE) の確認 (1人テナント運用)
       const autoApproveRule = rulesResult.rows.find((r) => r.is_explicit_auto_approve);
       if (autoApproveRule) {
-        // 承認リクエストを approved 状態で起票/更新 (監査証跡および確定境界のDB実在証明)
+        // 1段階目: approval_requests を status = 'pending' で起票/更新 (新規INSERT時の初期状態制約を満たす)
         const arResult = await client.query<{ id: string }>(
           `INSERT INTO approval_requests (
             tenant_id, target_type, target_id, submitted_by, total_steps, current_step, status
-          ) VALUES ($1, 'payroll', $2, $3, 1, 1, 'approved')
+          ) VALUES ($1, 'payroll', $2, $3, 1, 1, 'pending')
           ON CONFLICT (target_type, target_id)
           DO UPDATE SET
-            status = 'approved',
+            status = 'pending',
             current_step = 1,
             total_steps = 1,
             submitted_by = $3,
@@ -809,6 +809,13 @@ export class PayrollCalculationsService {
         );
         const approvalRequestId = arResult.rows[0].id;
 
+        // 2段階目: 0-step自動承認として status = 'approved' へ遷移 (監査証跡および確定境界のDB実在証明)
+        await client.query(
+          `UPDATE approval_requests SET status = 'approved', updated_at = now() WHERE id = $1`,
+          [approvalRequestId],
+        );
+
+        // 3段階目: payroll_calculations を status = 'active' へ確定
         const updateResult = await client.query<PayrollCalculationRow>(
           `UPDATE payroll_calculations
            SET status = 'active', approved_at = now(), approval_request_id = $3, updated_at = now()
@@ -913,13 +920,14 @@ export class PayrollCalculationsService {
 
       for (const row of calcs.rows) {
         if (autoApprove) {
+          // 1段階目: approval_requests を status = 'pending' で起票/更新
           const arResult = await client.query<{ id: string }>(
             `INSERT INTO approval_requests (
               tenant_id, target_type, target_id, submitted_by, total_steps, current_step, status
-            ) VALUES ($1, 'payroll', $2, $3, 1, 1, 'approved')
+            ) VALUES ($1, 'payroll', $2, $3, 1, 1, 'pending')
             ON CONFLICT (target_type, target_id)
             DO UPDATE SET
-              status = 'approved',
+              status = 'pending',
               current_step = 1,
               total_steps = 1,
               submitted_by = $3,
@@ -927,6 +935,12 @@ export class PayrollCalculationsService {
             RETURNING id`,
             [tenantId, row.id, userId],
           );
+          // 2段階目: approved へ遷移
+          await client.query(
+            `UPDATE approval_requests SET status = 'approved', updated_at = now() WHERE id = $1`,
+            [arResult.rows[0].id],
+          );
+          // 3段階目: active へ確定
           await client.query(
             `UPDATE payroll_calculations
              SET status = 'active', approved_at = now(), approval_request_id = $3, updated_at = now()
