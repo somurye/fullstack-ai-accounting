@@ -2278,6 +2278,88 @@ def run_verification(dsn: str) -> int:
     r.ok("給与計算エンジンE2E: ルール計算・料率マスタID記録・承認フロー連携・確定後WORM不変性・RBAC二重防御が動作する (P3-T3)",
          p3t3_run.returncode == 0)
 
+    # ------------------------------------------------------------------------
+    # 21. Phase 3 Task 4 (P3-T4): 給与明細発行・年末調整検証 (025_payslips_and_year_end_adjustments.sql)
+    # ------------------------------------------------------------------------
+    print("\n--- 21. 給与明細発行・年末調整検証 (025_payslips_and_year_end_adjustments.sql) ---")
+
+    # 21-1. 025_payslips_and_year_end_adjustments.sql を適用
+    file_025 = SQL_DIR / "025_payslips_and_year_end_adjustments.sql"
+    with open(file_025, encoding="utf-8") as f:
+        sql_025 = f.read()
+    conn = psycopg2.connect(dsn)
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql_025)
+    finally:
+        conn.close()
+    print("[schema] 025_payslips_and_year_end_adjustments.sql を適用しました")
+
+    # 21-2. payslips テーブル作成確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("SELECT to_regclass('payslips') IS NOT NULL AS exists")
+        payslips_tbl_exists = cur.fetchone()["exists"]
+    r.ok("payslips テーブルが正常に作成されている", payslips_tbl_exists)
+
+    # 21-3. payslips RLS確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'payslips'")
+        row = cur.fetchone()
+        payslips_rls_ok = row["relrowsecurity"] and row["relforcerowsecurity"]
+    r.ok("payslips の RLS が有効かつ FORCE されている", payslips_rls_ok)
+
+    # 21-4. year_end_adjustments テーブル作成確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("SELECT to_regclass('year_end_adjustments') IS NOT NULL AS exists")
+        yea_tbl_exists = cur.fetchone()["exists"]
+    r.ok("year_end_adjustments テーブルが正常に作成されている", yea_tbl_exists)
+
+    # 21-5. year_end_adjustments RLS確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'year_end_adjustments'")
+        row = cur.fetchone()
+        yea_rls_ok = row["relrowsecurity"] and row["relforcerowsecurity"]
+    r.ok("year_end_adjustments の RLS が有効かつ FORCE されている", yea_rls_ok)
+
+    # 21-6. permissions の登録確認 (payslip.*, year_end_adjustment.*)
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("""SELECT code FROM permissions WHERE code IN (
+            'payslip.create', 'payslip.view',
+            'year_end_adjustment.create', 'year_end_adjustment.view', 'year_end_adjustment.approve'
+        )""")
+        perm_codes = {row["code"] for row in cur.fetchall()}
+    r.ok("給与明細・年末調整の全権限 (5種) が permissions テーブルに登録されている",
+         len(perm_codes) == 5, f"実測登録数: {len(perm_codes)} / 5")
+
+    # 21-7. 段階的アップグレード・冪等性検証 (025を2回連続適用してもエラーにならないこと)
+    idempotent_025_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_025)
+        finally:
+            conn.close()
+    except Exception as e:
+        idempotent_025_ok = False
+        print(f"  [ERROR] 025 re-apply failed: {e}")
+    r.ok("段階的アップグレード検証 13: 025を2回連続適用してもエラーにならず正常終了する (DDL 冪等性保証)",
+         idempotent_025_ok)
+
+    # 21-8. 【P3-T4実証】実DB E2Eテスト (給与明細PDF発行、WORM不変性、確定境界DB最終防御、自己確定禁止、RLS分離)
+    cmd_p3t4 = f"npx ts-node src/scripts/verify-payslips-year-end-adjustment-e2e.ts \"{dsn}\""
+    p3t4_run = subprocess.run(cmd_p3t4, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
+    if p3t4_run.returncode != 0:
+        err_msg = f"\n[P3-T4 E2E ERROR STDOUT]:\n{p3t4_run.stdout}\n[P3-T4 E2E ERROR STDERR]:\n{p3t4_run.stderr}"
+        print(err_msg.encode("cp932", errors="replace").decode("cp932"))
+    else:
+        print("\n=== P3-T4 E2E 実測実行ログ ===")
+        print(p3t4_run.stdout)
+    r.ok("給与明細・年末調整E2E: 明細発行・PDF生成・WORM不変性・確定境界DB最終防御・自己確定防止・RLS分離が動作する (P3-T4)",
+         p3t4_run.returncode == 0)
+
     return r.summary()
 
 
@@ -2306,12 +2388,12 @@ def main() -> int:
 
         # 1. まず 001〜014 までを適用 (P1-T5マージ直後の既存DB状態を再現)
         apply_schema(dsn, max_file="014_general_requests.sql")
-        # 2. 検証実行 (セクション12で015、セクション13で016、セクション14で017、セクション15で018、セクション16で019、セクション17で020、セクション18で021、セクション19で022/023、セクション20で024段階適用 -> E2E実行)
+        # 2. 検証実行 (セクション12で015、...、セクション20で024、セクション21で025段階適用 -> E2E実行)
         exit_code = run_verification(dsn)
 
-        # 3. クリーンDBに最初から001〜024を一括適用した場合の回帰なし確認
+        # 3. クリーンDBに最初から001〜025を一括適用した場合の回帰なし確認
         if exit_code == 0:
-            fresh_db_name = "keiri_kaikei_fresh_024"
+            fresh_db_name = "keiri_kaikei_fresh_025"
             conn_raw = psycopg2.connect(dsn)
             conn_raw.autocommit = True
             try:
@@ -2322,9 +2404,9 @@ def main() -> int:
                 conn_raw.close()
 
             dsn_fresh = dsn.rsplit("/", 1)[0] + f"/{fresh_db_name}"
-            print("\n--- クリーンDBへの001〜024一括適用検証 (新規環境回帰なし確認) ---")
+            print("\n--- クリーンDBへの001〜025一括適用検証 (新規環境回帰なし確認) ---")
             apply_schema(dsn_fresh)
-            print("[schema] クリーンDBへの001〜024一括適用が正常終了しました (回帰なし確認完了)")
+            print("[schema] クリーンDBへの001〜025一括適用が正常終了しました (回帰なし確認完了)")
     finally:
         if args.use_docker and not args.keep_docker:
             docker_stop()

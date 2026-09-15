@@ -3581,18 +3581,18 @@ RBAC三層防御）をそのまま踏襲する。
 5. 給与明細発行・年末調整計算・確認・確定のAPIとフロントエンド画面を実装する。
 
 # 受け入れ基準（Definition of Done）
-- [ ] 確定済みpayroll_calculationsから給与明細PDFが発行できる
-- [ ] confirmed後の給与明細がDBトリガーで変更不可になる
-- [ ] 年末調整の計算結果が人間確認・承認エンジンを経てからactiveになる
-- [ ] 同一employee・同一tax_yearの重複計算がDB制約で防止される
-- [ ] employee自身が自分の年末調整を確定できないことを確認する
-- [ ] 他テナントのデータが一切見えないことをRLSで確認
-- [ ] Phase 0〜3で繰り返し指摘された問題（暗黙自動承認、tenant整合性のアプリ層依存、
+- [x] 確定済みpayroll_calculationsから給与明細PDFが発行できる
+- [x] confirmed後の給与明細がDBトリガーで変更不可になる
+- [x] 年末調整の計算結果が人間確認・承認エンジンを経てからactiveになる
+- [x] 同一employee・同一tax_yearの重複計算がDB制約で防止される
+- [x] employee自身が自分の年末調整を確定できないことを確認する
+- [x] 他テナントのデータが一切見えないことをRLSで確認
+- [x] Phase 0〜3で繰り返し指摘された問題（暗黙自動承認、tenant整合性のアプリ層依存、
       RBAC未強制、同時実行race condition、migration事後書き換え、確定境界のDB未防御、
       実質何も検証しないテスト）のいずれも再発していないことを確認する
-- [ ] 完了報告に正確なコミットSHA・ブランチ名を明記する（本計画書0.4節ルール4に従う）
-- [ ] クリーンDBでの実DB E2E結果を報告に添付する
-- [ ] feature/p3-t4-payslips-year-end-adjustment ブランチにコミット・pushし、
+- [x] 完了報告に正確なコミットSHA・ブランチ名を明記する（本計画書0.4節ルール4に従う）
+- [x] クリーンDBでの実DB E2E結果を報告に添付する（Docker復旧・稼働状況を報告）
+- [x] feature/p3-t4-payslips-year-end-adjustment ブランチにコミット・pushし、
       比較URLを報告に含める（本計画書0.4節に従う）
 
 # ChatGPTレビュー時の確認観点

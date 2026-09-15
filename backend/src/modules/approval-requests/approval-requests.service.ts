@@ -32,7 +32,8 @@ type TargetType =
   | 'contract'
   | 'purchase_request'
   | 'general_request'
-  | 'payroll';
+  | 'payroll'
+  | 'year_end_adjustment';
 
 /**
  * ApprovalRequestsService
@@ -293,6 +294,23 @@ export class ApprovalRequestsService {
       }
     }
 
+    // 年末調整(target_type='year_end_adjustment')の場合、実行ユーザーが year_end_adjustment.approve パーミッションを保持していることを検証
+    if (ar.target_type === 'year_end_adjustment') {
+      const permCheck = await client.query(
+        `SELECT 1
+         FROM user_roles ur
+         JOIN role_permissions rp ON rp.role_id = ur.role_id
+         JOIN permissions p ON p.id = rp.permission_id
+         WHERE ur.tenant_id = $1 AND ur.user_id = $2
+           AND p.code = 'year_end_adjustment.approve'
+         LIMIT 1`,
+        [tenantId, userId],
+      );
+      if (permCheck.rowCount === 0) {
+        throw AppException.forbidden('年末調整の承認・却下を行う権限(year_end_adjustment.approve)がありません');
+      }
+    }
+
     const result = await client.query(
       `SELECT 1 FROM approval_rules rule
        WHERE rule.tenant_id = $1 AND rule.target_type = $2
@@ -428,6 +446,21 @@ export class ApprovalRequestsService {
         actorUserId: userId,
         action: 'payroll.approved',
         targetType: 'payroll',
+        targetId,
+        afterData: { status: 'active' },
+      });
+      return;
+    }
+
+    if (targetType === 'year_end_adjustment') {
+      await client.query(
+        `UPDATE year_end_adjustments SET status = 'active', approved_at = now(), updated_at = now() WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, targetId],
+      );
+      await this.auditLogs.record(client, tenantId, {
+        actorUserId: userId,
+        action: 'year_end_adjustment.approved',
+        targetType: 'year_end_adjustment',
         targetId,
         afterData: { status: 'active' },
       });
@@ -579,6 +612,21 @@ export class ApprovalRequestsService {
         actorUserId: userId,
         action: 'payroll.rejected',
         targetType: 'payroll',
+        targetId,
+        afterData: { status: 'rejected' },
+      });
+      return;
+    }
+
+    if (targetType === 'year_end_adjustment') {
+      await client.query(
+        `UPDATE year_end_adjustments SET status = 'rejected', updated_at = now() WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, targetId],
+      );
+      await this.auditLogs.record(client, tenantId, {
+        actorUserId: userId,
+        action: 'year_end_adjustment.rejected',
+        targetType: 'year_end_adjustment',
         targetId,
         afterData: { status: 'rejected' },
       });

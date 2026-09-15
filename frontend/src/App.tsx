@@ -149,6 +149,12 @@ const RateMastersPage = lazy(() =>
 const PayrollCalculationsPage = lazy(() =>
   import('./pages/payroll-calculations/PayrollCalculationsPage').then((m) => ({ default: m.PayrollCalculationsPage })),
 );
+const PayslipsPage = lazy(() =>
+  import('./pages/payslips/PayslipsPage').then((m) => ({ default: m.PayslipsPage })),
+);
+const YearEndAdjustmentsPage = lazy(() =>
+  import('./pages/year-end-adjustments/YearEndAdjustmentsPage').then((m) => ({ default: m.YearEndAdjustmentsPage })),
+);
 const SettingsPage = lazy(() => import('./pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
 const MobileExpenseApplyPage = lazy(() =>
   import('./pages/mobile/MobileExpenseApplyPage').then((m) => ({ default: m.MobileExpenseApplyPage })),
@@ -241,6 +247,8 @@ export default function App() {
             <Route path="/attendance" element={<AttendancePage />} />
             <Route path="/rate-masters" element={<RateMastersPage />} />
             <Route path="/payroll-calculations" element={<PayrollCalculationsPage />} />
+            <Route path="/payslips" element={<PayslipsPage />} />
+            <Route path="/year-end-adjustments" element={<YearEndAdjustmentsPage />} />
             <Route path="/forbidden" element={<ForbiddenPage />} />
 
             {/* 職務分掌(SoD)RBAC: 財務諸表は ADMIN / ACCOUNTANT のみ */}

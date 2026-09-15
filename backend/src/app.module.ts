@@ -46,6 +46,8 @@ import { EmployeesModule } from './modules/employees/employees.module';
 import { AttendanceModule } from './modules/attendance/attendance.module';
 import { RateMastersModule } from './modules/rate-masters/rate-masters.module';
 import { PayrollCalculationsModule } from './modules/payroll-calculations/payroll-calculations.module';
+import { PayslipsModule } from './modules/payslips/payslips.module';
+import { YearEndAdjustmentsModule } from './modules/year-end-adjustments/year-end-adjustments.module';
 
 /**
  * AppModule
@@ -109,6 +111,8 @@ import { PayrollCalculationsModule } from './modules/payroll-calculations/payrol
     AttendanceModule,
     RateMastersModule,
     PayrollCalculationsModule,
+    PayslipsModule,
+    YearEndAdjustmentsModule,
   ],
   controllers: [],
   providers: [

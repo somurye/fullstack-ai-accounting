@@ -4765,7 +4765,7 @@ components:
       readOnly: true
       properties:
         id: { type: string, format: uuid }
-        target_type: { type: string, enum: [journal_entry, expense_report, vendor_bill, contract, purchase_request, general_request] }
+        target_type: { type: string, enum: [journal_entry, expense_report, vendor_bill, contract, purchase_request, general_request, payroll, year_end_adjustment] }
         target_id: { type: string, format: uuid }
         submitted_by: { type: string, format: uuid }
         total_steps: { type: integer }
