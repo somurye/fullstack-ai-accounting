@@ -792,14 +792,29 @@ async function main() {
     // ------------------------------------------------------------------------
     console.log('\n9-D. 【P3-T3-FIX5 実証】API経路における approver_id なりすまし不可能性の検証...');
 
+    // 承認ルールを approver ロール向けに再設定 (approverA が正当な承認者となるシナリオ)
+    await client.query(`DELETE FROM approval_rules WHERE tenant_id = $1 AND target_type = 'payroll'`, [tenantA]);
+    await client.query(
+      `INSERT INTO approval_rules (
+        tenant_id, target_type, step_number, approver_role_id, is_active, is_explicit_auto_approve
+      ) VALUES ($1, 'payroll', 1, $2, TRUE, FALSE)`,
+      [tenantA, roleMap.get('approver')],
+    );
+
     // 新規に計算レコードと承認依頼を作成
+    const fix5PeriodId = uuidv4();
+    await client.query(
+      `INSERT INTO payroll_periods (id, tenant_id, name, period_start, period_end, payment_date)
+       VALUES ($1, $2, 'FIX5 Period', '2026-09-01', '2026-09-30', '2026-10-10')`,
+      [fix5PeriodId, tenantA],
+    );
+
     const fix5CalcRes = await client.query<{ id: string }>(
       `INSERT INTO payroll_calculations (
-         tenant_id, employee_id, payroll_period, calculation_type,
-         total_gross_pay, total_deductions, net_pay, status
-       ) VALUES ($1, $2, '2026-06', 'regular', 300000, 50000, 250000, 'draft')
+         tenant_id, employee_id, payroll_period_id, created_by, status
+       ) VALUES ($1, $2, $3, $4, 'draft')
        RETURNING id`,
-      [tenantA, employeeA],
+      [tenantA, emp1Id, fix5PeriodId, payrollAdminA],
     );
     const fix5CalcId = fix5CalcRes.rows[0].id;
 
