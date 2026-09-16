@@ -99,6 +99,62 @@ describe('YearEndAdjustmentsService', () => {
       );
     });
 
+    it('未サポートの年分(2026年以外)が指定された場合、400 Bad Request (UNSUPPORTED_TAX_YEAR) をスローする', async () => {
+      // 1. checkPermission: OK
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{}] });
+
+      await expect(
+        service.calculate(tenantId, userId, {
+          employee_id: employeeId,
+          tax_year: 2025, // サポート外年度
+          spouse_deduction: 0,
+          dependents_count: 0,
+          life_insurance_deduction: 0,
+          earthquake_insurance_deduction: 0,
+          housing_loan_deduction: 0,
+        }),
+      ).rejects.toThrow(
+        expect.objectContaining({
+          errorCode: 'UNSUPPORTED_TAX_YEAR',
+        }),
+      );
+    });
+
+    it('条件にマッチする所得税ブラケットが存在しない場合、400 Bad Request (TAX_BRACKET_NOT_FOUND) をスローする', async () => {
+      // 1. checkPermission: OK
+      mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{}] });
+      // 2. empCheck: OK
+      mockClient.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{ id: employeeId, name: '山田 太郎' }],
+      });
+      // 3. existingRes: none
+      mockClient.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
+      // 4. payRes: 年間確定給与
+      mockClient.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{ gross_sum: '4800000', social_sum: '700000', withheld_sum: '120000' }],
+      });
+      // 5. bracketRes: 該当ブラケットなし
+      mockClient.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
+
+      await expect(
+        service.calculate(tenantId, userId, {
+          employee_id: employeeId,
+          tax_year: 2026,
+          spouse_deduction: 0,
+          dependents_count: 0,
+          life_insurance_deduction: 0,
+          earthquake_insurance_deduction: 0,
+          housing_loan_deduction: 0,
+        }),
+      ).rejects.toThrow(
+        expect.objectContaining({
+          errorCode: 'TAX_BRACKET_NOT_FOUND',
+        }),
+      );
+    });
+
     it('確定済み給与(active)の年間集計から各種控除・過不足税額を正しく計算して draft レコードを作成する', async () => {
       // 1. checkPermission: OK
       mockClient.query.mockResolvedValueOnce({ rowCount: 1, rows: [{}] });

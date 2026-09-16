@@ -88,6 +88,18 @@ BEGIN
             USING ERRCODE = '23503';
     END IF;
 
+    -- 3. created_by のテナント検証 (tenant_users 所属チェック)
+    IF NEW.created_by IS NOT NULL THEN
+        IF NOT EXISTS (
+            SELECT 1 FROM tenant_users
+            WHERE tenant_id = NEW.tenant_id AND user_id = NEW.created_by
+        ) THEN
+            RAISE EXCEPTION 'created_by user % is not a member of tenant %',
+                NEW.created_by, NEW.tenant_id
+                USING ERRCODE = '23503';
+        END IF;
+    END IF;
+
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -211,6 +223,18 @@ BEGIN
         RAISE EXCEPTION 'employee % does not belong to tenant %',
             NEW.employee_id, NEW.tenant_id
             USING ERRCODE = '23503';
+    END IF;
+
+    -- created_by のテナント検証 (tenant_users 所属チェック)
+    IF NEW.created_by IS NOT NULL THEN
+        IF NOT EXISTS (
+            SELECT 1 FROM tenant_users
+            WHERE tenant_id = NEW.tenant_id AND user_id = NEW.created_by
+        ) THEN
+            RAISE EXCEPTION 'created_by user % is not a member of tenant %',
+                NEW.created_by, NEW.tenant_id
+                USING ERRCODE = '23503';
+        END IF;
     END IF;
 
     RETURN NEW;

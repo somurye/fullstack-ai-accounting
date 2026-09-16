@@ -202,22 +202,75 @@ async function main() {
     }
     assert(tenantMismatchBlocked, '給与明細テナント整合性トリガーが正常に機能');
 
+    // payslips.created_by テナント整合性トリガー検証 (他テナントユーザー指定の拒絶)
+    let payslipCreatedByBlocked = false;
+    try {
+      await client.query(
+        `INSERT INTO payslips (tenant_id, payroll_calculation_id, employee_id, payroll_period, payment_date, snapshot_data, status, created_by)
+         VALUES ($1, $2, $3, '2026-05', '2026-06-10', '{}'::jsonb, 'draft', $4)`,
+        [tenantA, calcIdA, empIdA, userB], // userB は tenantB のユーザー
+      );
+    } catch (err: any) {
+      payslipCreatedByBlocked = true;
+      assert(
+        err.message.includes('created_by user') && err.message.includes('is not a member of tenant'),
+        `created_byテナント不整合がDBトリガーで遮断された: ${err.message}`,
+      );
+    }
+    assert(payslipCreatedByBlocked, 'payslips.created_by テナント整合性トリガーが正常に機能');
+
     // RLS検証: Tenant B のユーザーからは Tenant A の明細が見えない
     const rlsList = await payslipsService.list(tenantB, userB, { page: 1, page_size: 50 });
     assert(rlsList.payslips.length === 0, 'RLSにより他テナント(Tenant A)の給与明細はTenant Bから完全不可視');
 
     // ------------------------------------------------------------------------
-    // 6. 年末調整 (year_end_adjustments) の計算実行
+    // 6. 年末調整 (year_end_adjustments) の計算実行 (複数ブラケット・年度制限・実マッチング検証)
     // ------------------------------------------------------------------------
     console.log('\n6. 年末調整 (year_end_adjustments) の計算実行...');
-    // 保険料率マスタを登録
+    // BLOCKER-01検証用: 複数年度・複数扶養人数・複数所得帯のブラケットマスタを登録
+    const bracket2025Id = uuidv4();
+    const bracket2026Dep0Id = uuidv4();
+    const bracket2026Dep1LowId = uuidv4();
+    const bracket2026Dep1HighId = uuidv4();
+
     await client.query(
       `INSERT INTO income_tax_withholding_brackets (
-         tenant_id, tax_year, taxable_income_from, taxable_income_to, tax_rate, deduction_amount, is_active
-       ) VALUES ($1, 2026, 0, 99999999, 0.05, 0, TRUE)`,
-      [tenantA],
+         id, tenant_id, dependents_count, income_min, income_max, tax_amount,
+         effective_from, effective_to, description, created_by
+       ) VALUES
+        -- 2025年度用 (過去年度・扶養1人)
+        ($1, $5, 1, 0, 10000000, 5000, '2025-01-01', '2025-12-31', '2025年用ブラケット', $6),
+        -- 2026年度用 (扶養0人)
+        ($2, $5, 0, 0, 10000000, 6000, '2026-01-01', '2026-12-31', '2026年扶養0人用', $6),
+        -- 2026年度用 (扶養1人, 課税所得 0〜1,000,000円)
+        ($3, $5, 1, 0, 1000000, 0, '2026-01-01', '2026-12-31', '2026年扶養1人・所得低帯', $6),
+        -- 2026年度用 (扶養1人, 課税所得 1,000,000〜10,000,000円)
+        ($4, $5, 1, 1000000, 10000000, 15000, '2026-01-01', '2026年扶養1人・所得中高帯', $6)`,
+      [bracket2025Id, bracket2026Dep0Id, bracket2026Dep1LowId, bracket2026Dep1HighId, tenantA, adminUserA],
     );
 
+    // BLOCKER-02検証: 未サポート年度(2025年)の計算要求が 400 Bad Request (UNSUPPORTED_TAX_YEAR) で拒絶されること
+    let unsupportedYearBlocked = false;
+    try {
+      await yearEndService.calculate(tenantA, adminUserA, {
+        employee_id: empIdA,
+        tax_year: 2025,
+        spouse_deduction: 0,
+        dependents_count: 1,
+        life_insurance_deduction: 0,
+        earthquake_insurance_deduction: 0,
+        housing_loan_deduction: 0,
+      });
+    } catch (err: any) {
+      unsupportedYearBlocked = true;
+      assert(
+        err.errorCode === 'UNSUPPORTED_TAX_YEAR' || err.message.includes('UNSUPPORTED_TAX_YEAR') || err.status === 400,
+        `サポート外年度(2025)が正常に拒絶された: ${err.message}`,
+      );
+    }
+    assert(unsupportedYearBlocked, '未サポートtax_yearに対する400拒否が正常に機能');
+
+    // 2026年度・扶養1人で計算実行
     const yearEndAdj = await yearEndService.calculate(tenantA, adminUserA, {
       employee_id: empIdA,
       tax_year: 2026,
@@ -231,12 +284,20 @@ async function main() {
     assert(yearEndAdj.id !== undefined, '年末調整ドラフトが正常に計算・作成された');
     assert(yearEndAdj.status === 'draft', '初期ステータスが draft である');
     assert(yearEndAdj.annual_gross_pay === 431250, '対象年度の確定給与総支給額が集計されている');
-    assert(yearEndAdj.applied_rate_ids.length > 0, '計算根拠マスタID(applied_rate_ids)が追跡可能に記録されている');
+
+    // BLOCKER-01検証: 複数ブラケットの中から、課税所得(0円)・扶養人数(1人)・年度(2026年)に合致するブラケットIDが厳密に選ばれていること
+    assert(
+      yearEndAdj.applied_rate_ids.length === 1 && yearEndAdj.applied_rate_ids[0] === bracket2026Dep1LowId,
+      `applied_rate_idsが実際の計算根拠ブラケット(${bracket2026Dep1LowId})と厳密に一致 (実際: ${JSON.stringify(yearEndAdj.applied_rate_ids)})`,
+    );
+    assert(!yearEndAdj.applied_rate_ids.includes(bracket2025Id), '他年度(2025年)のブラケットは選ばれていない');
+    assert(!yearEndAdj.applied_rate_ids.includes(bracket2026Dep0Id), '異なる扶養人数(0人)のブラケットは選ばれていない');
+    assert(!yearEndAdj.applied_rate_ids.includes(bracket2026Dep1HighId), '異なる所得帯(100万〜1000万)のブラケットは選ばれていない');
 
     // ------------------------------------------------------------------------
-    // 7. 同一employee・同一tax_yearの重複計算防止 (DB UNIQUE制約)
+    // 7. 同一employee・同一tax_yearの重複計算防止 (DB UNIQUE制約) & created_by検証
     // ------------------------------------------------------------------------
-    console.log('\n7. 同一employee・同一tax_yearの重複防止 (UNIQUE制約) 検証...');
+    console.log('\n7. 同一employee・同一tax_yearの重複防止 (UNIQUE制約) & created_by検証...');
     let uniqueBlocked = false;
     try {
       // 生SQLで直接同一年度・同一従業員のレコードをINSERTしようとする
@@ -262,6 +323,32 @@ async function main() {
       );
     }
     assert(uniqueBlocked, '同一employee・同一tax_yearの重複計算防止制約が正常に機能');
+
+    // year_end_adjustments.created_by テナント整合性トリガー検証 (他テナントユーザー指定の拒絶)
+    let yeaCreatedByBlocked = false;
+    try {
+      await client.query(
+        `INSERT INTO year_end_adjustments (
+           tenant_id, employee_id, tax_year, annual_gross_pay, annual_taxable_pay,
+           annual_social_insurance, annual_withheld_tax, deductions, total_deductions,
+           taxable_income_after_deductions, final_annual_tax, adjustment_amount,
+           applied_rate_ids, status, created_by
+         ) VALUES (
+           $1, $2, 2027, 400000, 400000,
+           50000, 10000, '{}'::jsonb, 50000,
+           350000, 17500, -7500,
+           ARRAY[]::uuid[], 'draft', $3
+         )`,
+        [tenantA, empIdA, userB], // userB は tenantB のユーザー
+      );
+    } catch (err: any) {
+      yeaCreatedByBlocked = true;
+      assert(
+        err.message.includes('created_by user') && err.message.includes('is not a member of tenant'),
+        `created_byテナント不整合がDBトリガーで遮断された: ${err.message}`,
+      );
+    }
+    assert(yeaCreatedByBlocked, 'year_end_adjustments.created_by テナント整合性トリガーが正常に機能');
 
     // ------------------------------------------------------------------------
     // 8. 年末調整の確定境界 DB最終防御 (approval_requests 実在検証トリガー)

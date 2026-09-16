@@ -133,6 +133,15 @@ export class YearEndAdjustmentsService {
     return this.db.transaction(tenantId, userId, async (client) => {
       await this.checkPermission(client, tenantId, userId, 'year_end_adjustment.create');
 
+      // 0. サポート対象年度の検証 (現在は2026年分・令和8年分の簡略モデルのみサポート)
+      if (dto.tax_year !== 2026) {
+        throw new AppException(
+          'UNSUPPORTED_TAX_YEAR',
+          `年末調整機能は現在、2026年分(令和8年分)の簡略税制モデルのみサポートしています (指定年度: ${dto.tax_year})`,
+          400,
+        );
+      }
+
       // 1. 従業員存在確認
       const empCheck = await client.query(
         `SELECT id, name FROM employees WHERE tenant_id = $1 AND id = $2`,
@@ -224,14 +233,31 @@ export class YearEndAdjustmentsService {
       // 8. 過不足税額 (adjustment_amount: プラス=還付, マイナス=追徴)
       const adjustmentAmount = annualWithheldTax - finalAnnualTax;
 
-      // 計算根拠マスタIDの取得 (適用した所得税ブラケット等)
-      const rateMasterRes = await client.query<{ id: string }>(
-        `SELECT id FROM income_tax_withholding_brackets
-         WHERE tenant_id = $1 AND is_active = TRUE
+      // 9. 計算根拠マスタIDの取得 (所得金額・扶養人数・対象年度に合致する所得税ブラケットを実際に検索)
+      const targetDate = `${dto.tax_year}-12-31`;
+      const bracketRes = await client.query<{ id: string }>(
+        `SELECT id
+         FROM income_tax_withholding_brackets
+         WHERE tenant_id = $1
+           AND dependents_count = $2
+           AND effective_from <= $3::date
+           AND (effective_to IS NULL OR effective_to >= $3::date)
+           AND income_min <= $4
+           AND (income_max IS NULL OR income_max > $4)
+         ORDER BY income_min DESC
          LIMIT 1`,
-        [tenantId],
+        [tenantId, dto.dependents_count, targetDate, taxableIncomeAfterDeductions],
       );
-      const appliedRateIds = rateMasterRes.rows.map((r) => r.id);
+
+      if ((bracketRes.rowCount ?? 0) === 0) {
+        throw new AppException(
+          'TAX_BRACKET_NOT_FOUND',
+          `対象年度(${dto.tax_year}年)・扶養親族等の数(${dto.dependents_count}人)・課税給与所得金額(${taxableIncomeAfterDeductions}円)に合致する所得税源泉徴収税額表がマスタに登録されていません`,
+          400,
+        );
+      }
+
+      const appliedRateIds = bracketRes.rows.map((r) => r.id);
 
       let adjustmentRecord: YearEndAdjustmentRow;
 
