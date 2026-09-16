@@ -1,7 +1,7 @@
 # keiri-kaikei 全社バックオフィス統合SaaS 拡張計画書
 
 - 文書番号: PLAN-01
-- バージョン: 7.6.1
+- バージョン: 7.5.0
 - 対象リポジトリ: `fullstack-ai-accounting`（経理・会計基盤）
 - 関連文書: `docs/01_requirements.md`, `docs/02_architecture.md`, `docs/03_database_design.md`
 
@@ -2586,7 +2586,7 @@ fail-closed運用）を踏襲しつつ、本Phaseは他のPhaseと質的に異�
 | P3-T1 | 従業員マスタ・勤怠管理 | 従業員情報、打刻（出勤・退勤・休憩）、労働時間集計（所定内・時間外・深夜・休日労働の区分） | P0-T1, P0-T4 | ✅ SO正式PASS（コミット35185ba、5回の往復を経てロック取得順序の統一・週40時間境界の並行E2Eを確認、mainマージ指示済み） |
 | P3-T2 | 保険料率・税率マスタ管理 | 健康保険・厚生年金・雇用保険の料率、所得税源泉徴収税額表、住民税率を有効期間付きで管理する基盤（5.2節の原則①に対応） | P0-T1 | ✅ SO正式PASS（適用開始後のレコードをDBトリガーでfail-closedに変更禁止、JST基準・法改正close+INSERT運用を確認、mainマージ指示済み） |
 | P3-T3 | 給与計算エンジン | 勤怠実績・基本給・手当・控除から給与を計算し、AI提案パターンで人間確認を経て確定する（5.2節の原則②に対応） | P3-T1, P3-T2 | ✅ SO正式PASS・mainマージ完了（マージコミット`a285721`、6回の往復を経て確定境界をDB最終防御＋API認証境界の二層構造で完成。Jest 183/183・型チェック・build全PASS再確認済み。**要フォローアップ**: マージ時Docker停止のため`verify_schema.py`実DB E2Eのmain上での再実行が未実施） |
-| P3-T4 | 給与明細発行・年末調整 | 給与明細のPDF発行、年末調整の計算・書類生成 | P3-T3 | ⚠️ SO判定REQUEST CHANGES（コミットeccbe9b、applied_rate_idsが実計算根拠と不一致（LIMIT 1で適当に選択）、年分依存の計算根拠が未整理、実DB E2E未実行(Docker停止)。修正指示済み・再レビュー待ち） |
+| P3-T4 | 給与明細発行・年末調整 | 給与明細のPDF発行、年末調整の計算・書類生成 | P3-T3 | 🟡 SO判定CONDITIONAL PASS（コミット反映済み、コード修正内容はPASS相当。applied_rate_idsの実マッチング化・tax_year=2026への明示的限定・created_by tenant整合性を確認。**残るはDocker復旧後の実DB E2E実行のみ**） |
 
 P3-T2以降の詳細タスク分解・実装指示プロンプトは、P3-T1の実装結果を踏まえてClaudeが
 都度作成する（Phase 0/1/2と同じ方針）。
@@ -3681,6 +3681,44 @@ created_byのtenant整合性トリガー（既存パターンを踏襲）を追�
 
 ---
 
+#### 【フォローアップ指示プロンプト P3-T4-VERIFY-AND-MERGE】Docker復旧後の実DB E2E実行とマージ（コード修正はPASS相当）
+
+ChatGPT(SO)よりP3-T4-FIXがCONDITIONAL PASS（コード修正内容は全てPASS相当、残るは
+Docker復旧後の実DB E2E実行のみ）と判定された。DEBT-020-VERIFYと合わせて、Docker復旧後に
+まとめて実行する。
+
+```
+# 指示
+Docker Desktopが起動可能になったら、以下を順に実行してください。
+
+1. mainブランチで実DB E2Eを実行し、DEBT-020を解消する。
+   git checkout main && git pull origin main
+   .\.venv\Scripts\python.exe scripts/verify_schema.py --use-docker
+   → 001から現在のmain最新migrationまでの全件PASSを確認・報告する。
+
+2. feature/p3-t4-payslips-year-end-adjustment ブランチで実DB E2Eを実行する。
+   git checkout feature/p3-t4-payslips-year-end-adjustment
+   .\.venv\Scripts\python.exe scripts/verify_schema.py --use-docker
+   （またはP3-T4専用のE2Eスクリプトがあれば合わせて実行）
+   → 001〜025全件PASS、および前回FIXで追加した以下のケースを含めて結果を報告する。
+     - 実際のtax bracketマッチング（年度・扶養人数・所得帯違いの除外を含む）
+     - unsupported tax yearのエラー
+     - created_by tenant不整合の拒否
+     - 承認境界（多段階・0-step・active後WORM）
+
+3. 両方が問題なければ、feature/p3-t4-payslips-year-end-adjustment を main へマージする。
+   マージコミットハッシュ（git rev-parse HEAD）、ブランチ削除の完了、main上での
+   テスト再実行結果を報告してください（本計画書0.4節に従う）。
+
+4. Dockerの起動自体に失敗する場合は、そのエラーメッセージをそのまま報告してください。
+   コード側の問題ではなく環境側の問題である可能性が高いため、無理に回避策を
+   実装しようとしないでください。
+```
+
+これが完了すれば、**Phase 3（人事労務）の全4タスクが完了**する。
+
+---
+
 ## 6. 既知の技術的負債・フォローアップ事項
 
 タスク完了時にSOが「修正不要だが記録すべき」と判定した事項を追跡する。将来の関連タスク着手時に必ず参照すること。
@@ -3707,7 +3745,7 @@ created_byのtenant整合性トリガー（既存パターンを踏襲）を追�
 | DEBT-018 | P3-T3 | approval_historyのapprover_idについて、DBトリガーは「対象target_typeの承認権限（role_permissions経由）を保有しているか」までは検証しているが、承認ルール（approval_rules）で明示的に指定された`approver_user_id`/`approver_role_id`と完全に一致するかまではDBトリガーで検証していない可能性がある（Service層のassertAssignedApprover()には依存）。承認エンジン全体の改修が必要になり得るため、payroll確定境界のスコープでは対応しなかった。 | MEDIUM（承認者「割当」の厳密性、権限保有チェックとは別軸） | 承認エンジン全体を見直すタイミングで、割当検証もDBトリガーへ移す方針を検討 | 🔴 未対応 |
 | DEBT-019 | P3-T3 | 「DBを最終防御とする」原則には、app_runtimeという単一の共有DBロールでアプリケーション全体がDB操作を行うという構造上の限界がある。app_runtimeの認証情報自体を奪取した攻撃者による生SQL実行時の本人性偽装（実在する権限保持者のUUIDを詐称する等）は、DBトリガーだけでは原理的に防げない。0.5節の受容境界として明文化し、正規API経路での防御（認証済みセッションからのユーザーID強制導出）で担保する方針とした。 | 情報共有（DEBTというより設計上の恒久的な境界の記録） | アーキテクチャの大幅変更（DB接続のユーザー単位分離等）を検討する場合のみ再評価 | ℹ️ 受容済み境界として記録（0.5節参照） |
 | DEBT-020 | P3-T3-MERGE | P3-T3のmain反映時、開発環境のDocker Desktopが停止していたため、`verify_schema.py --use-docker`によるmain上でのクリーンDB実DB E2E（P3-T1〜P3-T3の給与計算・勤怠・料率マスタ全体を含む）が未実施。feature branchでのマージ前検証・main上でのJest/型チェック/buildはすべてPASS済みだが、mainブランチそのものでの実DB E2E再実行だけが未完了。**P3-T4でも同じくDocker停止により実DB E2Eが未実行という報告があり、環境側の問題が継続している可能性がある。** | MEDIUM（実DB検証はこのプロジェクトの中核ルールであるため早期解消が望ましい） | **Docker Desktopの起動状態をユーザー側で確認・復旧いただくことを推奨。** 復旧後、最優先でmain・P3-T4双方の実DB E2Eを実施 | 🔴 未対応（要フォローアップ、複数タスクで再発） |
-| DEBT-021 | P3-T4-FIX | 年末調整の控除額・速算式計算モデルが2026年分（令和8年分）の簡略モデルに限定されている（tax_year!==2026は400エラーで拒絶）。P3-T2のinsurance_rate_tables/income_tax_withholding_bracketsと同様に、各種控除の閾値・金額・計算ルールを有効期間付きマスタ（例: income_deduction_rules）としてDB管理化することで、将来の法改正や過年度の年末調整再計算にコード変更なしで対応可能にする必要がある。 | MEDIUM（年度更新・制度改正時の保守性向上） | 年末調整の複数年度運用が必要になった段階で対応 | 🔴 未対応（方針a採用に伴う将来負債として記録） |
+| DEBT-021 | P3-T4-FIX | 年末調整の簡略モデルは現時点でtax_year=2026のみをサポートし、それ以外の年度指定は明示的にエラーとする設計にスコープを限定した（令和7年分・令和8年分等、年度ごとに異なる基礎控除・給与所得控除への対応は今回見送り）。将来複数年度に対応する場合は、P3-T2のinsurance_rate_tablesと同様の有効期間付きマスタ化を検討する。 | MEDIUM（複数年度対応が必要になった時点で本格対応が必要） | 複数年度の年末調整需要が具体化したタイミングで対応 | 🔴 未対応（意図的なスコープ限定として現状維持） |
 
 ---
 
@@ -3785,4 +3823,4 @@ created_byのtenant整合性トリガー（既存パターンを踏襲）を追�
 | 7.4.0 | **計画書全体の整理と見直しを実施。** P3-T3-MERGE完了報告を反映（マージコミットa285721）。マージ時Docker停止によりmain上での実DB E2Eが未実施であることをDEBT-020として記録。冒頭に「エグゼクティブサマリー」を新設し、全Phaseの進捗・直近のフォローアップ事項・確立された恒久ルール・DEBT状況を一覧できるようにした。文書冒頭のバージョン表記を実際の変更履歴と一致させた（1.0.0→7.4.0）。DEBTログ・ロードマップ表・セクション番号の整合性を確認し、矛盾がないことを確認した |
 | 7.5.0 | DEBT-020解消のためのフォローアップ指示プロンプト（DEBT-020-VERIFY、Docker復旧後のmain実DB E2E再実行）を追加。**P3-T4（給与明細発行・年末調整）の実装指示プロンプトを新規作成**（P3-T3で確立した確定境界のDB最終防御＋API認証境界パターンの踏襲、5.2節の簡略モデル原則の維持を明記）。これでPhase 3の全4タスクの指示プロンプトが出揃った |
 | 7.6.0 | P3-T4がSO判定REQUEST CHANGES（applied_rate_idsが実計算根拠と不一致（LIMIT 1で無関係なレコードを記録）、年分に応じた計算根拠が未整理、Docker停止により実DB E2Eが未実行）。フォローアップ指示プロンプト（P3-T4-FIX）を追加。DEBT-020を更新し、Docker停止がP3-T3-MERGE・P3-T4の複数タスクで再発している環境側の問題である可能性を記録、ユーザー側でのDocker Desktop復旧確認を推奨事項として明記 |
-| 7.6.1 | P3-T4-FIX対応完了。applied_rate_idsを計算対象年度・扶養親族数・課税給与所得金額に応じた実lookupクエリに修正し、実際の計算根拠ブラケットIDのみを厳密に記録。未サポート年度（2026年以外）を400（UNSUPPORTED_TAX_YEAR）で拒絶する方針aを実装し、動的マスタ化（方針b）をDEBT-021として記録。payslips/year_end_adjustments双方にcreated_byテナント整合性トリガーを追加。実DB E2Eテストスクリプトに複数年度・複数所得帯のブラケット実マッチング検証およびcreated_by拒絶検証を追加。READMEに対象年分（2026年分簡略モデル）と簡略化範囲を明記 |
+| 7.7.0 | P3-T4-FIXがSO判定CONDITIONAL PASS（applied_rate_idsの実マッチング化・tax_year=2026への明示的限定・created_by tenant整合性の3点は解消、コード修正内容は全てPASS相当。残るはDocker復旧後の実DB E2E実行のみ）。DEBT-021（年末調整は現時点でtax_year=2026のみサポート、複数年度対応は意図的に見送り）を記録。フォローアップ指示プロンプト（P3-T4-VERIFY-AND-MERGE、DEBT-020とP3-T4のE2Eをまとめて実行しマージまで完了させる統合プロンプト）を追加 |
