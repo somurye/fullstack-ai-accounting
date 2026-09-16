@@ -403,13 +403,13 @@ $$ LANGUAGE plpgsql;
 -- ----------------------------------------------------------------------------
 -- 5. RBAC パーミッション定義およびロール割当
 -- ----------------------------------------------------------------------------
-INSERT INTO permissions (code, name, category, description)
+INSERT INTO permissions (code, description)
 VALUES
-    ('payslip.view', '給与明細閲覧', 'payroll', '給与明細を閲覧する権限'),
-    ('payslip.create', '給与明細発行', 'payroll', '確定給与から給与明細を発行・PDF出力する権限'),
-    ('year_end_adjustment.view', '年末調整閲覧', 'payroll', '年末調整計算結果を閲覧する権限'),
-    ('year_end_adjustment.create', '年末調整計算・申請', 'payroll', '年末調整の年税額集計・控除計算を実行し承認申請する権限'),
-    ('year_end_adjustment.approve', '年末調整承認', 'payroll', '年末調整の承認・却下を行う権限')
+    ('payslip.view', '給与明細閲覧: 給与明細を閲覧する権限'),
+    ('payslip.create', '給与明細発行: 確定給与から給与明細を発行・PDF出力する権限'),
+    ('year_end_adjustment.view', '年末調整閲覧: 年末調整計算結果を閲覧する権限'),
+    ('year_end_adjustment.create', '年末調整計算・申請: 年末調整の年税額集計・控除計算を実行し承認申請する権限'),
+    ('year_end_adjustment.approve', '年末調整承認: 年末調整の承認・却下を行う権限')
 ON CONFLICT (code) DO NOTHING;
 
 -- ロールへのパーミッション付与 (owner, payroll_admin, accounting_manager, employee)

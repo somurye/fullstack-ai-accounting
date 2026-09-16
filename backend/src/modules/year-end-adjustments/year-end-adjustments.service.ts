@@ -78,7 +78,7 @@ export class YearEndAdjustmentsService {
          JOIN employees e ON e.id = y.employee_id
          LEFT JOIN departments d ON d.id = e.department_id
          WHERE ${whereClause}
-         ORDER BY y.tax_year DESC, e.employee_code ASC
+         ORDER BY y.tax_year DESC, e.employee_no ASC
          LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
         listValues,
       );
@@ -278,7 +278,7 @@ export class YearEndAdjustmentsService {
                status = 'draft',
                updated_at = now()
            WHERE id = $11
-           RETURNING ${YEAR_END_ADJUSTMENT_COLUMNS}`,
+           RETURNING *`,
           [
             annualGrossPay,
             annualTaxablePay,
@@ -293,18 +293,21 @@ export class YearEndAdjustmentsService {
             existingRes.rows[0].id,
           ],
         );
-        adjustmentRecord = updateRes.rows[0];
+        adjustmentRecord = {
+          employee_name: empCheck.rows[0]?.name ?? '',
+          ...updateRes.rows[0],
+        };
       } else {
         // 新規INSERT
         const insertRes = await client.query<YearEndAdjustmentRow>(
           `INSERT INTO year_end_adjustments (
-             tenant_id, employee_id, tax_year, annual_gross_pay,
-             annual_taxable_pay, annual_social_insurance, annual_withheld_tax,
-             deductions, total_deductions, taxable_income_after_deductions,
-             final_annual_tax, adjustment_amount, applied_rate_ids,
-             status, created_by
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'draft', $14)
-           RETURNING ${YEAR_END_ADJUSTMENT_COLUMNS}`,
+              tenant_id, employee_id, tax_year, annual_gross_pay,
+              annual_taxable_pay, annual_social_insurance, annual_withheld_tax,
+              deductions, total_deductions, taxable_income_after_deductions,
+              final_annual_tax, adjustment_amount, applied_rate_ids,
+              status, created_by
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'draft', $14)
+            RETURNING *`,
           [
             tenantId,
             dto.employee_id,
@@ -322,7 +325,10 @@ export class YearEndAdjustmentsService {
             userId,
           ],
         );
-        adjustmentRecord = insertRes.rows[0];
+        adjustmentRecord = {
+          employee_name: empCheck.rows[0]?.name ?? '',
+          ...insertRes.rows[0],
+        };
       }
 
       const dtoResult = mapYearEndAdjustmentRow(adjustmentRecord);

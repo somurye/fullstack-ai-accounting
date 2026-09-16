@@ -74,7 +74,7 @@ export const PAYSLIP_COLUMNS = `
   p.tenant_id,
   p.payroll_calculation_id,
   p.employee_id,
-  e.employee_code,
+  e.employee_no AS employee_code,
   e.name AS employee_name,
   d.name AS department_name,
   p.payroll_period,

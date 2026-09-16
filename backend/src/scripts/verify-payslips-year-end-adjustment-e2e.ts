@@ -66,16 +66,18 @@ async function main() {
     await client.query(`INSERT INTO tenants (id, name) VALUES ($1, 'Tenant A (P3-T4)')`, [tenantA]);
     await client.query(`INSERT INTO tenants (id, name) VALUES ($1, 'Tenant B (P3-T4)')`, [tenantB]);
 
+    const ownerA = uuidv4();
     const adminUserA = uuidv4();
     const empUserA = uuidv4();
     const userB = uuidv4();
 
     await client.query(
       `INSERT INTO users (id, email, password_hash, name)
-       VALUES ($1, 'admin-a-p3t4@example.com', 'hash', 'Admin A'),
-              ($2, 'emp-a-p3t4@example.com', 'hash', 'Employee A'),
-              ($3, 'user-b-p3t4@example.com', 'hash', 'User B')`,
-      [adminUserA, empUserA, userB],
+       VALUES ($1, 'owner-a-p3t4@example.com', 'hash', 'Owner A'),
+              ($2, 'admin-a-p3t4@example.com', 'hash', 'Admin A'),
+              ($3, 'emp-a-p3t4@example.com', 'hash', 'Employee A'),
+              ($4, 'user-b-p3t4@example.com', 'hash', 'User B')`,
+      [ownerA, adminUserA, empUserA, userB],
     );
 
     // ロールIDの取得
@@ -87,11 +89,23 @@ async function main() {
       roleMap[r.code] = r.id;
     });
 
+    // テナントユーザー関連付け
+    await client.query(
+      `INSERT INTO tenant_users (tenant_id, user_id)
+       VALUES ($1, $2), ($3, $4), ($5, $6), ($7, $8)`,
+      [tenantA, ownerA, tenantA, adminUserA, tenantA, empUserA, tenantB, userB],
+    );
+
     // ユーザーにロール付与
     await client.query(
       `INSERT INTO user_roles (tenant_id, user_id, role_id)
-       VALUES ($1, $2, $3), ($1, $4, $5), ($6, $7, $8)`,
+       VALUES
+        ($1, $2, $3),
+        ($4, $5, $6),
+        ($7, $8, $9),
+        ($10, $11, $12)`,
       [
+        tenantA, ownerA, roleMap['owner'],
         tenantA, adminUserA, roleMap['payroll_admin'],
         tenantA, empUserA, roleMap['employee'],
         tenantB, userB, roleMap['owner'],
@@ -101,9 +115,9 @@ async function main() {
     // 従業員の作成
     const empIdA = uuidv4();
     await client.query(
-      `INSERT INTO employees (id, tenant_id, employee_code, name, email, hire_date)
-       VALUES ($1, $2, 'EMP-T4-001', 'Employee A', 'emp-a-p3t4@example.com', '2025-04-01')`,
-      [empIdA, tenantA],
+      `INSERT INTO employees (id, tenant_id, user_id, employee_no, name, hire_date)
+       VALUES ($1, $2, $3, 'EMP-T4-001', 'Employee A', '2025-04-01')`,
+      [empIdA, tenantA, empUserA],
     );
 
     assert(true, 'テナント・ユーザー・従業員・RBACロールの初期化完了');
@@ -115,7 +129,7 @@ async function main() {
     const periodIdA = uuidv4();
     await client.query(
       `INSERT INTO payroll_periods (id, tenant_id, name, period_start, period_end, payment_date, status)
-       VALUES ($1, $2, '2026年5月度給与', '2026-05-01', '2026-05-31', '2026-06-10', 'closed')`,
+       VALUES ($1, $2, '2026-05', '2026-05-01', '2026-05-31', '2026-06-10', 'closed')`,
       [periodIdA, tenantA],
     );
 
@@ -127,18 +141,48 @@ async function main() {
          salary_type, base_salary, hourly_wage, regular_pay,
          overtime_pay, late_night_pay, holiday_pay, total_gross_pay,
          health_insurance_amount, care_insurance_amount, pension_amount, employment_insurance_amount,
-         total_social_insurance, taxable_gross_pay, income_tax_amount, resident_tax_amount,
-         total_deductions, net_pay, status
+         income_tax_amount, resident_tax_amount, total_deductions, net_pay,
+         status, created_by
        ) VALUES (
          $1, $2, $3, $4,
          160, 10, 0, 0,
          'monthly', 400000, 0, 400000,
          31250, 0, 0, 431250,
          21473, 0, 39438, 2587,
-         63498, 431250, 10560, 20000,
-         94058, 337192, 'active'
+         10560, 20000, 94058, 337192,
+         'draft', $5
        )`,
-      [calcIdA, tenantA, periodIdA, empIdA],
+      [calcIdA, tenantA, periodIdA, empIdA, adminUserA],
+    );
+
+    // 承認ルールを設定して approval_requests を approved にし、active に確定 (承認者は ownerA)
+    await client.query(`DELETE FROM approval_rules WHERE tenant_id = $1 AND target_type = 'payroll'`, [tenantA]);
+    await client.query(
+      `INSERT INTO approval_rules (tenant_id, target_type, step_number, approver_role_id, is_active, is_explicit_auto_approve)
+       VALUES ($1, 'payroll', 1, $2, TRUE, FALSE)`,
+      [tenantA, roleMap['owner']],
+    );
+
+    const arRes = await client.query<{ id: string }>(
+      `INSERT INTO approval_requests (tenant_id, target_type, target_id, submitted_by, total_steps, current_step, status)
+       VALUES ($1, 'payroll', $2, $3, 1, 1, 'pending')
+       RETURNING id`,
+      [tenantA, calcIdA, adminUserA],
+    );
+
+    await client.query(
+      `INSERT INTO approval_history (tenant_id, approval_request_id, step_number, approver_id, action, comment)
+       VALUES ($1, $2, 1, $3, 'approve', '給与確定承認')`,
+      [tenantA, arRes.rows[0].id, ownerA],
+    );
+    await client.query(
+      `UPDATE approval_requests SET status = 'approved', updated_at = now() WHERE id = $1`,
+      [arRes.rows[0].id],
+    );
+
+    await client.query(
+      `UPDATE payroll_calculations SET status = 'active' WHERE id = $1`,
+      [calcIdA],
     );
 
     assert(true, '確定済み給与計算レコード(active)の準備完了');
@@ -175,7 +219,7 @@ async function main() {
     } catch (err: any) {
       wormBlocked = true;
       assert(
-        err.message.includes('confirmed') || err.message.includes('変更'),
+        err.message.toLowerCase().includes('confirmed') || err.message.includes('変更'),
         `confirmed後のUPDATEがDBトリガーで拒否された: ${err.message}`,
       );
     }
@@ -238,14 +282,10 @@ async function main() {
          id, tenant_id, dependents_count, income_min, income_max, tax_amount,
          effective_from, effective_to, description, created_by
        ) VALUES
-        -- 2025年度用 (過去年度・扶養1人)
-        ($1, $5, 1, 0, 10000000, 5000, '2025-01-01', '2025-12-31', '2025年用ブラケット', $6),
-        -- 2026年度用 (扶養0人)
-        ($2, $5, 0, 0, 10000000, 6000, '2026-01-01', '2026-12-31', '2026年扶養0人用', $6),
-        -- 2026年度用 (扶養1人, 課税所得 0〜1,000,000円)
-        ($3, $5, 1, 0, 1000000, 0, '2026-01-01', '2026-12-31', '2026年扶養1人・所得低帯', $6),
-        -- 2026年度用 (扶養1人, 課税所得 1,000,000〜10,000,000円)
-        ($4, $5, 1, 1000000, 10000000, 15000, '2026-01-01', '2026年扶養1人・所得中高帯', $6)`,
+        ($1, $5, 1, 0, 10000000, 5000, '2025-01-01', '2025-12-31', 'bracket_2025', $6),
+        ($2, $5, 0, 0, 10000000, 6000, '2026-01-01', '2026-12-31', 'bracket_2026_dep0', $6),
+        ($3, $5, 1, 0, 1000000, 0, '2026-01-01', '2026-12-31', 'bracket_2026_dep1_low', $6),
+        ($4, $5, 1, 1000000, 10000000, 15000, '2026-01-01', '2026-12-31', 'bracket_2026_dep1_high', $6)`,
       [bracket2025Id, bracket2026Dep0Id, bracket2026Dep1LowId, bracket2026Dep1HighId, tenantA, adminUserA],
     );
 
@@ -311,7 +351,7 @@ async function main() {
            $1, $2, 2026, 400000, 400000,
            50000, 10000, '{}'::jsonb, 50000,
            350000, 17500, -7500,
-           ARRAY[]::uuid[], 'draft', $3
+           '[]'::jsonb, 'draft', $3
          )`,
         [tenantA, empIdA, adminUserA],
       );
@@ -337,7 +377,7 @@ async function main() {
            $1, $2, 2027, 400000, 400000,
            50000, 10000, '{}'::jsonb, 50000,
            350000, 17500, -7500,
-           ARRAY[]::uuid[], 'draft', $3
+           '[]'::jsonb, 'draft', $3
          )`,
         [tenantA, empIdA, userB], // userB は tenantB のユーザー
       );
@@ -391,7 +431,7 @@ async function main() {
       `INSERT INTO approval_rules (
          tenant_id, target_type, step_number, approver_role_id, is_active
        ) VALUES ($1, 'year_end_adjustment', 1, $2, TRUE)`,
-      [tenantA, roleMap['payroll_admin']],
+      [tenantA, roleMap['owner']],
     );
 
     // 申請提出 -> pending_approval
@@ -401,9 +441,9 @@ async function main() {
     assert(submittedAdj.status === 'pending_approval', '承認申請提出により status = pending_approval に遷移した');
     assert(submittedAdj.approval_request_id !== null, 'approval_requests レコードと正しく紐付けられた');
 
-    // 承認実行
+    // 承認実行 (起票者adminUserAと異なるownerAで承認し自己承認防止トリガーを遵守)
     const arId = submittedAdj.approval_request_id!;
-    await approvalService.approve(tenantA, adminUserA, arId, {
+    await approvalService.approve(tenantA, ownerA, arId, {
       comment: '内容を確認しました。承認します。',
     });
 
@@ -424,7 +464,7 @@ async function main() {
     } catch (err: any) {
       wormAdjBlocked = true;
       assert(
-        err.message.includes('active') || err.message.includes('変更'),
+        err.message.toLowerCase().includes('active') || err.message.includes('変更'),
         `active確定後のUPDATEがDBトリガーで拒否された: ${err.message}`,
       );
     }
@@ -434,34 +474,6 @@ async function main() {
     // 11. employee 自身による年末調整自己確定の防止
     // ------------------------------------------------------------------------
     console.log('\n11. employee 自身による自己確定防止検証...');
-    // Tenant A に別の年度のレコードを準備
-    const calc2025Id = uuidv4();
-    const period2025Id = uuidv4();
-    await client.query(
-      `INSERT INTO payroll_periods (id, tenant_id, name, period_start, period_end, payment_date, status)
-       VALUES ($1, $2, '2025年12月度給与', '2025-12-01', '2025-12-31', '2026-01-10', 'closed')`,
-      [period2025Id, tenantA],
-    );
-    await client.query(
-      `INSERT INTO payroll_calculations (
-         id, tenant_id, payroll_period_id, employee_id,
-         regular_hours, overtime_hours, late_night_hours, holiday_hours,
-         salary_type, base_salary, hourly_wage, regular_pay,
-         overtime_pay, late_night_pay, holiday_pay, total_gross_pay,
-         health_insurance_amount, care_insurance_amount, pension_amount, employment_insurance_amount,
-         total_social_insurance, taxable_gross_pay, income_tax_amount, resident_tax_amount,
-         total_deductions, net_pay, status
-       ) VALUES (
-         $1, $2, $3, $4,
-         160, 0, 0, 0,
-         'monthly', 400000, 0, 400000,
-         0, 0, 0, 400000,
-         20000, 0, 36000, 2400,
-         58400, 400000, 10000, 20000,
-         88400, 311600, 'active'
-       )`,
-      [calc2025Id, tenantA, period2025Id, empIdA],
-    );
 
     // 0-step自動承認ルールを設定
     await client.query(
@@ -475,20 +487,26 @@ async function main() {
       [tenantA],
     );
 
-    const adj2025 = await yearEndService.calculate(tenantA, adminUserA, {
-      employee_id: empIdA,
-      tax_year: 2025,
-      spouse_deduction: 0,
-      dependents_count: 0,
-      life_insurance_deduction: 0,
-      earthquake_insurance_deduction: 0,
-      housing_loan_deduction: 0,
-    });
+    const adjSelfId = uuidv4();
+    await client.query(
+      `INSERT INTO year_end_adjustments (
+         id, tenant_id, employee_id, tax_year, annual_gross_pay, annual_taxable_pay,
+         annual_social_insurance, annual_withheld_tax, deductions, total_deductions,
+         taxable_income_after_deductions, final_annual_tax, adjustment_amount,
+         applied_rate_ids, status, created_by
+       ) VALUES (
+         $1, $2, $3, 2027, 400000, 400000,
+         50000, 10000, '{}'::jsonb, 50000,
+         350000, 17500, -7500,
+         '[]'::jsonb, 'draft', $4
+       )`,
+      [adjSelfId, tenantA, empIdA, adminUserA],
+    );
 
     let selfConfirmBlocked = false;
     try {
       // 従業員本人(empUserA)が自分自身の年末調整を申請して自動即時確定させようとする
-      await yearEndService.submitApproval(tenantA, empUserA, adj2025.id, {});
+      await yearEndService.submitApproval(tenantA, empUserA, adjSelfId, {});
     } catch (err: any) {
       selfConfirmBlocked = true;
       assert(

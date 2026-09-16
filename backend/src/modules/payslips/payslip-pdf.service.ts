@@ -53,6 +53,19 @@ export class PayslipPdfService {
       });
     };
 
+    // 英語/ASCII安全な表示名 (WinAnsiフォントでのエンコードエラー防止)
+    const toSafeAscii = (val: string | null | undefined, fallback: string): string => {
+      if (!val) return fallback;
+      const normalized = val
+        .replace(/年/g, '-')
+        .replace(/月度?給与?/g, '')
+        .replace(/日/g, '')
+        .replace(/[^\x20-\x7E]/g, ' ')
+        .trim()
+        .replace(/\s+/g, ' ');
+      return normalized.length > 0 ? normalized : fallback;
+    };
+
     // 1. トップヘッダーバンド (深いネイビー)
     drawRect(0, height - 80, width, 80, { r: 0.1, g: 0.18, b: 0.36 });
 
@@ -64,7 +77,10 @@ export class PayslipPdfService {
       color: rgb(1, 1, 1),
     });
 
-    page.drawText(`Target Period: ${payslip.payroll_period}  |  Payment Date: ${payslip.payment_date}`, {
+    const safePeriod = toSafeAscii(payslip.payroll_period, 'N/A');
+    const safePaymentDate = toSafeAscii(payslip.payment_date, 'N/A');
+
+    page.drawText(`Target Period: ${safePeriod}  |  Payment Date: ${safePaymentDate}`, {
       x: 40,
       y: height - 68,
       size: 11,
@@ -86,13 +102,6 @@ export class PayslipPdfService {
     // 2. 従業員情報サマリカード
     drawRect(40, currentY - 55, width - 80, 55, { r: 0.96, g: 0.97, b: 0.99 });
     strokeRect(40, currentY - 55, width - 80, 55);
-
-    // 英語/ASCII安全な表示名 (WinAnsiフォントでのエンコードエラー防止)
-    const toSafeAscii = (val: string | null | undefined, fallback: string): string => {
-      if (!val) return fallback;
-      const ascii = val.replace(/[^\x20-\x7E]/g, '').trim();
-      return ascii.length > 0 ? ascii : fallback;
-    };
 
     const rawEmpName = payslip.employee_name || snapshot?.employee?.name;
     const safeEmpCode = toSafeAscii(payslip.employee_code || snapshot?.employee?.employee_code, '-');

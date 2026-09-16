@@ -64,7 +64,7 @@ export const YEAR_END_ADJUSTMENT_COLUMNS = `
   y.id,
   y.tenant_id,
   y.employee_id,
-  e.employee_code,
+  e.employee_no AS employee_code,
   e.name AS employee_name,
   d.name AS department_name,
   y.tax_year,

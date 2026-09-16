@@ -71,7 +71,7 @@ export class PayslipsService {
          JOIN employees e ON e.id = p.employee_id
          LEFT JOIN departments d ON d.id = e.department_id
          WHERE ${whereClause}
-         ORDER BY p.payroll_period DESC, e.employee_code ASC
+         ORDER BY p.payroll_period DESC, e.employee_no ASC
          LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
         listValues,
       );
@@ -157,7 +157,7 @@ export class PayslipsService {
       }>(
         `SELECT
            c.*,
-           e.employee_code,
+           e.employee_no AS employee_code,
            e.name AS employee_name,
            d.name AS department_name,
            pp.name AS period_name,
@@ -236,7 +236,7 @@ export class PayslipsService {
            tenant_id, payroll_calculation_id, employee_id, payroll_period,
            payment_date, snapshot_data, status, issued_at, created_by
          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-         RETURNING ${PAYSLIP_COLUMNS}`,
+         RETURNING *`,
         [
           tenantId,
           calc.id,
@@ -250,7 +250,13 @@ export class PayslipsService {
         ],
       );
 
-      const payslip = mapPayslipRow(insertResult.rows[0]);
+      const payslipRow: PayslipRow = {
+        ...insertResult.rows[0],
+        employee_code: calc.employee_code,
+        employee_name: calc.employee_name,
+        department_name: calc.department_name,
+      };
+      const payslip = mapPayslipRow(payslipRow);
 
       await this.auditLogs.record(client, tenantId, {
         actorUserId: userId,
@@ -303,7 +309,7 @@ export class PayslipsService {
         `UPDATE payslips
          SET status = 'confirmed', issued_at = now(), updated_at = now()
          WHERE tenant_id = $1 AND id = $2
-         RETURNING ${PAYSLIP_COLUMNS}`,
+         RETURNING *`,
         [tenantId, id],
       );
 
