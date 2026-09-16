@@ -100,6 +100,8 @@ const NAV_GROUPS: NavGroup[] = [
       { label: '勤怠管理・打刻', to: '/attendance', icon: Clock },
       { label: '保険料率・税率マスタ', to: '/rate-masters', icon: Calculator },
       { label: '給与計算', to: '/payroll-calculations', icon: Banknote },
+      { label: '給与明細', to: '/payslips', icon: FileText },
+      { label: '年末調整', to: '/year-end-adjustments', icon: Calculator },
     ],
   },
   {

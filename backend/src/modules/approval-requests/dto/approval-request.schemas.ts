@@ -9,6 +9,7 @@ export const APPROVAL_TARGET_TYPES = [
   'purchase_request',
   'general_request',
   'payroll',
+  'year_end_adjustment',
 ] as const;
 
 export const approvalRequestListQuerySchema = z.object({

@@ -12,7 +12,8 @@ export interface ApprovalRequestRow {
     | 'contract'
     | 'purchase_request'
     | 'general_request'
-    | 'payroll';
+    | 'payroll'
+    | 'year_end_adjustment';
   target_id: string;
   submitted_by: string;
   total_steps: number;
