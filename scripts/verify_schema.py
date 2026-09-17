@@ -2434,7 +2434,59 @@ def run_verification(dsn: str) -> int:
     r.ok("段階的アップグレード検証 14: 026を2回連続適用してもエラーにならず正常終了する (DDL 冪等性保証)",
          idempotent_026_ok)
 
-    # 22-8. 【P4-T1実証】実DB E2Eテスト (作成, WORM不変性, 改訂版発行, 受注転換, 多重転換防止, PDF生成, RLS)
+    # =========================================================================
+    # 23. 【Phase 4 P4-T1-FIX3】改訂先正当性・受注転換双方向DB検証 (027追加マイグレーション)
+    # =========================================================================
+    print("\n--- 23. 改訂先正当性・受注転換双方向DBガード (027追加マイグレーション) (P4-T1-FIX3) ---")
+
+    # 23-1. 027_quotation_revision_and_conversion_guards.sql の段階適用
+    sql_027_path = SQL_DIR / "027_quotation_revision_and_conversion_guards.sql"
+    sql_027 = sql_027_path.read_text(encoding="utf-8")
+    apply_027_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_027)
+        finally:
+            conn.close()
+    except Exception as e:
+        apply_027_ok = False
+        print(f"  [ERROR] 027_quotation_revision_and_conversion_guards.sql apply failed: {e}")
+    r.ok("027_quotation_revision_and_conversion_guards.sql がエラーなく正常適用される", apply_027_ok)
+
+    # 23-2. invoices.source_quotation_id 列の存在確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("""SELECT count(*) as cnt FROM information_schema.columns
+                       WHERE table_name = 'invoices' AND column_name = 'source_quotation_id'""")
+        source_quote_col_exists = (cur.fetchone()["cnt"] == 1)
+    r.ok("invoices テーブルに source_quotation_id 列が存在する (BLOCKER候補-02a)", source_quote_col_exists)
+
+    # 23-3. quotations.superseded_by 部分UNIQUEインデックス存在確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("""SELECT count(*) as cnt FROM pg_indexes
+                       WHERE tablename = 'quotations' AND indexname = 'ix_quotations_superseded_by_unique'""")
+        superseded_idx_exists = (cur.fetchone()["cnt"] == 1)
+    r.ok("quotations テーブルに superseded_by 部分UNIQUEインデックスが存在する (BLOCKER-01)", superseded_idx_exists)
+
+    # 23-4. 段階的アップグレード・冪等性検証 (027を2回連続適用してもエラーにならないこと)
+    idempotent_027_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_027)
+        finally:
+            conn.close()
+    except Exception as e:
+        idempotent_027_ok = False
+        print(f"  [ERROR] 027 re-apply failed: {e}")
+    r.ok("段階的アップグレード検証 15: 027を2回連続適用してもエラーにならず正常終了する (DDL 冪等性保証)",
+         idempotent_027_ok)
+
+    # 23-5. 【P4-T1-FIX3実証】実DB E2Eテスト (WORM不変性, 改訂先正当性DB検証, superseded_by UNIQUE, 受注転換双方向リンクDB保証)
     cmd_p4t1 = f"npx ts-node src/scripts/verify-quotations-e2e.ts \"{dsn}\""
     p4t1_run = subprocess.run(cmd_p4t1, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
     if p4t1_run.returncode != 0:
@@ -2443,7 +2495,7 @@ def run_verification(dsn: str) -> int:
     else:
         print("\n=== P4-T1 E2E 実測実行ログ ===")
         print(p4t1_run.stdout)
-    r.ok("見積書E2E: 作成・明細計算・WORM不変性・改訂発行・受注転換・多重転換防止・PDF生成・RLSが動作する (P4-T1)",
+    r.ok("見積書E2E: 作成・WORM・改訂先正当性DB検証・superseded_by UNIQUE・受注転換双方向リンク・PDF生成・RLSが動作する (P4-T1-FIX3)",
          p4t1_run.returncode == 0)
 
     return r.summary()
@@ -2474,12 +2526,12 @@ def main() -> int:
 
         # 1. まず 001〜014 までを適用 (P1-T5マージ直後の既存DB状態を再現)
         apply_schema(dsn, max_file="014_general_requests.sql")
-        # 2. 検証実行 (セクション12で015、...、セクション21で025、セクション22で026段階適用 -> E2E実行)
+        # 2. 検証実行 (セクション12で015、...、セクション21で025、セクション22で026、セクション23で027段階適用 -> E2E実行)
         exit_code = run_verification(dsn)
 
-        # 3. クリーンDBに最初から001〜026を一括適用した場合の回帰なし確認
+        # 3. クリーンDBに最初から001〜027を一括適用した場合の回帰なし確認
         if exit_code == 0:
-            fresh_db_name = "keiri_kaikei_fresh_026"
+            fresh_db_name = "keiri_kaikei_fresh_027"
             conn_raw = psycopg2.connect(dsn)
             conn_raw.autocommit = True
             try:
@@ -2490,9 +2542,9 @@ def main() -> int:
                 conn_raw.close()
 
             dsn_fresh = dsn.rsplit("/", 1)[0] + f"/{fresh_db_name}"
-            print("\n--- クリーンDBへの001〜026一括適用検証 (新規環境回帰なし確認) ---")
+            print("\n--- クリーンDBへの001〜027一括適用検証 (新規環境回帰なし確認) ---")
             apply_schema(dsn_fresh)
-            print("[schema] クリーンDBへの001〜026一括適用が正常終了しました (回帰なし確認完了)")
+            print("[schema] クリーンDBへの001〜027一括適用が正常終了しました (回帰なし確認完了)")
     finally:
         if args.use_docker and not args.keep_docker:
             docker_stop()

@@ -721,10 +721,12 @@ export class QuotationsService {
       const insertInvoiceSql = `
         INSERT INTO invoices (
           tenant_id, invoice_no, customer_id, issue_date, due_date,
-          status, subtotal_amount, tax_amount, currency_code, created_by
+          status, subtotal_amount, tax_amount, currency_code, created_by,
+          source_quotation_id
         ) VALUES (
           $1, $2, $3, CURRENT_DATE, CURRENT_DATE + 30,
-          'draft', $4, $5, $6, $7
+          'draft', $4, $5, $6, $7,
+          $8
         )
         RETURNING id
       `;
@@ -736,6 +738,7 @@ export class QuotationsService {
         quote.tax_amount,
         quote.currency_code || 'JPY',
         userId, // 認証済みセッション (JWT) 由来のユーザーID
+        quote.id, // 変換元見積の id (source_quotation_id 双方向整合性)
       ]);
       const invoiceId = invoiceInsertRes.rows[0].id;
 

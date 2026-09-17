@@ -319,9 +319,9 @@ async function main() {
     assert(dbLineDeleteRejected, 'DBトリガー: sent後の見積明細直接DELETEが拒絶されること (ERRCODE: 55000)');
 
     // ------------------------------------------------------------------------
-    // 7. BLOCKER-01: superseded_by の一度きり遷移例外制御
+    // 7. BLOCKER-01: superseded_by の正当性DB検証およびUNIQUE制約
     // ------------------------------------------------------------------------
-    console.log('\n7. BLOCKER-01: superseded_by の遷移例外制御検証...');
+    console.log('\n7. BLOCKER-01: superseded_by の正当性DB検証およびUNIQUE制約...');
 
     // 7.1 自分自身への循環リンク拒絶
     let selfSupersededRejected = false;
@@ -335,7 +335,46 @@ async function main() {
     }
     assert(selfSupersededRejected, 'DBトリガー: 自分自身への superseded_by 設定が拒絶されること (ERRCODE: 23001)');
 
-    // 7.2 改訂フロー経由での正常な superseded_by リンク設定 (v1 -> v2)
+    // 7.2 無関係な既存見積（別quote_no）を superseded_by に指定してDBトリガーで拒絶されること
+    const unrelatedQuote = await quotationsService.create(tenantA, userA, {
+      customer_id: custAId,
+      title: '無関係な見積書',
+      lines: [{ item_name: '別件品目', quantity: 1, unit: '式', unit_price: 50000, tax_rate: 0.1 }],
+    });
+    let differentQuoteNoRejected = false;
+    try {
+      await client.query(
+        `UPDATE quotations SET superseded_by = $1 WHERE id = $2`,
+        [unrelatedQuote.id, sentQuote.id],
+      );
+    } catch (err: any) {
+      if (err.code === '23001' || err.message?.includes('different quote_no')) {
+        differentQuoteNoRejected = true;
+      }
+    }
+    assert(differentQuoteNoRejected, 'DBトリガー: 別quote_noの見積を superseded_by に直接設定して拒絶されること (ERRCODE: 23001)');
+
+    // 7.3 同一 quote_no だが version が連続していない (version != OLD.version + 1) レコードへのリンク拒絶
+    const invalidVersionQuoteId = uuidv4();
+    await client.query(
+      `INSERT INTO quotations (id, tenant_id, customer_id, quote_no, title, status, version, created_by)
+       VALUES ($1, $2, $3, $4, '不正バージョン見積', 'draft', 99, $5)`,
+      [invalidVersionQuoteId, tenantA, custAId, sentQuote.quote_no, userA],
+    );
+    let invalidVersionRejected = false;
+    try {
+      await client.query(
+        `UPDATE quotations SET superseded_by = $1 WHERE id = $2`,
+        [invalidVersionQuoteId, sentQuote.id],
+      );
+    } catch (err: any) {
+      if (err.code === '23001' || err.message?.includes('must be exactly old version')) {
+        invalidVersionRejected = true;
+      }
+    }
+    assert(invalidVersionRejected, 'DBトリガー: versionが連続していない見積への superseded_by 設定が拒絶されること (ERRCODE: 23001)');
+
+    // 7.4 正規の改訂フロー経由での正常な superseded_by リンク設定 (v1 -> v2)
     const revisedQuote = await quotationsService.revise(tenantA, userA, sentQuote.id, {
       notes: '第2版改訂: クライアント要望に伴う調整',
     });
@@ -346,7 +385,7 @@ async function main() {
     assert(oldQuoteCheck.superseded_by === revisedQuote.id, '旧見積の superseded_by が新見積IDに設定されていること');
     assert(Number(oldQuoteCheck.total_amount) === 1210000, '旧見積の金額レコードが一切書き換わっていないこと (不変)');
 
-    // 7.3 既に superseded_by が設定されたレコードへの再変更拒否
+    // 7.5 既に superseded_by が設定されたレコードへの再変更拒否
     let reassignSupersededRejected = false;
     const dummyNewId = uuidv4();
     try {
@@ -359,7 +398,7 @@ async function main() {
     }
     assert(reassignSupersededRejected, 'DBトリガー: 設定済み superseded_by の再変更が拒絶されること (ERRCODE: 55000)');
 
-    // 7.4 既に superseded_by が設定されたレコードの NULL 巻き戻し拒絶
+    // 7.6 既に superseded_by が設定されたレコードの NULL 巻き戻し拒絶
     let rollbackSupersededRejected = false;
     try {
       await client.query(
@@ -370,6 +409,26 @@ async function main() {
       if (err.code === '55000') rollbackSupersededRejected = true;
     }
     assert(rollbackSupersededRejected, 'DBトリガー: superseded_by の NULL 巻き戻しが拒絶されること (ERRCODE: 55000)');
+
+    // 7.7 複数の旧見積から同一の新見積IDへ superseded_by を設定しようとして、2件目がUNIQUE制約違反で拒絶されること
+    const anotherOldQuote = await quotationsService.create(tenantA, userA, {
+      customer_id: custAId,
+      title: '二重superseded_byテスト用見積',
+      lines: [{ item_name: '品目', quantity: 1, unit: '式', unit_price: 10000, tax_rate: 0.1 }],
+    });
+    await quotationsService.send(tenantA, userA, anotherOldQuote.id);
+    let duplicateSupersededRejected = false;
+    try {
+      await client.query(
+        `UPDATE quotations SET superseded_by = $1 WHERE id = $2`,
+        [revisedQuote.id, anotherOldQuote.id],
+      );
+    } catch (err: any) {
+      if (err.code === '23505' || err.code === '23001') {
+        duplicateSupersededRejected = true;
+      }
+    }
+    assert(duplicateSupersededRejected, 'DB制約: 複数の旧見積から同一新見積への superseded_by 設定がUNIQUE制約/正当性チェックで拒絶されること');
 
     // ------------------------------------------------------------------------
     // 8. 確認事項-03: 受注転換の同時実行 (二重転換) 耐性・孤立レコード未発生検証
@@ -469,12 +528,16 @@ async function main() {
     );
 
     const invoiceCreatedByRes = await client.query(
-      `SELECT created_by FROM invoices WHERE id = $1`,
+      `SELECT created_by, source_quotation_id FROM invoices WHERE id = $1`,
       [convertedInvoiceId],
     );
     assert(
       invoiceCreatedByRes.rows[0].created_by === userA,
       `確認事項-05: invoices.created_by に認証セッションの userA (${userA}) が記録されていること`,
+    );
+    assert(
+      invoiceCreatedByRes.rows[0].source_quotation_id === concurQuote.id,
+      `BLOCKER候補-02a: 生成された invoice.source_quotation_id が見積ID (${concurQuote.id}) と完全一致すること`,
     );
 
     // ------------------------------------------------------------------------
@@ -502,14 +565,35 @@ async function main() {
     }
     assert(crossTenantConvertRejected, '他テナントの見積に対する受注転換がRLS/tenant境界で拒絶されること (404 NotFound)');
 
-    // 10.3 同時実行で失敗した側のトランザクションが完全にrollbackされ、孤立レコードが0件であること
+    // 10.3 BLOCKER候補-02a: 無関係な既存invoiceへの converted_invoice_id 直接設定がDBトリガーで拒絶されること
+    const unrelatedInvoiceId = uuidv4();
+    await client.query(
+      `INSERT INTO invoices (id, tenant_id, invoice_no, customer_id, issue_date, due_date, status, subtotal_amount, tax_amount, created_by)
+       VALUES ($1, $2, 'INV-UNRELATED-001', $3, CURRENT_DATE, CURRENT_DATE + 30, 'draft', 10000, 1000, $4)`,
+      [unrelatedInvoiceId, tenantA, custAId, userA],
+    );
+    let unrelatedInvoiceRejected = false;
+    try {
+      await client.query(
+        `UPDATE quotations SET converted_invoice_id = $1 WHERE id = $2`,
+        [unrelatedInvoiceId, revisedQuote.id],
+      );
+    } catch (err: any) {
+      if (err.code === '55000' || err.message?.includes('source_quotation_id mismatch')) {
+        unrelatedInvoiceRejected = true;
+      }
+    }
+    assert(unrelatedInvoiceRejected, 'DBトリガー: source_quotation_idが一致しない無関係なinvoiceへの converted_invoice_id 設定が拒絶されること (ERRCODE: 55000)');
+
+    // 10.4 同時実行で失敗した側のトランザクションが完全にrollbackされ、孤立レコードが0件であること
     const allInvoicesCountRes = await client.query(
       `SELECT count(*)::int as cnt FROM invoices WHERE tenant_id = $1 AND customer_id = $2`,
       [tenantA, custAId],
     );
+    // 上記の無関係テスト用invoiceが1件追加されているため、合計は 2件 (同時実行成功分1件 + 無関係テスト用1件)
     assert(
-      allInvoicesCountRes.rows[0].cnt === 1,
-      `同時実行による二重転換で失敗した側が完全ロールバックされ、孤立invoiceが0件 (実存: 1件のみ) であること`,
+      allInvoicesCountRes.rows[0].cnt === 2,
+      `同時実行による二重転換で失敗した側が完全ロールバックされ、孤立invoiceが0件であること`,
     );
 
     const allInvoiceLinesCountRes = await client.query(
