@@ -478,10 +478,11 @@ async function main() {
     );
 
     // ------------------------------------------------------------------------
-    // 10. 受注転換の多重実行防止 (再度の呼び出し拒絶)
+    // 10. 受注転換の多重実行防止 (再度の呼び出し拒絶) & 他テナント転換遮断
     // ------------------------------------------------------------------------
-    console.log('\n10. 受注転換の多重実行防止 (再実行の拒絶)...');
+    console.log('\n10. 受注転換の多重実行防止 & 他テナント転換遮断検証...');
 
+    // 10.1 既に転換済みの見積書への再転換呼び出し拒絶
     let duplicateConvertRejected = false;
     try {
       await quotationsService.convert(tenantA, userA, concurQuote.id);
@@ -489,6 +490,36 @@ async function main() {
       duplicateConvertRejected = true;
     }
     assert(duplicateConvertRejected, '既に転換済みの見積書への再転換呼び出しが拒絶されること');
+
+    // 10.2 他テナントの見積に対する受注転換がRLS/tenant境界で拒絶されること
+    let crossTenantConvertRejected = false;
+    try {
+      await quotationsService.convert(tenantB, userB, concurQuote.id);
+    } catch (err: any) {
+      if (err.message?.includes('見つかりません') || err.status === 404) {
+        crossTenantConvertRejected = true;
+      }
+    }
+    assert(crossTenantConvertRejected, '他テナントの見積に対する受注転換がRLS/tenant境界で拒絶されること (404 NotFound)');
+
+    // 10.3 同時実行で失敗した側のトランザクションが完全にrollbackされ、孤立レコードが0件であること
+    const allInvoicesCountRes = await client.query(
+      `SELECT count(*)::int as cnt FROM invoices WHERE tenant_id = $1 AND customer_id = $2`,
+      [tenantA, custAId],
+    );
+    assert(
+      allInvoicesCountRes.rows[0].cnt === 1,
+      `同時実行による二重転換で失敗した側が完全ロールバックされ、孤立invoiceが0件 (実存: 1件のみ) であること`,
+    );
+
+    const allInvoiceLinesCountRes = await client.query(
+      `SELECT count(*)::int as cnt FROM invoice_lines il JOIN invoices i ON il.invoice_id = i.id WHERE i.tenant_id = $1 AND i.customer_id = $2`,
+      [tenantA, custAId],
+    );
+    assert(
+      allInvoiceLinesCountRes.rows[0].cnt === 1,
+      `同時実行による二重転換で失敗した側が完全ロールバックされ、孤立invoice_linesが0件 (実存: 1件のみ) であること`,
+    );
 
     // ------------------------------------------------------------------------
     // 11. 確認事項-07: 日本語フォント (IPAexゴシック) 埋め込みによる見積書PDF生成検証
