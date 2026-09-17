@@ -1,7 +1,7 @@
 # keiri-kaikei 全社バックオフィス統合SaaS 拡張計画書
 
 - 文書番号: PLAN-01
-- バージョン: 7.9.0
+- バージョン: 7.10.0
 - 対象リポジトリ: `fullstack-ai-accounting`（経理・会計基盤）
 - 関連文書: `docs/01_requirements.md`, `docs/02_architecture.md`, `docs/03_database_design.md`
 
@@ -20,13 +20,21 @@
 | Phase 1 | 総務・法務（契約書管理） | ✅ 完了 | 6/6 | 平均2〜3回、最大4回（P1-T5） |
 | Phase 2 | 購買・調達 | ✅ 完了 | 4/4 | 平均2回、最大3回（P2-T2/P2-T3） |
 | Phase 3 | 人事労務 | ✅ 完了 | 4/4 | 平均2〜3回、最大6回（P3-T3） |
-| Phase 4 | 営業事務 | 🔵 着手中 | 0/4 | - |
+| Phase 4 | 営業事務 | 🔵 着手中 | 1/4（P4-T1 PASS、マージ待ち） | P4-T1: 往復5回（FIX〜FIX4、VERIFY） |
 | Phase 5 | 統合最適化 | 未着手 | - | - |
 
 ### 直近のアクション
 
-- Phase 4（営業事務）のタスク分解（P4-T1〜T4）を完了し、P4-T1（見積書：見積作成・確定・
-  受注転換）の実装指示プロンプトを新規作成した。次はこれをGeminiに渡して実装させる。
+- P4-T1-VERIFYの完了報告に対し、ChatGPT(SO)が**P4-T1を正式PASS**と判定。FIX2で発見された
+  `superseded_by`正当性の問題、FIX3で発見された`invoices.source_quotation_id`の
+  後発改変防止の問題を含め、DB最終防御が段階的に確立できたことがPASSの根拠。
+  マージ指示プロンプトを作成し、mainへのマージとマージ後のE2E再検証を指示した。
+- P4-T1のマージを前提に、**P4-T2（案件管理：商談パイプライン）**のタスク詳細・実装指示
+  プロンプトを作成した。terminal状態（won/lost）からの変更禁止をDBトリガーで防御する
+  設計とし、`quotations.deal_id`との紐付けを実現する。
+- 次はユーザーが【マージ指示プロンプト P4-T1】をGeminiに渡し、マージと再検証を実行する。
+  マージ完了報告を受け取ったら、P4-T1を完全クローズに更新する。その後【指示プロンプト
+  P4-T2】をGeminiに渡して案件管理の実装に着手する。
 - DEBT-020（main実DB E2E未実行）は解消済み。DEBT-021（年末調整はtax_year=2026限定）等、
   低リスクの技術的負債が7節に継続記録されている。
 
@@ -3783,8 +3791,8 @@ Phase 3（人事労務）と比べて低い。
 
 | タスクID | タスク名 | 概要 | 依存 | ステータス |
 |----------|----------|------|------|-----------|
-| P4-T1 | 見積書（見積作成・確定・受注転換） | 見積の作成・明細管理、`draft`→`sent`→`accepted`/`rejected`/`expired`の状態遷移、確定後の不変性、受注への一方向変換 | P0-T1, P0-T4 | 🔲 指示プロンプト作成済み・Gemini実装待ち |
-| P4-T2 | 案件管理（商談パイプライン） | 案件（商談）の登録・ステージ管理（見込み〜受注/失注）、見積との紐付け | P4-T1 | ⏳ P4-T1の実装結果を踏まえてタスク分解予定 |
+| P4-T1 | 見積書（見積作成・確定・受注転換） | 見積の作成・明細管理、`draft`→`sent`→`accepted`/`rejected`/`expired`の状態遷移、確定後の不変性、受注への一方向変換 | P0-T1, P0-T4 | ✅ SO正式PASS（証跡確認済み、E2E 57/57・Schema 169/169・clean DB 001〜028）。マージ指示プロンプト作成済み・Gemini実行待ち |
+| P4-T2 | 案件管理（商談パイプライン） | 案件（商談）の登録・ステージ管理（見込み〜受注/失注）、見積との紐付け | P4-T1 | 🔲 指示プロンプト作成済み・Gemini実装待ち |
 | P4-T3 | 契約更新連携 | Phase 1の契約更新期限アラート（P1-T4）と営業案件・見積を連携し、更新期限が近い契約から更新提案の案件・見積を起票できるようにする | P4-T1, P4-T2 | ⏳ 未分解 |
 | P4-T4 | 営業ダッシュボード・レポート | 案件パイプライン・見積成約率等の可視化（P2-T4の購買ダッシュボードと同様の設計パターン） | P4-T1, P4-T2, P4-T3 | ⏳ 未分解 |
 
@@ -3872,6 +3880,496 @@ P4-T2以降の詳細タスク分解・実装指示プロンプトは、P4-T1の�
 
 ---
 
+#### 【フォローアップ指示プロンプト P4-T1-FIX】REQUEST CHANGES対応（WORMと`superseded_by`更新の矛盾ほか）
+
+ChatGPT(SO)よりP4-T1が「REQUEST CHANGES（現時点）」と判定された。ただしSOは今回、
+実コード・migration全文・git diffが未提示であることを理由に**最終判定自体を保留**しており、
+明確なBLOCKER確定は1点（WORMと改訂処理の矛盾）、残りは「実コード確認が必要な確認事項」
+という位置づけである。以下、優先度順に対応する。
+
+```
+# SOレビュー結果：P4-T1 REQUEST CHANGES（現時点・証跡未提示のため最終判定保留）
+完了報告の記載内容から、少なくとも1点の仕様矛盾（BLOCKER候補）と、実コードを確認しないと
+判定できない複数の確認事項がある。今回は以下の対応と、それを裏付ける証跡の両方を求める。
+
+# BLOCKER-01（最優先）: WORMトリガーと`superseded_by`更新処理が矛盾している
+報告では「`sent`以降の見積は金額・顧客・改訂リンク（superseded_by）等の変更をDBトリガーで
+拒絶する」とある一方、改訂フローでは「新バージョンを発行し、旧レコードのsuperseded_byを
+更新する」ともある。両方が文字通り正しければ、改訂処理自体がWORMトリガーに拒否されて
+成立しないはずである。
+
+## 修正方針
+「不変」の定義を以下のように明確化し、その通りに実装・文書化すること。
+  - 見積の業務内容（customer_id, subtotal, tax_amount, total_amount, currency,
+    valid_until, quote_no, 明細行）は、`sent`以降は一切変更不可（WORM）。
+  - `superseded_by` は例外として、**NULL → 新バージョンの見積ID への一度きりの遷移**
+    のみをDBトリガーで許可する。すでに`superseded_by`が設定済みのレコードへの再UPDATE、
+    および任意の値への変更は引き続き拒絶する。
+  - この例外を許可する経路を、改訂処理を実行する特定のDB関数・特定のトランザクション
+    パターンに限定せず、「NULLから非NULLへの一度きりの遷移」という条件そのものを
+    トリガー内で機械的に検証すること（アプリケーション層がこの関数だけを呼ぶという
+    運用上の約束に依存しない）。
+  - `fn_guard_quotation_immutability`のコード全文と、上記の例外条件をどう実装したかを
+    完了報告に含めること。
+
+## 追加すべき実DB E2E（必須）
+- 通常のUPDATE文で`sent`後の見積の`superseded_by`を直接書き換えようとして拒否される
+  ケース（改訂用の正規経路を通さない場合）
+- 改訂処理経由で`superseded_by`がNULLから新バージョンIDへ正しく設定されるケース
+- 既に`superseded_by`が設定済みの見積に対し、再度別の値へ変更しようとして拒否される
+  ケース
+
+# BLOCKER候補-02: 受注転換時のinvoice自動起票がP4-T1仕様の範囲内か
+報告では、`accepted`確定と同時に既存`invoices`/`invoice_lines`へdraft請求書を自動起票
+しているとのことである。これはP4-T1の指示プロンプン本文（受注転換後のデータ生成先を
+確認の上決定し、報告に含める）で許容されている設計判断であり、**Claude（進行管理）として
+この設計自体は仕様内と確認する**。ただし以下を満たすことを条件とする。
+  - 自動生成されるinvoiceは必ず`draft`（未確定）状態であり、既存の請求書発行フロー上の
+    通常の確認・確定操作を経ないと実際の請求書として発行されないこと（見積の受注転換が
+    請求の確定を自動的に意味しないこと）。
+  - この設計判断（見積accepted時にdraft invoiceを自動生成する）を完了報告および実装コード
+    のコメントに明記し、後から見積・請求それぞれの担当者が意図を追跡できるようにすること。
+
+# 確認事項-03: 受注転換の同時実行（二重転換）耐性
+`converted_invoice_id`のUNIQUE制約と`fn_guard_quotation_conversion`により2回目の転換が
+DBレベルで拒絶される、という報告内容は方向性として良い。ただし以下を実DB E2Eで確認し、
+結果を報告に含めること。
+  - 同一見積に対しほぼ同時に2つの転換トランザクションを実行した場合、片方のみが成功し、
+    失敗した側のtransactionが完全にrollbackされ、孤立したinvoice/invoice_lineレコードが
+    一切残らないこと。
+
+# 確認事項-04: invoice側のtenant_id導出の安全性
+見積側のtenant整合性トリガーが堅牢でも、受注転換時に生成される`invoices`/`invoice_lines`
+の`tenant_id`が、クライアント入力や別経路からではなく、**変換元の`quotation.tenant_id`
+からサーバ側で強制的に導出されている**ことを実装コードで確認し、その旨を報告に明記すること。
+
+# 確認事項-05: send/convertエンドポイントの認証主体
+`quotation.send` / `quotation.convert` 等のエンドポイントが、操作主体（承認者・実行者）を
+リクエストボディ等のクライアント指定値からではなく、認証済みセッションから強制導出して
+いることを確認し、該当コード箇所を報告に明記すること（本計画書0.5節・P3-T3-FIX5で確立した
+「client-controlled identityを許さない」パターンと同一の観点）。
+
+# 確認事項-06: WORM対象範囲と明細のfail-closed範囲の網羅性
+「金額、顧客、改訂リンク等」という報告の「等」を具体化し、`quotations`テーブルのどの列を
+`sent`以降変更禁止としているかを列挙すること。また`quotation_line_items`について、
+`sent`以降のINSERT/UPDATE/DELETEの**すべて**がDBトリガー・権限の両方でfail-closedに
+なっていることを実DB E2Eで確認し、結果を報告に含めること。
+
+# 確認事項-07: PDF発行における日本語文字の扱い
+`pdf-lib`のWinAnsi制約を理由に「ASCII安全なレイアウト」を採用したとのことだが、本システムは
+日本語の会計・バックオフィスSaaSであり、見積書に記載される顧客名・商品名・住所・備考等は
+日本語であることが前提である。顧客名や商品名をASCII化（ローマ字化・置換等）して出力する
+実装は業務要件を満たさない可能性が高い。日本語を含む埋め込みフォント（fontkit等を用いた
+CJK対応フォントの埋め込み）へ変更し、日本語の顧客名・商品名がそのままPDFに正しく表示
+されることを確認すること。既存のPDF発行機能（給与明細PDF等）がある場合はそのフォント戦略
+を参考にし、フォント埋め込み方式の一貫性を検討すること。
+
+# 提出してほしい証跡
+上記の修正・確認に加えて、以下を完了報告に添付・記載すること（本計画書0.4節に従い、
+コミットSHA・ブランチ名は必須）。
+  - `git diff --name-only <P4-T1開始時点のbase>...HEAD`
+  - `fn_guard_quotation_immutability` および `fn_guard_quotation_conversion` の
+    トリガー関数コード全文
+  - 上記の追加E2Eの実行結果（実DB PostgreSQL上）
+```
+
+---
+
+#### 【フォローアップ指示プロンプト P4-T1-FIX2】REQUEST CHANGES継続対応（設計は妥当、証跡提出が必須）
+
+ChatGPT(SO)よりP4-T1-FIXの内容は「指摘対応の方向性は妥当。ただし証跡確認前なので
+REQUEST CHANGES継続」と判定された。前回7点のうち設計面の懸念（WORM、`superseded_by`
+例外、同時実行対策、invoice側tenant導出、認証主体、日本語PDF）は**方向性として妥当と
+確認済み**であり、新たな設計変更は求められていない。今回は「説明の追加」ではなく、
+**実物の証跡そのもの**を提出する段階である。
+
+```
+# SOレビュー結果：P4-T1-FIX REQUEST CHANGES継続（証跡提出が必須）
+設計・実装方針についてはSOから前向きな評価を得ている。以下の証跡一式を、次の完了報告に
+必ず添付すること。今回はコードの追加変更を求めるものではなく、既存実装の証跡提出が
+中心である。ただし1点、実装確認（コード上の確認であり、設計変更ではない）を含む。
+
+# 提出必須の証跡一式
+1. `git diff --name-only <P4-T1開始時点のbase>...HEAD` の全文（target files以外への
+   変更がないこと、forbidden filesが空であることが分かる形で）
+2. `git diff <P4-T1開始時点のbase>...HEAD` の全文（差分そのもの）
+3. 以下のファイルの完全なコード（抜粋ではなく全文）
+   - `sql/026_quotations.sql`（該当するmigrationファイル。ファイル名が異なる場合は
+     実際のファイル名で可）
+   - `QuotationsService`（該当ファイルパスの全文）
+   - `QuotationsController`（該当ファイルパスの全文）
+   - `verify-quotations-e2e.ts`（または相当するE2E検証スクリプトの全文）
+   - 関連するDTO・schema定義
+4. 「44項目E2E」「162/162 Jest」について、件数の総括だけでなく、**各テスト項目の
+   識別名・検証内容・結果（PASS/FAIL）が個別に分かる一覧**（テストコードのdescribe/it名
+   と実行ログで足りる）。特に以下の項目が個別にどのテストで検証されているかを明示すること。
+   - `superseded_by`：NULLから値への1回限りの遷移が許可されること
+   - `superseded_by`：既に値が設定されている場合の再変更が拒否されること
+   - `superseded_by`：値からNULLへの巻き戻しが拒否されること
+   - `superseded_by`：自己参照（自分自身のIDを設定）が拒否されること
+   - `superseded_by`：任意の別IDへの書き換え（改訂経路を通さない場合）が拒否されること
+   - `sent`以降の見積本体への直接SQL UPDATEが拒否されること
+   - `sent`以降の`quotation_line_items`へのINSERT/UPDATE/DELETEが拒否されること
+   - 他テナントの見積に対する受注転換がRLS/tenant整合性チェックで拒否されること
+   - リクエストボディ等で偽装した`userId`が無視され、認証セッションの主体が使われること
+   - 同時実行による二重転換で、失敗した側のtransactionが`invoice`/`invoice_lines`/
+     `quotation`の全変更を含めて完全にrollbackされ、孤立レコードが残らないこと
+
+# 実装確認（設計変更ではなくコード上の確認）
+- `quotations`テーブルのWORM対象列（報告にある14列）と、`total_amount`
+  （generated column）・`superseded_by`（例外的に許可される1回限りの遷移）の扱いが、
+  本計画書6.2節の原則（確定済み見積の業務内容は不変）と矛盾なく整合していることを
+  トリガー定義の全文で確認できるようにすること。
+- `send` / `convert` / `accept` / `revise` の各操作が同一の認証主体取得ロジック
+  （例: `requireUserId()`相当）を使用しており、`created_by`・`approved_by`相当の値を
+  クライアント入力で上書きできないことを、該当する4箇所それぞれのコードで確認できるように
+  すること。
+- 同時実行時のロック範囲が、SELECT...FOR UPDATEから invoice/invoice_lines への
+  INSERT・quotationへのUPDATE・COMMITまで、単一トランザクション内に収まっていることを
+  該当コードで確認できるようにすること。
+
+# 受け入れ基準（Definition of Done）
+- [ ] 上記の証跡一式（diff、コード全文、E2E個別結果一覧）が完了報告に添付されている
+- [ ] 上記の実装確認3点が、コードの該当箇所を示す形で報告に明記されている
+- [ ] target files以外の変更がないこと、forbidden filesへの変更がないことがdiffから
+      確認できる
+- [ ] コミットSHA・ブランチ名（本計画書0.4節）が明記されている
+
+なお、今回のFIX2は新たな仕様変更・設計変更を求めるものではないため、証跡の提出のみで
+対応可能であれば、コードの追加変更は不要である。証跡確認の結果、実際には設計通りに
+実装されていないことが判明した場合に限り、次のFIX3で個別に修正を求める。
+```
+
+---
+
+#### 【フォローアップ指示プロンプト P4-T1-FIX3】REQUEST CHANGES対応（`superseded_by`の正当性がDB未検証というBLOCKER）
+
+ChatGPT(SO)よりP4-T1-FIX2は「証跡不足はほぼ解消。ただし実装確認の結果、新たなBLOCKERが
+1点発見された」と判定された。今回は前回までと異なり、**証跡提出ではなく実際のコード修正が
+必要**である。
+
+```
+# SOレビュー結果：P4-T1-FIX2 REQUEST CHANGES（新規BLOCKER: superseded_byの正当性未検証）
+証跡提出・前回までの懸念（同時転換、tenant導出、認証主体、日本語PDF等）はすべて解消と
+確認された。ただし実装コードそのものを確認した結果、WORM triggerに以下の欠陥が見つかった。
+
+# BLOCKER-01: `superseded_by`が「正規の改訂先」であることをDBが検証していない
+現在のtriggerは、NULL→非NULLの遷移かどうか、tenantが一致するか、既設定後の再変更でないか
+のみを見ており、**参照先が「本当にこの見積のv+1改訂版として発行されたレコードか」を
+検証していない**。このため、同一tenant内の無関係な既存見積のIDを直接SQLで`superseded_by`
+に設定することがDBレベルで可能になってしまっている。また`superseded_by`列に
+UNIQUE制約がなく、複数の旧見積が同じ新見積を指す状態も作成可能である。
+
+これは「DBを最終防御とする」という本計画書0.5節の方針、および本Phaseの設計原則
+（6.2節：確定済み見積の不変性・改訂は正規の一本のリンクのみ）に反する。
+
+# 修正方針
+1. `superseded_by`列に、NULLを除外した部分UNIQUE制約（例:
+   `CREATE UNIQUE INDEX ... ON quotations (superseded_by) WHERE superseded_by IS NOT NULL`）
+   を新規migrationで追加する。これにより、複数の旧見積が同一の新見積を指す状態を
+   構造的に排除する。
+2. WORMトリガー内で、`OLD.superseded_by IS NULL AND NEW.superseded_by IS NOT NULL`の
+   遷移が発生した際、NEW.superseded_byが参照する見積（以下「target」）について、
+   以下をすべて満たすことをDB側で検証し、満たさない場合は例外を発生させて拒絶する。
+   - target.tenant_id = OLD.tenant_id（既存の検証を維持）
+   - target.quote_no = OLD.quote_no（同一見積番号の改訂版であること）
+   - target.version = OLD.version + 1（version値がちょうど1つ進んだ版であること）
+   上記の照合により、「無関係な既存見積」を`superseded_by`として直接設定することを
+   構造的に排除する。
+3. 既存のmigrationファイルは書き換えず、新しいmigrationファイルを追加してトリガー関数を
+   `CREATE OR REPLACE FUNCTION`で更新すること（本計画書0.4節：migrationのappend-only原則）。
+
+# 追加すべき実DB E2E（必須）
+- 同一tenant内に無関係な既存見積（quote_noが異なる、またはversionがOLD.version+1でない
+  見積）が存在する状態で、`sent`状態の見積に対し直接SQLで`superseded_by`をその無関係な
+  見積のIDに設定しようとして、DB側で拒絶されること
+- 正規のrevise()フロー（quote_no同一・version+1）による`superseded_by`設定は引き続き
+  成功すること（既存の47項目E2Eの回帰確認）
+- 複数の旧見積から同一の新見積IDへ`superseded_by`を設定しようとした場合、2件目がUNIQUE
+  制約違反で拒絶されること
+
+# BLOCKER候補-02（要確認）: `converted_invoice_id`の参照先が「この見積から生成されたinvoice」であることの保証
+現状のtriggerは、初回設定であること・statusがsent/acceptedであること・tenant整合性が
+あることのみを検証しており、参照先invoiceが「本当にこの見積の受注転換によって生成された
+invoiceか」（同一tenantの無関係な既存invoiceではないか）を検証していない。
+この点について、以下のいずれかの対応を行い、選択した理由を完了報告に明記すること。
+   - (a) `invoices`テーブルに、この見積由来のinvoiceであることを示す参照列
+     （例: `source_quotation_id`、nullable、UNIQUE）を追加し、`converted_invoice_id`
+     設定時にDBトリガーで`target.source_quotation_id = quotation.id`を照合する。
+   - (b) 既存の`invoices`テーブル設計上、上記(a)相当の情報が既に別の形で存在している
+     場合は、それを用いて同様の照合を行う。
+   - (c) 上記のいずれも実施しない場合は、その理由（例: invoicesテーブルを一切変更しない
+     方針の妥当性）を明記し、Claude（進行管理）の判断を求める。
+
+# 受け入れ基準（Definition of Done）
+- [ ] `superseded_by`のUNIQUE制約（NULL除外）が追加されている
+- [ ] `superseded_by`のNULL→非NULL遷移時に、target.quote_no・target.versionの整合性が
+      DBトリガーで検証されることを実DB E2Eで確認する
+- [ ] 無関係な既存見積への直接SQLリンクが拒絶されることを実DB E2Eで確認する
+- [ ] 既存47項目E2Eすべてが引き続きPASSすること（回帰確認）
+- [ ] BLOCKER候補-02について、(a)(b)(c)いずれかの対応・判断を報告に明記する
+- [ ] migrationがappend-only（既存ファイルの書き換えなし）であることをdiffで確認できる
+- [ ] コミットSHA・ブランチ名（本計画書0.4節）を明記する
+- [ ] `git diff --name-only <FIX2完了時点>...HEAD`を報告に含め、target files以外への
+      変更がないことを示す
+
+# ChatGPTレビュー時の確認観点
+- `superseded_by`の正当性検証が、quote_no・versionの照合という構造的な条件でDB側で
+  機械的に保証されているか（アプリ層のrevise()関数だけが正しく呼ばれるという運用上の
+  前提に依存していないか）
+- UNIQUE制約により「複数の旧見積が同一の新見積を指す」状態が排除されているか
+- 追加した検証が、既存の正規revise()フローを妨げていないか（回帰E2Eで確認）
+- BLOCKER候補-02への対応が、選択した方針に対して十分な根拠を持っているか
+```
+
+---
+
+#### 【フォローアップ指示プロンプト P4-T1-FIX4】REQUEST CHANGES対応（`invoices.source_quotation_id`の後発改変防止が未確認）
+
+ChatGPT(SO)よりP4-T1-FIX3は「`superseded_by`のBLOCKERは解消方向。ただし新たに追加した
+`invoices.source_quotation_id`について、設定時の整合性は確認できたが、設定後の改変・
+NULL化を防ぐDB防御が未確認」と判定された。`superseded_by`については今回SOから
+「再度掘り下げる必要はない」と明言されているため、対応不要。
+
+```
+# SOレビュー結果：P4-T1-FIX3 REQUEST CHANGES（残る確認ポイント: invoices.source_quotation_idの後発改変防止）
+`superseded_by`に関するBLOCKERはFIX3で解消と評価された（対応不要）。一方、FIX3で新規に
+追加した`invoices.source_quotation_id`（見積→invoice逆参照）について、初期設定時の整合性
+（`converted_invoice_id`設定時に対象invoiceの`source_quotation_id`が当該見積のidと一致
+することの検証）は確認できたが、**一度設定された`source_quotation_id`が後から
+UPDATE・NULL化されても防御されるか**が報告に含まれていない。双方向リンクの片側だけ
+不変性を保証しても、もう片側を後から書き換えれば整合性が壊れるため、これはBLOCKERとして
+扱う。
+
+# BLOCKER: `invoices.source_quotation_id`の後発改変を防ぐDB防御が未実装（または未確認）
+`quotations.superseded_by`・`quotations.converted_invoice_id`に対して確立した
+「一度設定されたら不変（WORM）」という原則を、`invoices.source_quotation_id`にも
+同様に適用すること。
+
+# 修正方針
+1. `invoices`テーブルに対するトリガー（既存のinvoice側WORM/ガードトリガーがあれば
+   それを拡張し、なければ新規に追加）で、以下を検証し違反時は例外を発生させて拒絶する。
+   - `OLD.source_quotation_id IS NOT NULL AND NEW.source_quotation_id IS DISTINCT FROM
+     OLD.source_quotation_id` の場合（別quotationへの付け替え、またはNULLへの巻き戻しの
+     いずれも含む）は拒絶する。
+2. `invoices.source_quotation_id`にも、NULLを除外した部分UNIQUE制約を追加し、複数の
+   invoiceが同一quotationを指す状態（または1つのinvoiceが複数quotationに紐付く矛盾）を
+   構造的に排除する（`quotations.converted_invoice_id`側のUNIQUE制約と対で、双方向
+   一対一の関係をDB構造として保証する）。
+3. 既存のmigrationファイル（026, 027）は書き換えず、新しいmigrationファイル
+   （例: `sql/028_invoice_source_quotation_guard.sql`）を追加すること
+   （本計画書0.4節：migrationのappend-only原則）。
+4. 027で追加した`invoices.source_quotation_id`列が、既存の（本Phase以前からある）
+   invoiceレコードに対して安全に適用されていること（nullable列としてのADD COLUMNであり、
+   既存データへのNOT NULL制約やbackfill要件による失敗が発生しないこと）を、完了報告で
+   改めて明記すること。
+
+# 追加すべき実DB E2E（必須）
+- 受注転換によって`source_quotation_id`が設定済みのinvoiceに対し、直接SQLで
+  `source_quotation_id`を別のquotation IDへUPDATEしようとして拒絶されること
+- 上記と同じ状況で`source_quotation_id`をNULLへUPDATEしようとして拒絶されること
+- 既存の52項目E2E（前回FIX3分）が引き続きすべてPASSすること（回帰確認）
+- 新規追加したUNIQUE制約により、2つ目のinvoiceが同一quotationの`source_quotation_id`
+  として設定されようとした場合に拒絶されること
+
+# 受け入れ基準（Definition of Done）
+- [ ] `invoices.source_quotation_id`の後発UPDATE・NULL化がDBトリガーで拒絶されることを
+      実DB E2Eで確認する
+- [ ] `invoices.source_quotation_id`に部分UNIQUE制約（NULL除外）が追加されている
+- [ ] 既存52項目E2Eがすべて引き続きPASSする（回帰確認）
+- [ ] 027で追加した列の既存データへの適用安全性を報告に明記する
+- [ ] migrationがappend-only（026, 027を書き換えず、新規ファイルのみ追加）であることを
+      diffで確認できる
+- [ ] コミットSHA・ブランチ名（本計画書0.4節）を明記する
+- [ ] `git diff --name-only <FIX3完了時点>...HEAD`を報告に含める
+
+# ChatGPTレビュー時の確認観点
+- `invoices.source_quotation_id`の不変性が、`quotations.superseded_by`・
+  `converted_invoice_id`と同水準のDBトリガー（アプリ層の運用ルールに依存しない）で
+  保証されているか
+- 双方向リンク（quotation⇄invoice）の両側にUNIQUE制約と不変性トリガーが対称に適用され、
+  片側だけを後から書き換えて整合性を破壊する経路が残っていないか
+- 新規migrationがappend-onlyであり、026・027を書き換えていないか
+```
+
+---
+
+#### 【フォローアップ指示プロンプト P4-T1-VERIFY】CONDITIONAL PASS対応（証跡確認のみ・新規BLOCKERなし）
+
+ChatGPT(SO)よりP4-T1-FIX4は「CONDITIONAL PASS」と判定された。設計・実装上の主要な
+未解決点（`superseded_by`の正当性、`invoices.source_quotation_id`の後発改変防止）は
+FIX3・FIX4で解消済みと評価されており、**新たなBLOCKERは報告内容からは見当たらない**。
+残るのは、`converted_invoice_id`側の既存ガード（FIX3で実装済み）が、FIX4の双方向リンク
+設計と組み合わせても実際に成立していることを、テストコード・実行ログ・SQL実体で最終確認
+することのみである。
+
+```
+# SOレビュー結果：P4-T1-FIX4 CONDITIONAL PASS（証跡確認のみで最終PASS判定可能）
+設計上のBLOCKERはFIX3・FIX4で解消済みと評価されている。以下の証跡を提示すれば、
+コードの追加変更なしに最終PASS判定に進める可能性がある。
+
+# 提出必須の証跡
+1. `sql/027_quotation_revision_and_conversion_guards.sql`および
+   `sql/028_invoice_source_quotation_guard.sql`の完全なコード全文
+2. 55項目E2Eのうち、以下の観点を検証しているテストの該当箇所（テスト名・検証内容・結果）
+   - `quotations.converted_invoice_id`が設定済みの状態から、直接SQLで別のinvoiceへの
+     変更を試みて拒絶されること（FIX3のガードが、FIX4で追加した双方向リンクの状態でも
+     引き続き機能していることの確認）
+   - `quotations.converted_invoice_id`を設定済みの状態からNULLへUPDATEしようとして
+     拒絶されること
+   - `invoices.source_quotation_id`の別quotationへの付け替え拒絶
+   - `invoices.source_quotation_id`のNULLへのrollback拒絶
+   - 同一quotationに対する2件目のinvoiceでの`source_quotation_id`設定がUNIQUE制約で
+     拒絶されること
+3. `git diff --name-only <FIX4開始時点のbase>...HEAD`（target files以外の変更がないこと
+   の確認用）
+
+# 受け入れ基準（Definition of Done）
+- [ ] 上記のSQLファイル全文が完了報告に添付されている
+- [ ] 上記5項目の該当E2Eテストが個別に識別できる形（テスト名・検証内容・結果）で提示
+      されている
+- [ ] `converted_invoice_id`側のFIX3ガードが、双方向リンクの状態でも実際に機能して
+      いることが証跡から確認できる
+- [ ] コミットSHA・ブランチ名（本計画書0.4節）が明記されている（追加変更がない場合は
+      FIX4完了時点と同一のSHAでよい）
+
+なお、本プロンプトは新たな設計変更・コード修正を求めるものではない。証跡の提示のみで
+上記が確認できれば、Claude（進行管理）はその内容を整理してChatGPT(SO)に再提示し、
+最終PASS判定を経てマージ指示プロンプトの作成に進む。証跡確認の結果、実際にはガードが
+機能していないことが判明した場合に限り、P4-T1-FIX5として個別に修正を求める。
+```
+
+---
+
+#### 【マージ指示プロンプト P4-T1】mainへのマージ（SO正式PASS）
+
+ChatGPT(SO)よりP4-T1-VERIFYが**PASS**と正式判定された。前回のCONDITIONAL PASSで
+求めていた5項目の証跡（`converted_invoice_id`の別invoice変更拒否・NULL rollback拒否、
+`source_quotation_id`の付け替え拒否・NULL rollback拒否、同一quotationへの2件目invoice
+拒否）がテスト単位（10.3b, 10.3c, 10.4, 10.5, 10.6）で確認され、SOは「双方向リンクを
+後から壊せるのではないかという懸念は解消された」と明言している。FIX2〜FIX4を通じて、
+サービス層の実装だけでなくDB制約・トリガーによる最終防御まで段階的に確立できたことが
+PASSの根拠である。
+
+```
+# マージ指示：P4-T1（見積書：見積作成・確定・受注転換）
+ChatGPT(SO)がP4-T1を正式PASSと判定した。以下の手順でmainへマージすること。
+
+# PASS根拠の要約（完了報告に転記・保持すること）
+- WORM（確定済み見積の不変性）：`sent`以降の見積本体・明細の変更をDBトリガーでfail-closed
+  に拒否することを確認済み
+- `superseded_by`（改訂リンク）：tenant一致・quote_no一致・version+1・多重参照防止・
+  再設定防止・NULL rollback防止をすべてDB制約・トリガーで保証
+- `converted_invoice_id`（受注転換）：一回限りの設定・別invoiceへの変更拒否・NULL
+  rollback拒否をDBで保証、UNIQUE制約で多重転換を防止
+- `invoices.source_quotation_id`（逆参照）：初期設定時の整合性検証、後発の付け替え・
+  NULL rollback拒否、UNIQUE制約による1:1保証
+- 同時実行（二重転換）耐性：`SELECT ... FOR UPDATE`による単一トランザクション内ロック、
+  失敗側の完全rollbackを実DB E2Eで確認
+- invoice側tenant_id：クライアント入力ではなく変換元見積のtenant_idからサーバ側で導出
+- 認証主体：send/convert等の操作主体はクライアント指定値ではなく認証済みセッションから
+  導出
+- 日本語PDF：`fontkit` + IPAexゴシックにより顧客名・品名等の日本語描画を実証
+- migration：026〜028がすべてappend-only（既存ファイルの書き換えなし）
+- 実DB E2E 57/57、Schema 169/169、clean DB 001〜028、TypeScript型チェック・本番ビルド
+  すべてPASS
+
+# マージ手順
+1. `feature/p4-t1-quotations`ブランチ（および関連するFIX2〜FIX4のコミット）をmainへ
+   マージする。
+2. マージコミットのSHA（`git rev-parse HEAD`）を記録する。
+3. マージ後、mainブランチ上でclean DBへのmigration一括適用（001〜028）を再実行し、
+   実DB E2E（57項目）が引き続きすべてPASSすることを確認する（本計画書0.4節：push前の
+   報告は完了とみなさない、Phase 0〜3で確立した「main実DB E2E再実行」の原則を踏襲）。
+4. 完了報告には、マージコミットSHA・mainブランチでの再検証結果（E2E件数・PASS件数）を
+   必ず明記すること。
+
+# 受け入れ基準（Definition of Done）
+- [ ] mainへのマージが完了し、マージコミットSHAが報告に明記されている
+- [ ] マージ後、main上で001〜028のclean DB migration適用が成功する
+- [ ] マージ後、main上で実DB E2E 57/57（または相当件数）がすべてPASSする
+- [ ] 上記結果を完了報告に明記する
+```
+
+---
+
+#### 【指示プロンプト P4-T2】案件管理（商談パイプライン）
+
+P4-T1が正式PASS・マージ済みとなったことを受け、案件管理（商談パイプライン）タスクの
+詳細を分解する。P4-T1で用意した`quotations.deal_id`（nullable、WORM対象列の一部）を
+実際に活用し、案件と見積を紐付ける。
+
+```
+# 背景・目的
+営業事務Phaseの2番目のタスクとして、案件（商談）管理機能を実装する。案件は見積とは異なり、
+確定後も内容を書き換え続ける「進行中の業務レコード」であり、見積のWORM設計とは異なる
+設計方針（terminal状態（受注/失注）以外は編集可能）を採る。
+
+# 前提となる既存実装
+- P4-T1: `quotations`テーブル（`deal_id`列はnullableかつWORM対象列の一部として既に
+  存在する。本タスクでは`quotations`側のmigration・トリガーを変更せず、`deals`テーブルの
+  新規作成と、`quotations.deal_id`へのFK制約追加のみを行う）
+- 既存の顧客マスタ（P4-T1で確認済みのテーブル）
+- Phase 0〜3で確立した設計パターン全般（tenant整合性トリガー、RLS、RBAC三層防御、
+  migrationのappend-only・fail-closed運用、terminal状態からの遷移禁止パターン
+  ※P3給与計算のfinalizedパターン等を参照）
+
+# やってはいけないこと
+- `quotations`・`quotation_line_items`の既存migrationファイル（026〜028）を書き換えない。
+  `quotations.deal_id`へのFK制約は新規migrationファイルで追加する。
+- `quotations`のWORM対象列（`deal_id`を含む）の不変性ルールを本タスクで変更・緩和しない。
+- 案件が`won`（受注）または`lost`（失注）のterminal状態に達した後、stageやその他の業務
+  列が変更できてしまう状態を許さない（fail-closedでDB防御する）。
+- Phase 0〜4で繰り返し指摘・修正された問題（暗黙自動承認、tenant整合性のアプリ層依存、
+  RBAC未強制、migration事後書き換え、fail-closedでないデータ検証、DBエラーの握り潰し、
+  同時実行race condition、実質何も検証しないテスト、client-controlled identity、
+  object-level authorizationの欠如）のいずれも再発させないこと。
+
+# 実装対象
+1. 新規マイグレーションで`deals`テーブルを作成する
+   （id, tenant_id, customer_id（既存顧客マスタへの参照）, title, stage
+   (lead/qualified/proposal/negotiation/won/lost), expected_amount, currency_code,
+   expected_close_date, owner_user_id, lost_reason（nullable、lostの場合のみ使用）,
+   closed_at（nullable）, created_by, created_at, updated_at等）。RLS（ENABLE + FORCE）、
+   tenant整合性トリガーを実装する。
+2. `stage`が`won`または`lost`に達した後、当該レコードのstage・業務列への変更をDBトリガー
+   でfail-closedに拒否する（terminal状態からの遷移禁止。P3給与のfinalizedパターンを参照）。
+   `closed_at`はterminal状態遷移時にDBトリガーまたはデフォルトで設定する。
+3. `quotations.deal_id`に対し、`deals.id`への外部キー制約を新規migrationで追加する
+   （既存の`quotations`レコードは`deal_id`がNULLのままで問題なく、既存データへの影響が
+   ないことを確認・報告する）。
+4. deal.create/view/edit/close のpermissionをRBAC体系に追加し、Controller・Service両層で
+   チェックする。
+5. 案件の作成・編集（terminal状態以外）・クローズ（won/lostへの遷移、lost時は
+   lost_reason必須）・一覧・詳細のAPIとフロントエンド画面を実装する。
+6. 案件詳細画面から、紐づく見積（`quotations.deal_id = deals.id`）の一覧を表示できるように
+   する。既存の見積一覧・詳細APIを呼び出すのみとし、見積側のロジックを重複実装しない。
+
+# 受け入れ基準（Definition of Done）
+- [ ] 案件の作成・編集・一覧・詳細表示ができる
+- [ ] `won`/`lost`への遷移後、stage・業務列への変更が実DBで拒否されることを確認する
+- [ ] `lost`への遷移時に`lost_reason`が必須であることを確認する
+- [ ] `quotations.deal_id`へのFK制約が既存データに影響を与えないことを確認する
+- [ ] 他テナントの案件が一切見えないことをRLSで確認する
+- [ ] permissionを持たないロールでは操作できないことを確認する
+- [ ] 案件詳細画面から紐づく見積一覧が正しく表示されることを確認する
+- [ ] migrationがappend-only・fail-closedの原則（本計画書0.4節）に従っている
+- [ ] Phase 0で確立した実DB E2E検証基盤で、上記すべてを実PostgreSQL上で確認し、
+      結果を報告に添付する
+- [ ] 完了報告に正確なコミットSHA・ブランチ名・main...ブランチの比較URLを明記する
+      （本計画書0.4節ルール4）
+- [ ] feature/p4-t2-deals ブランチにコミット・pushし、比較URLを報告に含める
+
+# ChatGPTレビュー時の確認観点
+- terminal状態（won/lost）からの変更がDBトリガーで最終防御されているか（アプリ層の
+  バリデーションのみに依存していないか）
+- `quotations.deal_id`のFK制約追加が、既存のWORM設計・既存データに影響を与えていないか
+- tenant整合性・RBAC・認証主体がPhase 0〜4で確立したパターンと一貫しているか
+- 案件詳細画面の見積一覧表示が、見積側の実装を重複させていないか
+```
+
+---
+
 ## 7. 既知の技術的負債・フォローアップ事項
 
 タスク完了時にSOが「修正不要だが記録すべき」と判定した事項を追跡する。将来の関連タスク着手時に必ず参照すること。
@@ -3904,11 +4402,13 @@ P4-T2以降の詳細タスク分解・実装指示プロンプトは、P4-T1の�
 
 ## 8. 次のアクション
 
-1. 【P4-T1】のプロンプトをGeminiに渡し、Phase 4（営業事務）を開始する。
-2. P4-T1完了後、実際のテーブル定義・API形状を踏まえてP4-T2以降のタスク分解・実装指示
-   プロンプトをClaudeが作成する（Phase 0/1/2/3と同じ方針）。
-3. P4-T2（案件管理）着手前に、6.2節の設計原則（見積確定後の不可変性・既存契約管理との
-   連携境界）を再確認する。
+1. 【マージ指示プロンプト P4-T1】をGeminiに渡し、mainへのマージとマージ後の実DB E2E
+   再検証を実行する。マージ完了報告（コミットSHA・再検証結果）を受け取ったら、P4-T1を
+   完全クローズに更新する。
+2. マージ完了後、【指示プロンプト P4-T2】（案件管理：商談パイプライン）をGeminiに渡し、
+   Phase 4のタスク2に着手する。
+3. P4-T2完了後、実際のテーブル定義・API形状を踏まえてP4-T3（契約更新連携）以降のタスク
+   分解・実装指示プロンプトをClaudeが作成する（Phase 0/1/2/3と同じ方針）。
 4. 未解決DEBT（7節）は都度解消の方針。
 
 ---
@@ -3979,3 +4479,9 @@ P4-T2以降の詳細タスク分解・実装指示プロンプトは、P4-T1の�
 | 7.7.0 | P3-T4-FIXがSO判定CONDITIONAL PASS（applied_rate_idsの実マッチング化・tax_year=2026への明示的限定・created_by tenant整合性の3点は解消、コード修正内容は全てPASS相当。残るはDocker復旧後の実DB E2E実行のみ）。DEBT-021（年末調整は現時点でtax_year=2026のみサポート、複数年度対応は意図的に見送り）を記録。フォローアップ指示プロンプト（P3-T4-VERIFY-AND-MERGE、DEBT-020とP3-T4のE2Eをまとめて実行しマージまで完了させる統合プロンプト）を追加 |
 | 7.8.0 | P3-T4が正式PASS（Docker復旧後、main実DB E2E 154/154・P3-T4専用E2E 40/40・Jest 201/201を確認、マージコミット6be18a3）。DEBT-020を解消済みに更新。マージ指示内容を反映しP3-T4を完了扱いに更新。**Phase 3（人事労務）が全4タスク完了**。Phase 3クローズのサマリ（往復回数、確立された恒久ルール、DEBT棚卸し）を追加。ロードマップ表・エグゼクティブサマリーをPhase 3完了に更新 |
 | 7.9.0 | **Phase 4（営業事務）のセクションを新設**。6.2節に本Phase特有の設計原則（確定済み見積の不変性、見積→受注の一方向・一度きりの変換、既存の請求書発行・契約管理との統合境界の明確化、AI提案+人間承認パターンの踏襲）を明記。タスク分解（P4-T1〜T4）とP4-T1（見積書：見積作成・確定・受注転換）の実装指示プロンプトを追加。ロードマップ表・エグゼクティブサマリーをPhase 4着手中に更新。以降のセクション番号（旧6〜8節）を1つずつ繰り下げ（7: 技術的負債、8: 次のアクション、9: 変更履歴） |
+| 7.9.1 | P4-T1がSO判定REQUEST CHANGES（現時点・証跡未提示のため最終判定保留）。WORMトリガーと`superseded_by`更新処理の仕様矛盾をBLOCKER-01として最優先対応に指定。受注転換時のinvoice自動起票はP4-T1仕様の範囲内と確認（ただしdraft状態限定・設計意図の明記を条件）。同時実行時の二重転換耐性・invoice側tenant_id導出・send/convertエンドポイントの認証主体・WORM対象範囲の網羅性・PDFの日本語文字対応（ASCII化は業務要件と不整合の可能性）を確認事項として整理。フォローアップ指示プロンプト（P4-T1-FIX）を追加し、P4-T1を「要修正・再レビュー待ち」に更新 |
+| 7.9.2 | P4-T1-FIXがSO判定REQUEST CHANGES継続。設計面（WORM/`superseded_by`例外/同時実行/invoice側tenant導出/JWT認証主体/日本語PDF）は方向性として妥当と確認され、新たな設計変更要求はなし。残課題はgit diff・実装コード全文・44項目E2Eの個別結果という証跡の未提出のみと整理。証跡提出専用のフォローアップ指示プロンプト（P4-T1-FIX2）を追加 |
+| 7.9.3 | P4-T1-FIX2はSO判定REQUEST CHANGES（証跡不足はほぼ解消と評価されたが、実装コード確認により新規BLOCKERが発見された）。`superseded_by`のNULL→非NULL遷移時にDBトリガーがquote_no・version整合性を検証しておらず、無関係な同一tenant見積への直接SQLリンクが可能・UNIQUE制約も未設定であることが判明。DB最終防御原則（0.5節）に反するため、quote_no・version照合の追加検証とUNIQUE制約追加を求めるフォローアップ指示プロンプト（P4-T1-FIX3）を追加。付随して`converted_invoice_id`の参照先整合性を要確認事項として整理 |
+| 7.9.4 | P4-T1-FIX3はSO判定REQUEST CHANGES（`superseded_by`の正当性BLOCKERは解消と評価・再掘り下げ不要）。一方、FIX3で新規追加した`invoices.source_quotation_id`について、初期設定時の整合性は確認できたが、設定後のUPDATE・NULL化を防ぐDB防御が未確認という新規BLOCKERを指摘。`invoices`側にも`quotations.superseded_by`と同水準のWORMトリガー・UNIQUE制約（NULL除外）を追加し、双方向リンクの両側を対称に不変化するよう求めるフォローアップ指示プロンプト（P4-T1-FIX4）を追加 |
+| 7.9.5 | P4-T1-FIX4はSO判定CONDITIONAL PASS。設計上の主要な未解決点（`superseded_by`正当性、`invoices.source_quotation_id`の後発改変防止）は解消済みと評価され、新たなBLOCKERは報告内容からは見当たらないと明言。残るのは`converted_invoice_id`側の既存ガード（FIX3実装分）が双方向リンク設計下でも実際に機能していることの証跡（SQL全文・E2E個別結果）確認のみ。証跡提出のみを求めるフォローアップ指示プロンプト（P4-T1-VERIFY）を追加。証跡確認後、最終PASSであればマージ指示プロンプトの作成に進む方針を明記 |
+| 7.10.0 | P4-T1-VERIFYがSO正式PASS（実DB E2E 57/57・Schema 169/169・clean DB 001〜028、`converted_invoice_id`/`source_quotation_id`双方向リンクの後発改変防止をテスト単位10.3b/10.3c/10.4/10.5/10.6で確認）。**P4-T1（見積書）が実装面で完了**。マージ指示プロンプトを追加（マージ手順・マージ後のmain実DB E2E再検証を指示）。P4-T1のマージを前提に、P4-T2（案件管理：商談パイプライン）のタスク詳細・実装指示プロンプトを追加。ロードマップ表・エグゼクティブサマリーをP4-T1 PASS（マージ待ち）に更新 |

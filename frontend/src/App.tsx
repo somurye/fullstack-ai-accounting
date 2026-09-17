@@ -155,6 +155,15 @@ const PayslipsPage = lazy(() =>
 const YearEndAdjustmentsPage = lazy(() =>
   import('./pages/year-end-adjustments/YearEndAdjustmentsPage').then((m) => ({ default: m.YearEndAdjustmentsPage })),
 );
+const QuotationListPage = lazy(() =>
+  import('./pages/quotations/QuotationListPage').then((m) => ({ default: m.QuotationListPage })),
+);
+const QuotationFormPage = lazy(() =>
+  import('./pages/quotations/QuotationFormPage').then((m) => ({ default: m.QuotationFormPage })),
+);
+const QuotationDetailPage = lazy(() =>
+  import('./pages/quotations/QuotationDetailPage').then((m) => ({ default: m.QuotationDetailPage })),
+);
 const SettingsPage = lazy(() => import('./pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
 const MobileExpenseApplyPage = lazy(() =>
   import('./pages/mobile/MobileExpenseApplyPage').then((m) => ({ default: m.MobileExpenseApplyPage })),
@@ -249,6 +258,10 @@ export default function App() {
             <Route path="/payroll-calculations" element={<PayrollCalculationsPage />} />
             <Route path="/payslips" element={<PayslipsPage />} />
             <Route path="/year-end-adjustments" element={<YearEndAdjustmentsPage />} />
+            <Route path="/quotations" element={<QuotationListPage />} />
+            <Route path="/quotations/new" element={<QuotationFormPage />} />
+            <Route path="/quotations/:id" element={<QuotationDetailPage />} />
+            <Route path="/quotations/:id/edit" element={<QuotationFormPage />} />
             <Route path="/forbidden" element={<ForbiddenPage />} />
 
             {/* 職務分掌(SoD)RBAC: 財務諸表は ADMIN / ACCOUNTANT のみ */}

@@ -2360,6 +2360,189 @@ def run_verification(dsn: str) -> int:
     r.ok("給与明細・年末調整E2E: 明細発行・PDF生成・WORM不変性・確定境界DB最終防御・自己確定防止・RLS分離が動作する (P3-T4)",
          p3t4_run.returncode == 0)
 
+    # =========================================================================
+    # 22. 【Phase 4 P4-T1】見積書 (quotations, quotation_line_items, WORM, 受注転換)
+    # =========================================================================
+    print("\n--- 22. 見積書機能 (quotations, quotation_line_items, WORM不変性, 受注転換) (P4-T1) ---")
+
+    # 22-1. 026_quotations.sql の段階適用
+    sql_026_path = SQL_DIR / "026_quotations.sql"
+    sql_026 = sql_026_path.read_text(encoding="utf-8")
+    apply_026_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_026)
+        finally:
+            conn.close()
+    except Exception as e:
+        apply_026_ok = False
+        print(f"  [ERROR] 026_quotations.sql apply failed: {e}")
+    r.ok("026_quotations.sql がエラーなく正常適用される", apply_026_ok)
+
+    # 22-2. quotations テーブル作成確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("SELECT to_regclass('quotations') IS NOT NULL AS exists")
+        quotations_tbl_exists = cur.fetchone()["exists"]
+    r.ok("quotations テーブルが正常に作成されている", quotations_tbl_exists)
+
+    # 22-3. quotations RLS確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'quotations'")
+        row = cur.fetchone()
+        quotations_rls_ok = row["relrowsecurity"] and row["relforcerowsecurity"]
+    r.ok("quotations の RLS が有効かつ FORCE されている", quotations_rls_ok)
+
+    # 22-4. quotation_line_items テーブル作成確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("SELECT to_regclass('quotation_line_items') IS NOT NULL AS exists")
+        ql_tbl_exists = cur.fetchone()["exists"]
+    r.ok("quotation_line_items テーブルが正常に作成されている", ql_tbl_exists)
+
+    # 22-5. quotation_line_items RLS確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'quotation_line_items'")
+        row = cur.fetchone()
+        ql_rls_ok = row["relrowsecurity"] and row["relforcerowsecurity"]
+    r.ok("quotation_line_items の RLS が有効かつ FORCE されている", ql_rls_ok)
+
+    # 22-6. permissions の登録確認 (quotation.*)
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("""SELECT code FROM permissions WHERE code IN (
+            'quotation.create', 'quotation.view', 'quotation.edit',
+            'quotation.send', 'quotation.convert'
+        )""")
+        perm_codes = {row["code"] for row in cur.fetchall()}
+    r.ok("見積書の全権限 (5種) が permissions テーブルに登録されている",
+         len(perm_codes) == 5, f"実測登録数: {len(perm_codes)} / 5")
+
+    # 22-7. 段階的アップグレード・冪等性検証 (026を2回連続適用してもエラーにならないこと)
+    idempotent_026_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_026)
+        finally:
+            conn.close()
+    except Exception as e:
+        idempotent_026_ok = False
+        print(f"  [ERROR] 026 re-apply failed: {e}")
+    r.ok("段階的アップグレード検証 14: 026を2回連続適用してもエラーにならず正常終了する (DDL 冪等性保証)",
+         idempotent_026_ok)
+
+    # =========================================================================
+    # 23. 【Phase 4 P4-T1-FIX3】改訂先正当性・受注転換双方向DB検証 (027追加マイグレーション)
+    # =========================================================================
+    print("\n--- 23. 改訂先正当性・受注転換双方向DBガード (027追加マイグレーション) (P4-T1-FIX3) ---")
+
+    # 23-1. 027_quotation_revision_and_conversion_guards.sql の段階適用
+    sql_027_path = SQL_DIR / "027_quotation_revision_and_conversion_guards.sql"
+    sql_027 = sql_027_path.read_text(encoding="utf-8")
+    apply_027_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_027)
+        finally:
+            conn.close()
+    except Exception as e:
+        apply_027_ok = False
+        print(f"  [ERROR] 027_quotation_revision_and_conversion_guards.sql apply failed: {e}")
+    r.ok("027_quotation_revision_and_conversion_guards.sql がエラーなく正常適用される", apply_027_ok)
+
+    # 23-2. invoices.source_quotation_id 列の存在確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("""SELECT count(*) as cnt FROM information_schema.columns
+                       WHERE table_name = 'invoices' AND column_name = 'source_quotation_id'""")
+        source_quote_col_exists = (cur.fetchone()["cnt"] == 1)
+    r.ok("invoices テーブルに source_quotation_id 列が存在する (BLOCKER候補-02a)", source_quote_col_exists)
+
+    # 23-3. quotations.superseded_by 部分UNIQUEインデックス存在確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("""SELECT count(*) as cnt FROM pg_indexes
+                       WHERE tablename = 'quotations' AND indexname = 'ix_quotations_superseded_by_unique'""")
+        superseded_idx_exists = (cur.fetchone()["cnt"] == 1)
+    r.ok("quotations テーブルに superseded_by 部分UNIQUEインデックスが存在する (BLOCKER-01)", superseded_idx_exists)
+
+    # 23-4. 段階的アップグレード・冪等性検証 (027を2回連続適用してもエラーにならないこと)
+    idempotent_027_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_027)
+        finally:
+            conn.close()
+    except Exception as e:
+        idempotent_027_ok = False
+        print(f"  [ERROR] 027 re-apply failed: {e}")
+    r.ok("段階的アップグレード検証 15: 027を2回連続適用してもエラーにならず正常終了する (DDL 冪等性保証)",
+         idempotent_027_ok)
+
+    # =========================================================================
+    # 24. 【Phase 4 P4-T1-FIX4】invoice.source_quotation_id WORMガード (028追加マイグレーション)
+    # =========================================================================
+    print("\n--- 24. invoice.source_quotation_id WORM不変性ガード (028追加マイグレーション) (P4-T1-FIX4) ---")
+
+    # 24-1. 028_invoice_source_quotation_guard.sql の段階適用
+    sql_028_path = SQL_DIR / "028_invoice_source_quotation_guard.sql"
+    sql_028 = sql_028_path.read_text(encoding="utf-8")
+    apply_028_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_028)
+        finally:
+            conn.close()
+    except Exception as e:
+        apply_028_ok = False
+        print(f"  [ERROR] 028_invoice_source_quotation_guard.sql apply failed: {e}")
+    r.ok("028_invoice_source_quotation_guard.sql がエラーなく正常適用される", apply_028_ok)
+
+    # 24-2. invoices.source_quotation_id 部分UNIQUEインデックス存在確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("""SELECT count(*) as cnt FROM pg_indexes
+                       WHERE tablename = 'invoices' AND indexname = 'ix_invoices_source_quotation_unique'""")
+        inv_source_quote_idx_exists = (cur.fetchone()["cnt"] == 1)
+    r.ok("invoices テーブルに source_quotation_id 部分UNIQUEインデックスが存在する (BLOCKER)", inv_source_quote_idx_exists)
+
+    # 24-3. 段階的アップグレード・冪等性検証 (028を2回連続適用してもエラーにならないこと)
+    idempotent_028_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_028)
+        finally:
+            conn.close()
+    except Exception as e:
+        idempotent_028_ok = False
+        print(f"  [ERROR] 028 re-apply failed: {e}")
+    r.ok("段階的アップグレード検証 16: 028を2回連続適用してもエラーにならず正常終了する (DDL 冪等性保証)",
+         idempotent_028_ok)
+
+    # 24-4. 【P4-T1-FIX4実証】実DB E2Eテスト (WORM不変性, 改訂先正当性DB検証, 双方向WORM不変性・部分UNIQUE)
+    cmd_p4t1 = f"npx ts-node src/scripts/verify-quotations-e2e.ts \"{dsn}\""
+    p4t1_run = subprocess.run(cmd_p4t1, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
+    if p4t1_run.returncode != 0:
+        err_msg = f"\n[P4-T1 E2E ERROR STDOUT]:\n{p4t1_run.stdout}\n[P4-T1 E2E ERROR STDERR]:\n{p4t1_run.stderr}"
+        print(err_msg.encode("cp932", errors="replace").decode("cp932"))
+    else:
+        print("\n=== P4-T1 E2E 実測実行ログ ===")
+        print(p4t1_run.stdout)
+    r.ok("見積書E2E: 作成・WORM・改訂先正当性DB検証・双方向WORM不変性・部分UNIQUE・PDF生成・RLSが動作する (P4-T1-FIX4)",
+         p4t1_run.returncode == 0)
+
     return r.summary()
 
 
@@ -2388,12 +2571,12 @@ def main() -> int:
 
         # 1. まず 001〜014 までを適用 (P1-T5マージ直後の既存DB状態を再現)
         apply_schema(dsn, max_file="014_general_requests.sql")
-        # 2. 検証実行 (セクション12で015、...、セクション20で024、セクション21で025段階適用 -> E2E実行)
+        # 2. 検証実行 (セクション12で015、...、セクション21で025、セクション22で026、セクション23で027、セクション24で028段階適用 -> E2E実行)
         exit_code = run_verification(dsn)
 
-        # 3. クリーンDBに最初から001〜025を一括適用した場合の回帰なし確認
+        # 3. クリーンDBに最初から001〜028を一括適用した場合の回帰なし確認
         if exit_code == 0:
-            fresh_db_name = "keiri_kaikei_fresh_025"
+            fresh_db_name = "keiri_kaikei_fresh_028"
             conn_raw = psycopg2.connect(dsn)
             conn_raw.autocommit = True
             try:
@@ -2404,9 +2587,9 @@ def main() -> int:
                 conn_raw.close()
 
             dsn_fresh = dsn.rsplit("/", 1)[0] + f"/{fresh_db_name}"
-            print("\n--- クリーンDBへの001〜025一括適用検証 (新規環境回帰なし確認) ---")
+            print("\n--- クリーンDBへの001〜028一括適用検証 (新規環境回帰なし確認) ---")
             apply_schema(dsn_fresh)
-            print("[schema] クリーンDBへの001〜025一括適用が正常終了しました (回帰なし確認完了)")
+            print("[schema] クリーンDBへの001〜028一括適用が正常終了しました (回帰なし確認完了)")
     finally:
         if args.use_docker and not args.keep_docker:
             docker_stop()

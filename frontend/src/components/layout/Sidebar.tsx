@@ -6,6 +6,7 @@ import {
   Calculator,
   Clock,
   FileCheck,
+  FileSpreadsheet,
   FileStack,
   FileText,
   Landmark,
@@ -102,6 +103,12 @@ const NAV_GROUPS: NavGroup[] = [
       { label: '給与計算', to: '/payroll-calculations', icon: Banknote },
       { label: '給与明細', to: '/payslips', icon: FileText },
       { label: '年末調整', to: '/year-end-adjustments', icon: Calculator },
+    ],
+  },
+  {
+    title: '営業事務 (Phase 4)',
+    items: [
+      { label: '見積書', to: '/quotations', icon: FileSpreadsheet },
     ],
   },
   {

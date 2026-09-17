@@ -48,6 +48,7 @@ import { RateMastersModule } from './modules/rate-masters/rate-masters.module';
 import { PayrollCalculationsModule } from './modules/payroll-calculations/payroll-calculations.module';
 import { PayslipsModule } from './modules/payslips/payslips.module';
 import { YearEndAdjustmentsModule } from './modules/year-end-adjustments/year-end-adjustments.module';
+import { QuotationsModule } from './modules/quotations/quotations.module';
 
 /**
  * AppModule
@@ -113,6 +114,7 @@ import { YearEndAdjustmentsModule } from './modules/year-end-adjustments/year-en
     PayrollCalculationsModule,
     PayslipsModule,
     YearEndAdjustmentsModule,
+    QuotationsModule,
   ],
   controllers: [],
   providers: [
