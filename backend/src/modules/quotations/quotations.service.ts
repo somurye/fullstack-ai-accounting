@@ -696,11 +696,28 @@ export class QuotationsService {
 
       const defaultTaxRes = await client.query<{ id: string }>(
         `SELECT id FROM tax_categories WHERE tenant_id = $1 AND is_active = TRUE ORDER BY code ASC LIMIT 1`,
-        [tenantId],
+        [quote.tenant_id],
       );
-      const fallbackTaxCategoryId = defaultTaxRes.rows[0]?.id;
+      let fallbackTaxCategoryId = defaultTaxRes.rows[0]?.id;
+      if (!fallbackTaxCategoryId) {
+        const createTaxRes = await client.query<{ id: string }>(
+          `INSERT INTO tax_categories (tenant_id, code, name, tax_type, tax_rate, is_active)
+           VALUES ($1, 'TAX10', '標準税率 10%', 'taxable', 10.00, TRUE)
+           ON CONFLICT (tenant_id, code) DO UPDATE SET is_active = TRUE
+           RETURNING id`,
+          [quote.tenant_id],
+        );
+        fallbackTaxCategoryId = createTaxRes.rows[0].id;
+      }
 
-      // 5. 請求書 (invoices) レコード作成 (status: 'draft')
+      // 5. 請求書 (invoices) レコード作成
+      // 【設計判断 (P4-T1-FIX)】:
+      // 見積の受注転換に伴い生成される請求書は必ず未確定の 'draft' 状態として起票される。
+      // 見積の受注転換は商談成約に基づく「請求書の下書き起票」を意味し、請求確定・外部送付を
+      // 自動的に行うものではない。既存の請求書発行フロー上の通常確認・確定操作を経て初めて
+      // 正式な請求書となる。
+      // また、tenant_id ($1) はクライアント入力ではなく、変換元見積の quote.tenant_id
+      // (DBから直接取得した値) を強制的に導出してバインドする。
       const insertInvoiceSql = `
         INSERT INTO invoices (
           tenant_id, invoice_no, customer_id, issue_date, due_date,
@@ -712,17 +729,18 @@ export class QuotationsService {
         RETURNING id
       `;
       const invoiceInsertRes = await client.query<{ id: string }>(insertInvoiceSql, [
-        tenantId,
+        quote.tenant_id, // 変換元見積の tenant_id をサーバ側で強制導出
         invoiceNo,
         quote.customer_id,
         quote.subtotal,
         quote.tax_amount,
         quote.currency_code || 'JPY',
-        userId,
+        userId, // 認証済みセッション (JWT) 由来のユーザーID
       ]);
       const invoiceId = invoiceInsertRes.rows[0].id;
 
       // 6. 請求書明細 (invoice_lines) レコード作成
+      // invoice_lines の tenant_id も変換元見積の quote.tenant_id を強制導出
       for (const line of lines) {
         await client.query(
           `
@@ -735,7 +753,7 @@ export class QuotationsService {
           )
           `,
           [
-            tenantId,
+            quote.tenant_id, // 変換元見積の tenant_id をサーバ側で強制導出
             invoiceId,
             line.line_no,
             line.item_name + (line.description ? ` (${line.description})` : ''),

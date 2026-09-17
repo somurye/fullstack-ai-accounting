@@ -260,10 +260,29 @@ BEGIN
         END IF;
     END IF;
 
-    -- 6.3 sent 以降の確定状態における不変性強制 (WORM特性)
-    -- status 以外の重要列（金額・明細・顧客・番号等）の改変を fail-closed に禁止
+    -- 6.3 sent 以降の確定状態における不変性強制 (WORM特性, 計画書6.2節 原則1)
     IF OLD.status IN ('sent', 'accepted', 'rejected', 'expired') THEN
-        IF OLD.customer_id IS DISTINCT FROM NEW.customer_id
+        -- 6.3.1 superseded_by の自己循環参照禁止
+        IF NEW.superseded_by = OLD.id THEN
+            RAISE EXCEPTION 'quotation (%) cannot be superseded by itself',
+                OLD.quote_no
+                USING ERRCODE = '23001';
+        END IF;
+
+        -- 6.3.2 superseded_by の例外制御 (改訂リンク):
+        -- 「NULL → 新バージョンの見積IDへの一度きりの遷移」のみを機械的に許可する。
+        -- 既に設定済みの場合はいかなる変更も拒絶し、NULLへの巻き戻しも拒絶する。
+        IF OLD.superseded_by IS NOT NULL AND NEW.superseded_by IS DISTINCT FROM OLD.superseded_by THEN
+            RAISE EXCEPTION 'quotation (%) already superseded by %; cannot re-assign superseded_by',
+                OLD.quote_no, OLD.superseded_by
+                USING ERRCODE = '55000';
+        END IF;
+
+        -- 6.3.3 業務内容を構成する重要列の改変を fail-closed に一切禁止
+        -- 注: total_amount は GENERATED STORED (subtotal + tax_amount) のため、
+        -- subtotal および tax_amount の不変性検証により合計金額も完全に保護される。
+        IF OLD.tenant_id IS DISTINCT FROM NEW.tenant_id
+           OR OLD.customer_id IS DISTINCT FROM NEW.customer_id
            OR OLD.deal_id IS DISTINCT FROM NEW.deal_id
            OR OLD.quote_no IS DISTINCT FROM NEW.quote_no
            OR OLD.title IS DISTINCT FROM NEW.title
@@ -279,13 +298,6 @@ BEGIN
         THEN
             RAISE EXCEPTION 'finalized quotation (%) is immutable; critical fields cannot be modified after sent',
                 OLD.quote_no
-                USING ERRCODE = '55000';
-        END IF;
-
-        -- superseded_by の更新は、未設定状態からの1回限りの設定のみ許可 (改訂リンク)
-        IF OLD.superseded_by IS NOT NULL AND NEW.superseded_by IS DISTINCT FROM OLD.superseded_by THEN
-            RAISE EXCEPTION 'quotation (%) already superseded by %; cannot re-assign superseded_by',
-                OLD.quote_no, OLD.superseded_by
                 USING ERRCODE = '55000';
         END IF;
     END IF;
