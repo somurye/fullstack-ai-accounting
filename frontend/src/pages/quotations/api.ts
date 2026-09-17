@@ -14,6 +14,7 @@ export interface QuotationListParams {
   limit?: number;
   status?: QuotationStatus | '';
   customer_id?: string;
+  deal_id?: string;
   search?: string;
   from_date?: string;
   to_date?: string;

@@ -2,6 +2,7 @@ import {
   Banknote,
   BarChart3,
   BookOpen,
+  Briefcase,
   Building2,
   Calculator,
   Clock,
@@ -108,6 +109,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     title: '営業事務 (Phase 4)',
     items: [
+      { label: '商談・案件管理', to: '/deals', icon: Briefcase },
       { label: '見積書', to: '/quotations', icon: FileSpreadsheet },
     ],
   },

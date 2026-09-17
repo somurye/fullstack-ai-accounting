@@ -49,6 +49,7 @@ import { PayrollCalculationsModule } from './modules/payroll-calculations/payrol
 import { PayslipsModule } from './modules/payslips/payslips.module';
 import { YearEndAdjustmentsModule } from './modules/year-end-adjustments/year-end-adjustments.module';
 import { QuotationsModule } from './modules/quotations/quotations.module';
+import { DealsModule } from './modules/deals/deals.module';
 
 /**
  * AppModule
@@ -115,6 +116,7 @@ import { QuotationsModule } from './modules/quotations/quotations.module';
     PayslipsModule,
     YearEndAdjustmentsModule,
     QuotationsModule,
+    DealsModule,
   ],
   controllers: [],
   providers: [

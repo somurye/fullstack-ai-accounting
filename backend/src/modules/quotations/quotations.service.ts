@@ -92,6 +92,11 @@ export class QuotationsService {
       params.push(query.customer_id);
     }
 
+    if (query.deal_id) {
+      conditions.push(`q.deal_id = $${paramIndex++}`);
+      params.push(query.deal_id);
+    }
+
     if (query.from_date) {
       conditions.push(`q.issue_date >= $${paramIndex++}`);
       params.push(query.from_date);

@@ -49,6 +49,7 @@ export const quotationListQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(100).default(20),
   status: z.enum(['draft', 'sent', 'accepted', 'rejected', 'expired']).optional(),
   customer_id: z.string().uuid('顧客IDはUUID形式で指定してください').optional(),
+  deal_id: z.string().uuid('案件IDはUUID形式で指定してください').optional(),
   search: z.string().trim().optional(),
   from_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   to_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),

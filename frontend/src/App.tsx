@@ -164,6 +164,15 @@ const QuotationFormPage = lazy(() =>
 const QuotationDetailPage = lazy(() =>
   import('./pages/quotations/QuotationDetailPage').then((m) => ({ default: m.QuotationDetailPage })),
 );
+const DealListPage = lazy(() =>
+  import('./pages/deals/DealListPage').then((m) => ({ default: m.DealListPage })),
+);
+const DealFormPage = lazy(() =>
+  import('./pages/deals/DealFormPage').then((m) => ({ default: m.DealFormPage })),
+);
+const DealDetailPage = lazy(() =>
+  import('./pages/deals/DealDetailPage').then((m) => ({ default: m.DealDetailPage })),
+);
 const SettingsPage = lazy(() => import('./pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
 const MobileExpenseApplyPage = lazy(() =>
   import('./pages/mobile/MobileExpenseApplyPage').then((m) => ({ default: m.MobileExpenseApplyPage })),
@@ -262,6 +271,10 @@ export default function App() {
             <Route path="/quotations/new" element={<QuotationFormPage />} />
             <Route path="/quotations/:id" element={<QuotationDetailPage />} />
             <Route path="/quotations/:id/edit" element={<QuotationFormPage />} />
+            <Route path="/deals" element={<DealListPage />} />
+            <Route path="/deals/new" element={<DealFormPage />} />
+            <Route path="/deals/:id" element={<DealDetailPage />} />
+            <Route path="/deals/:id/edit" element={<DealFormPage />} />
             <Route path="/forbidden" element={<ForbiddenPage />} />
 
             {/* 職務分掌(SoD)RBAC: 財務諸表は ADMIN / ACCOUNTANT のみ */}

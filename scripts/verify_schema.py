@@ -2543,6 +2543,85 @@ def run_verification(dsn: str) -> int:
     r.ok("見積書E2E: 作成・WORM・改訂先正当性DB検証・双方向WORM不変性・部分UNIQUE・PDF生成・RLSが動作する (P4-T1-FIX4)",
          p4t1_run.returncode == 0)
 
+    # =========================================================================
+    # 25. 【Phase 4 P4-T2】案件管理（商談パイプライン）(029_deals.sql 追加マイグレーション)
+    # =========================================================================
+    print("\n--- 25. 案件管理（商談パイプライン）(029_deals.sql 追加マイグレーション) (P4-T2) ---")
+
+    # 25-1. 029_deals.sql の段階適用
+    sql_029_path = SQL_DIR / "029_deals.sql"
+    sql_029 = sql_029_path.read_text(encoding="utf-8")
+    apply_029_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_029)
+        finally:
+            conn.close()
+    except Exception as e:
+        apply_029_ok = False
+        print(f"  [ERROR] 029_deals.sql apply failed: {e}")
+    r.ok("029_deals.sql がエラーなく正常適用される", apply_029_ok)
+
+    # 25-2. deals テーブル作成確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("SELECT to_regclass('deals') IS NOT NULL AS exists")
+        deals_tbl_exists = cur.fetchone()["exists"]
+    r.ok("deals テーブルが正常に作成されている", deals_tbl_exists)
+
+    # 25-3. deals RLS確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'deals'")
+        row = cur.fetchone()
+        deals_rls_ok = row["relrowsecurity"] and row["relforcerowsecurity"]
+    r.ok("deals の RLS が有効かつ FORCE されている", deals_rls_ok)
+
+    # 25-4. quotations.deal_id FK制約の存在確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("""SELECT count(*) as cnt FROM information_schema.table_constraints
+                       WHERE table_name = 'quotations' AND constraint_name = 'fk_quotations_deal'""")
+        fk_deal_exists = (cur.fetchone()["cnt"] == 1)
+    r.ok("quotations テーブルに fk_quotations_deal 外部キー制約が存在する", fk_deal_exists)
+
+    # 25-5. permissions の登録確認 (deal.*)
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("""SELECT code FROM permissions WHERE code IN (
+            'deal.create', 'deal.view', 'deal.edit', 'deal.close'
+        )""")
+        deal_perms = {row["code"] for row in cur.fetchall()}
+    r.ok("案件管理の全権限 (4種) が permissions テーブルに登録されている",
+         len(deal_perms) == 4, f"実測登録数: {len(deal_perms)} / 4")
+
+    # 25-6. 段階的アップグレード・冪等性検証 (029を2回連続適用してもエラーにならないこと)
+    idempotent_029_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_029)
+        finally:
+            conn.close()
+    except Exception as e:
+        idempotent_029_ok = False
+        print(f"  [ERROR] 029 re-apply failed: {e}")
+    r.ok("段階的アップグレード検証 17: 029を2回連続適用してもエラーにならず正常終了する (DDL 冪等性保証)",
+         idempotent_029_ok)
+
+    # 25-7. 【P4-T2実証】実DB E2Eテスト (案件CRUD, terminal不変性, quotations連携, RBAC, RLS)
+    cmd_p4t2 = f"npx ts-node src/scripts/verify-deals-e2e.ts \"{dsn}\""
+    p4t2_run = subprocess.run(cmd_p4t2, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
+    if p4t2_run.returncode != 0:
+        err_msg = f"\n[P4-T2 E2E ERROR STDOUT]:\n{p4t2_run.stdout}\n[P4-T2 E2E ERROR STDERR]:\n{p4t2_run.stderr}"
+        print(err_msg.encode("cp932", errors="replace").decode("cp932"))
+    else:
+        print("\n=== P4-T2 E2E 実測実行ログ ===")
+        print(p4t2_run.stdout)
+    r.ok("案件管理E2E: 作成・更新・terminal不変性(won/lost)・失注理由必須・quotations外部キー連携・RBAC・RLSが動作する (P4-T2)",
+         p4t2_run.returncode == 0)
+
     return r.summary()
 
 
@@ -2571,12 +2650,12 @@ def main() -> int:
 
         # 1. まず 001〜014 までを適用 (P1-T5マージ直後の既存DB状態を再現)
         apply_schema(dsn, max_file="014_general_requests.sql")
-        # 2. 検証実行 (セクション12で015、...、セクション21で025、セクション22で026、セクション23で027、セクション24で028段階適用 -> E2E実行)
+        # 2. 検証実行 (セクション12で015、...、セクション21で025、セクション22で026、セクション23で027、セクション24で028、セクション25で029段階適用 -> E2E実行)
         exit_code = run_verification(dsn)
 
-        # 3. クリーンDBに最初から001〜028を一括適用した場合の回帰なし確認
+        # 3. クリーンDBに最初から001〜029を一括適用した場合の回帰なし確認
         if exit_code == 0:
-            fresh_db_name = "keiri_kaikei_fresh_028"
+            fresh_db_name = "keiri_kaikei_fresh_029"
             conn_raw = psycopg2.connect(dsn)
             conn_raw.autocommit = True
             try:
@@ -2587,9 +2666,9 @@ def main() -> int:
                 conn_raw.close()
 
             dsn_fresh = dsn.rsplit("/", 1)[0] + f"/{fresh_db_name}"
-            print("\n--- クリーンDBへの001〜028一括適用検証 (新規環境回帰なし確認) ---")
+            print("\n--- クリーンDBへの001〜029一括適用検証 (新規環境回帰なし確認) ---")
             apply_schema(dsn_fresh)
-            print("[schema] クリーンDBへの001〜028一括適用が正常終了しました (回帰なし確認完了)")
+            print("[schema] クリーンDBへの001〜029一括適用が正常終了しました (回帰なし確認完了)")
     finally:
         if args.use_docker and not args.keep_docker:
             docker_stop()
