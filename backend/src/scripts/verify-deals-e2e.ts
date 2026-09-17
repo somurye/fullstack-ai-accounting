@@ -176,6 +176,25 @@ async function main() {
     assert(deal1Updated.expected_amount === 5500000, '予想金額が更新されたこと');
     assert(deal1Updated.is_terminal === false, '更新後も終端状態ではないこと');
 
+    // 3.2 設計確認-01: 非終端ステージ間の任意遷移 (前進スキップおよび後退) が意図通り許可されていることの実証
+    // 3.2.1 proposal -> negotiation (通常前進)
+    const deal1Negotiation = await dealsService.update(tenantA, userEmployeeA, ['employee'], deal1.id, {
+      stage: 'negotiation',
+    });
+    assert(deal1Negotiation.stage === 'negotiation', '設計確認-01: proposalからnegotiationへの前進が成功すること');
+
+    // 3.2.2 negotiation -> qualified (後退遷移: 再提案・条件見直し)
+    const deal1Backward = await dealsService.update(tenantA, userEmployeeA, ['employee'], deal1.id, {
+      stage: 'qualified',
+    });
+    assert(deal1Backward.stage === 'qualified', '設計確認-01: negotiationからqualifiedへの後退遷移が意図通り成功すること (非線形遷移許容)');
+
+    // 3.2.3 qualified -> negotiation (スキップ前進)
+    const deal1ReAdvance = await dealsService.update(tenantA, userEmployeeA, ['employee'], deal1.id, {
+      stage: 'negotiation',
+    });
+    assert(deal1ReAdvance.stage === 'negotiation', '設計確認-01: qualifiedからnegotiationへのスキップ前進が成功すること');
+
     // ------------------------------------------------------------------------
     // 4. RBAC多層防御検証
     // ------------------------------------------------------------------------
@@ -259,7 +278,7 @@ async function main() {
     }
     assert(crossCustBlocked, 'DBトリガー: 別テナント顧客を指定した案件INSERTが拒絶されること (ERRCODE: 23503)');
 
-    // 6.2 テナントAの案件にテナントBの担当者を指定
+    // 6.2 テナントAの案件にテナントBの担当者を指定 (証跡確認-02: DBトリガー検証)
     let crossOwnerBlocked = false;
     try {
       await client.query(
@@ -270,6 +289,31 @@ async function main() {
       if (e.code === '23503') crossOwnerBlocked = true;
     }
     assert(crossOwnerBlocked, 'DBトリガー: 別テナント担当者を指定した案件INSERTが拒絶されること (ERRCODE: 23503)');
+
+    // 6.3 存在しない owner_user_id を指定した案件INSERT (証跡確認-02: FK制約検証)
+    let nonExistentOwnerBlocked = false;
+    const dummyUserId = uuidv4();
+    try {
+      await client.query(
+        `INSERT INTO deals (tenant_id, customer_id, title, owner_user_id, created_by) VALUES ($1, $2, '架空担当者案件', $3, $4)`,
+        [tenantA, customerA, dummyUserId, userOwnerA],
+      );
+    } catch (e: any) {
+      if (e.code === '23503') nonExistentOwnerBlocked = true;
+    }
+    assert(nonExistentOwnerBlocked, 'DB制約: 存在しないowner_user_idを指定した案件INSERTがFK制約違反で拒絶されること (ERRCODE: 23503)');
+
+    // 6.4 担当者変更時に別テナント担当者を指定したUPDATE (証跡確認-02: UPDATE時トリガー検証)
+    let updateCrossOwnerBlocked = false;
+    try {
+      await client.query(
+        `UPDATE deals SET owner_user_id = $1 WHERE id = $2`,
+        [userEmployeeB, deal1.id],
+      );
+    } catch (e: any) {
+      if (e.code === '23503') updateCrossOwnerBlocked = true;
+    }
+    assert(updateCrossOwnerBlocked, 'DBトリガー: 担当者変更時に別テナント担当者を指定したUPDATEが拒絶されること (ERRCODE: 23503)');
 
     // ------------------------------------------------------------------------
     // 7. 失注(lost)時の失注理由(lost_reason)必須チェック (DBトリガー & アプリ層)
@@ -329,6 +373,47 @@ async function main() {
     assert(dealWonClosed.is_terminal === true, 'wonは終端状態であること');
     assert(dealWonClosed.closed_at !== null, 'closed_atが自動設定されたこと');
 
+    // 8.3 証跡確認-03: 認証actorの実装確認 (クライアント偽装入力の無視 & セッション強制導出検証)
+    const spoofedUserId = uuidv4();
+    const dealActorTest = await dealsService.create(
+      tenantA,
+      userEmployeeA,
+      ['employee'],
+      {
+        customer_id: customerA,
+        title: '認証actor検証案件',
+        stage: 'lead',
+        // クライアント側から偽装されたIDが渡されたケースをシミュレート
+        ...({ created_by: spoofedUserId, userId: spoofedUserId } as any),
+      },
+    );
+    // deals.created_by がクライアント偽装値ではなく認証済みユーザー userEmployeeA であること
+    const dealActorCreatedRes = await client.query(`SELECT created_by FROM deals WHERE id = $1`, [dealActorTest.id]);
+    assert(
+      dealActorCreatedRes.rows[0].created_by === userEmployeeA,
+      '証跡確認-03: deal.create でクライアントが指定した偽装 created_by/userId は無視され、認証セッションのユーザーIDが強制導出されること',
+    );
+
+    // deal.close 時に偽装パラメータを渡しても無視され、認証セッションのユーザーIDで監査ログが記録されること
+    await dealsService.close(
+      tenantA,
+      userEmployeeA,
+      ['employee'],
+      dealActorTest.id,
+      {
+        stage: 'won',
+        ...({ userId: spoofedUserId, closed_by: spoofedUserId } as any),
+      },
+    );
+    const auditCloseRes = await client.query(
+      `SELECT actor_user_id FROM audit_logs WHERE target_id = $1 AND action = 'deal.close' ORDER BY occurred_at DESC LIMIT 1`,
+      [dealActorTest.id],
+    );
+    assert(
+      auditCloseRes.rows[0].actor_user_id === userEmployeeA,
+      '証跡確認-03: deal.close でクライアントが指定した偽装 userId/closed_by は無視され、監査ログ actor_user_id は認証セッションのユーザーIDが強制導出されること',
+    );
+
     // ------------------------------------------------------------------------
     // 9. terminal状態(won/lost)からの不変性ガード (DBトリガー fail-closed: 55000)
     // ------------------------------------------------------------------------
@@ -386,6 +471,33 @@ async function main() {
       if (e.code === '55000') deleteLostBlocked = true;
     }
     assert(deleteLostBlocked, 'DBトリガー: lost状態案件の物理DELETEがfail-closed拒絶されること (ERRCODE: 55000)');
+
+    // 9.7 証跡確認-04: won状態案件の closed_at 列への直接UPDATE (別日時への改変) が拒絶されること
+    let updateWonClosedAtBlocked = false;
+    try {
+      await client.query(`UPDATE deals SET closed_at = now() + interval '1 day' WHERE id = $1`, [deal1.id]);
+    } catch (e: any) {
+      if (e.code === '55000') updateWonClosedAtBlocked = true;
+    }
+    assert(updateWonClosedAtBlocked, '証跡確認-04: DBトリガーにより won状態案件の closed_at 直接変更が拒絶されること (ERRCODE: 55000)');
+
+    // 9.8 証跡確認-04: won状態案件の closed_at NULL巻き戻しが拒絶されること
+    let rollbackWonClosedAtBlocked = false;
+    try {
+      await client.query(`UPDATE deals SET closed_at = NULL WHERE id = $1`, [deal1.id]);
+    } catch (e: any) {
+      if (e.code === '55000') rollbackWonClosedAtBlocked = true;
+    }
+    assert(rollbackWonClosedAtBlocked, '証跡確認-04: DBトリガーにより won状態案件の closed_at NULL巻き戻しが拒絶されること (ERRCODE: 55000)');
+
+    // 9.9 証跡確認-04: lost状態案件の closed_at NULL巻き戻しが拒絶されること
+    let rollbackLostClosedAtBlocked = false;
+    try {
+      await client.query(`UPDATE deals SET closed_at = NULL WHERE id = $1`, [dealLost.id]);
+    } catch (e: any) {
+      if (e.code === '55000') rollbackLostClosedAtBlocked = true;
+    }
+    assert(rollbackLostClosedAtBlocked, '証跡確認-04: DBトリガーにより lost状態案件の closed_at NULL巻き戻しが拒絶されること (ERRCODE: 55000)');
 
     // ------------------------------------------------------------------------
     // 10. quotations.deal_id への外部キー制約および連携検証

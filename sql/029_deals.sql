@@ -14,9 +14,13 @@
 --   1. 完全テナント分離: ENABLE + FORCE ROW LEVEL SECURITY (fail-closed)
 --   2. テナント整合性のDBトリガー保証 (MAJOR-02教訓):
 --      customer_id, owner_user_id, created_by の tenant_id 整合性をDBトリガーで強制検証
---   3. 終端状態 (won / lost) の不可変性 (P3給与計算finalizedパターン準拠):
---      won または lost への遷移後は、stageおよび業務列の変更・レコード物理削除を
---      DBトリガーで fail-closed (ERRCODE: 55000) に遮断。
+--   3. ステージ遷移設計と終端状態 (won / lost) の不可変性 (設計確認-01 & 証跡確認-04):
+--      - 非終端ステージ間 (lead, qualified, proposal, negotiation) の遷移は、商談の実務プロセス
+--        (再提案・条件確認による後退、即時商談化によるスキップ等) に合わせて双方向・非線形な遷移を
+--        意図的に許容 (DBによる順序強制なし)。
+--      - 終端状態 (won または lost) への遷移のみを一方向・不可逆として保護。
+--      - 終端状態到達後は、stageおよび業務列、closed_at を含む全列の変更・レコード物理削除を
+--        DBトリガーで fail-closed (ERRCODE: 55000) に遮断。
 --   4. lost時の理由必須保証 (fail-closed):
 --      lost への遷移時は lost_reason が必須 (空文字・NULL拒絶: ERRCODE: 23514)
 --   5. quotations.deal_id への外部キー制約とテナント整合性保証:
