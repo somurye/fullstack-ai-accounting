@@ -1,7 +1,7 @@
 # keiri-kaikei 全社バックオフィス統合SaaS 拡張計画書
 
 - 文書番号: PLAN-01
-- バージョン: 7.9.4
+- バージョン: 7.9.5
 - 対象リポジトリ: `fullstack-ai-accounting`（経理・会計基盤）
 - 関連文書: `docs/01_requirements.md`, `docs/02_architecture.md`, `docs/03_database_design.md`
 
@@ -20,18 +20,18 @@
 | Phase 1 | 総務・法務（契約書管理） | ✅ 完了 | 6/6 | 平均2〜3回、最大4回（P1-T5） |
 | Phase 2 | 購買・調達 | ✅ 完了 | 4/4 | 平均2回、最大3回（P2-T2/P2-T3） |
 | Phase 3 | 人事労務 | ✅ 完了 | 4/4 | 平均2〜3回、最大6回（P3-T3） |
-| Phase 4 | 営業事務 | 🔵 着手中 | 0/4 | P4-T1のFIX3で`superseded_by`は解消、新規BLOCKERでP4-T1-FIX4対応中 |
+| Phase 4 | 営業事務 | 🔵 着手中 | 0/4 | P4-T1がCONDITIONAL PASS、証跡確認のP4-T1-VERIFY対応中 |
 | Phase 5 | 統合最適化 | 未着手 | - | - |
 
 ### 直近のアクション
 
-- P4-T1-FIX3の完了報告に対し、ChatGPT(SO)は前回BLOCKER（`superseded_by`の正当性未検証）
-  は解消と評価した（再度の掘り下げは不要と明言）。一方、FIX3で新規に追加した
-  `invoices.source_quotation_id`（見積→invoice逆参照）について、初期設定時の整合性は
-  確認できたが、**設定後にUPDATE・NULL化されても防御されるか**が未確認と指摘。
-  双方向リンクの片側だけ不変性を保証しても不十分であるため、`invoices`側にも
-  `quotations.superseded_by`と同水準のWORMトリガー・UNIQUE制約を追加するフォローアップ
-  指示プロンプト（P4-T1-FIX4）を作成した。次はこれをGeminiに渡す。
+- P4-T1-FIX4の完了報告に対し、ChatGPT(SO)はCONDITIONAL PASSと判定。設計上の主要な
+  未解決点（`superseded_by`の正当性、`invoices.source_quotation_id`の後発改変防止）は
+  解消済みと評価され、**新たなBLOCKERは見当たらない**。残るのは`converted_invoice_id`
+  側の既存ガード（FIX3実装分）が双方向リンク設計下でも実際に機能していることの、
+  SQL全文・E2Eテスト個別結果による最終確認のみ。証跡提出のみを求めるフォローアップ
+  指示プロンプト（P4-T1-VERIFY）を作成した。次はこれをGeminiに渡す。証跡が確認できれば
+  最終PASS・マージ指示に進む見込み。
 - DEBT-020（main実DB E2E未実行）は解消済み。DEBT-021（年末調整はtax_year=2026限定）等、
   低リスクの技術的負債が7節に継続記録されている。
 
@@ -3788,7 +3788,7 @@ Phase 3（人事労務）と比べて低い。
 
 | タスクID | タスク名 | 概要 | 依存 | ステータス |
 |----------|----------|------|------|-----------|
-| P4-T1 | 見積書（見積作成・確定・受注転換） | 見積の作成・明細管理、`draft`→`sent`→`accepted`/`rejected`/`expired`の状態遷移、確定後の不変性、受注への一方向変換 | P0-T1, P0-T4 | 🔴 SO判定REQUEST CHANGES（`superseded_by`は解消。新規BLOCKER: `invoices.source_quotation_id`の後発改変防止が未確認。P4-T1-FIX4で修正指示中） |
+| P4-T1 | 見積書（見積作成・確定・受注転換） | 見積の作成・明細管理、`draft`→`sent`→`accepted`/`rejected`/`expired`の状態遷移、確定後の不変性、受注への一方向変換 | P0-T1, P0-T4 | 🟡 SO判定CONDITIONAL PASS（設計上のBLOCKERは解消済み。証跡確認のみでP4-T1-VERIFY対応中） |
 | P4-T2 | 案件管理（商談パイプライン） | 案件（商談）の登録・ステージ管理（見込み〜受注/失注）、見積との紐付け | P4-T1 | ⏳ P4-T1の実装結果を踏まえてタスク分解予定 |
 | P4-T3 | 契約更新連携 | Phase 1の契約更新期限アラート（P1-T4）と営業案件・見積を連携し、更新期限が近い契約から更新提案の案件・見積を起票できるようにする | P4-T1, P4-T2 | ⏳ 未分解 |
 | P4-T4 | 営業ダッシュボード・レポート | 案件パイプライン・見積成約率等の可視化（P2-T4の購買ダッシュボードと同様の設計パターン） | P4-T1, P4-T2, P4-T3 | ⏳ 未分解 |
@@ -4191,6 +4191,53 @@ UPDATE・NULL化されても防御されるか**が報告に含まれていな�
 
 ---
 
+#### 【フォローアップ指示プロンプト P4-T1-VERIFY】CONDITIONAL PASS対応（証跡確認のみ・新規BLOCKERなし）
+
+ChatGPT(SO)よりP4-T1-FIX4は「CONDITIONAL PASS」と判定された。設計・実装上の主要な
+未解決点（`superseded_by`の正当性、`invoices.source_quotation_id`の後発改変防止）は
+FIX3・FIX4で解消済みと評価されており、**新たなBLOCKERは報告内容からは見当たらない**。
+残るのは、`converted_invoice_id`側の既存ガード（FIX3で実装済み）が、FIX4の双方向リンク
+設計と組み合わせても実際に成立していることを、テストコード・実行ログ・SQL実体で最終確認
+することのみである。
+
+```
+# SOレビュー結果：P4-T1-FIX4 CONDITIONAL PASS（証跡確認のみで最終PASS判定可能）
+設計上のBLOCKERはFIX3・FIX4で解消済みと評価されている。以下の証跡を提示すれば、
+コードの追加変更なしに最終PASS判定に進める可能性がある。
+
+# 提出必須の証跡
+1. `sql/027_quotation_revision_and_conversion_guards.sql`および
+   `sql/028_invoice_source_quotation_guard.sql`の完全なコード全文
+2. 55項目E2Eのうち、以下の観点を検証しているテストの該当箇所（テスト名・検証内容・結果）
+   - `quotations.converted_invoice_id`が設定済みの状態から、直接SQLで別のinvoiceへの
+     変更を試みて拒絶されること（FIX3のガードが、FIX4で追加した双方向リンクの状態でも
+     引き続き機能していることの確認）
+   - `quotations.converted_invoice_id`を設定済みの状態からNULLへUPDATEしようとして
+     拒絶されること
+   - `invoices.source_quotation_id`の別quotationへの付け替え拒絶
+   - `invoices.source_quotation_id`のNULLへのrollback拒絶
+   - 同一quotationに対する2件目のinvoiceでの`source_quotation_id`設定がUNIQUE制約で
+     拒絶されること
+3. `git diff --name-only <FIX4開始時点のbase>...HEAD`（target files以外の変更がないこと
+   の確認用）
+
+# 受け入れ基準（Definition of Done）
+- [ ] 上記のSQLファイル全文が完了報告に添付されている
+- [ ] 上記5項目の該当E2Eテストが個別に識別できる形（テスト名・検証内容・結果）で提示
+      されている
+- [ ] `converted_invoice_id`側のFIX3ガードが、双方向リンクの状態でも実際に機能して
+      いることが証跡から確認できる
+- [ ] コミットSHA・ブランチ名（本計画書0.4節）が明記されている（追加変更がない場合は
+      FIX4完了時点と同一のSHAでよい）
+
+なお、本プロンプトは新たな設計変更・コード修正を求めるものではない。証跡の提示のみで
+上記が確認できれば、Claude（進行管理）はその内容を整理してChatGPT(SO)に再提示し、
+最終PASS判定を経てマージ指示プロンプトの作成に進む。証跡確認の結果、実際にはガードが
+機能していないことが判明した場合に限り、P4-T1-FIX5として個別に修正を求める。
+```
+
+---
+
 ## 7. 既知の技術的負債・フォローアップ事項
 
 タスク完了時にSOが「修正不要だが記録すべき」と判定した事項を追跡する。将来の関連タスク着手時に必ず参照すること。
@@ -4302,3 +4349,4 @@ UPDATE・NULL化されても防御されるか**が報告に含まれていな�
 | 7.9.2 | P4-T1-FIXがSO判定REQUEST CHANGES継続。設計面（WORM/`superseded_by`例外/同時実行/invoice側tenant導出/JWT認証主体/日本語PDF）は方向性として妥当と確認され、新たな設計変更要求はなし。残課題はgit diff・実装コード全文・44項目E2Eの個別結果という証跡の未提出のみと整理。証跡提出専用のフォローアップ指示プロンプト（P4-T1-FIX2）を追加 |
 | 7.9.3 | P4-T1-FIX2はSO判定REQUEST CHANGES（証跡不足はほぼ解消と評価されたが、実装コード確認により新規BLOCKERが発見された）。`superseded_by`のNULL→非NULL遷移時にDBトリガーがquote_no・version整合性を検証しておらず、無関係な同一tenant見積への直接SQLリンクが可能・UNIQUE制約も未設定であることが判明。DB最終防御原則（0.5節）に反するため、quote_no・version照合の追加検証とUNIQUE制約追加を求めるフォローアップ指示プロンプト（P4-T1-FIX3）を追加。付随して`converted_invoice_id`の参照先整合性を要確認事項として整理 |
 | 7.9.4 | P4-T1-FIX3はSO判定REQUEST CHANGES（`superseded_by`の正当性BLOCKERは解消と評価・再掘り下げ不要）。一方、FIX3で新規追加した`invoices.source_quotation_id`について、初期設定時の整合性は確認できたが、設定後のUPDATE・NULL化を防ぐDB防御が未確認という新規BLOCKERを指摘。`invoices`側にも`quotations.superseded_by`と同水準のWORMトリガー・UNIQUE制約（NULL除外）を追加し、双方向リンクの両側を対称に不変化するよう求めるフォローアップ指示プロンプト（P4-T1-FIX4）を追加 |
+| 7.9.5 | P4-T1-FIX4はSO判定CONDITIONAL PASS。設計上の主要な未解決点（`superseded_by`正当性、`invoices.source_quotation_id`の後発改変防止）は解消済みと評価され、新たなBLOCKERは報告内容からは見当たらないと明言。残るのは`converted_invoice_id`側の既存ガード（FIX3実装分）が双方向リンク設計下でも実際に機能していることの証跡（SQL全文・E2E個別結果）確認のみ。証跡提出のみを求めるフォローアップ指示プロンプト（P4-T1-VERIFY）を追加。証跡確認後、最終PASSであればマージ指示プロンプトの作成に進む方針を明記 |

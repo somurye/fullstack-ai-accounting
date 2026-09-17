@@ -585,6 +585,34 @@ async function main() {
     }
     assert(unrelatedInvoiceRejected, 'DBトリガー: source_quotation_idが一致しない無関係なinvoiceへの converted_invoice_id 設定が拒絶されること (ERRCODE: 55000)');
 
+    // 10.3b (P4-T1-VERIFY): 設定済み quotations.converted_invoice_id に対する別の invoice への変更試行がDBトリガーで拒絶されること
+    let updateConvertedInvoiceRejected = false;
+    try {
+      await client.query(
+        `UPDATE quotations SET converted_invoice_id = $1 WHERE id = $2`,
+        [unrelatedInvoiceId, concurQuote.id],
+      );
+    } catch (err: any) {
+      if (err.code === '55000' || err.message?.includes('already converted')) {
+        updateConvertedInvoiceRejected = true;
+      }
+    }
+    assert(updateConvertedInvoiceRejected, 'DBトリガー: 設定済みquotations.converted_invoice_idの別invoiceへの改変が拒絶されること (ERRCODE: 55000)');
+
+    // 10.3c (P4-T1-VERIFY): 設定済み quotations.converted_invoice_id に対する NULL 巻き戻し試行がDBトリガーで拒絶されること
+    let nullifyConvertedInvoiceRejected = false;
+    try {
+      await client.query(
+        `UPDATE quotations SET converted_invoice_id = NULL WHERE id = $1`,
+        [concurQuote.id],
+      );
+    } catch (err: any) {
+      if (err.code === '55000' || err.message?.includes('already converted')) {
+        nullifyConvertedInvoiceRejected = true;
+      }
+    }
+    assert(nullifyConvertedInvoiceRejected, 'DBトリガー: 設定済みquotations.converted_invoice_idのNULL巻き戻しが拒絶されること (ERRCODE: 55000)');
+
     // 10.4 BLOCKER (P4-T1-FIX4): 設定済み invoice の source_quotation_id に対する別quotationへの変更試行がDBトリガーで拒絶されること
     let updateSourceQuoteRejected = false;
     try {
