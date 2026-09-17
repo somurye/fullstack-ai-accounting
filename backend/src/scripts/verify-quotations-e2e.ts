@@ -585,7 +585,50 @@ async function main() {
     }
     assert(unrelatedInvoiceRejected, 'DBトリガー: source_quotation_idが一致しない無関係なinvoiceへの converted_invoice_id 設定が拒絶されること (ERRCODE: 55000)');
 
-    // 10.4 同時実行で失敗した側のトランザクションが完全にrollbackされ、孤立レコードが0件であること
+    // 10.4 BLOCKER (P4-T1-FIX4): 設定済み invoice の source_quotation_id に対する別quotationへの変更試行がDBトリガーで拒絶されること
+    let updateSourceQuoteRejected = false;
+    try {
+      await client.query(
+        `UPDATE invoices SET source_quotation_id = $1 WHERE id = $2`,
+        [unrelatedQuote.id, convertedInvoiceId],
+      );
+    } catch (err: any) {
+      if (err.code === '55000' || err.message?.includes('source_quotation_id is immutable')) {
+        updateSourceQuoteRejected = true;
+      }
+    }
+    assert(updateSourceQuoteRejected, 'DBトリガー: 設定済みinvoiceのsource_quotation_id別見積への改変が拒絶されること (ERRCODE: 55000)');
+
+    // 10.5 BLOCKER (P4-T1-FIX4): 設定済み invoice の source_quotation_id に対する NULL 巻き戻し試行がDBトリガーで拒絶されること
+    let nullifySourceQuoteRejected = false;
+    try {
+      await client.query(
+        `UPDATE invoices SET source_quotation_id = NULL WHERE id = $1`,
+        [convertedInvoiceId],
+      );
+    } catch (err: any) {
+      if (err.code === '55000' || err.message?.includes('source_quotation_id is immutable')) {
+        nullifySourceQuoteRejected = true;
+      }
+    }
+    assert(nullifySourceQuoteRejected, 'DBトリガー: 設定済みinvoiceのsource_quotation_id NULL巻き戻しが拒絶されること (ERRCODE: 55000)');
+
+    // 10.6 BLOCKER (P4-T1-FIX4): 2つ目の invoice が同一 quotation の source_quotation_id を設定しようとして UNIQUE制約違反で拒絶されること
+    let duplicateInvoiceQuoteUniqueRejected = false;
+    try {
+      await client.query(
+        `INSERT INTO invoices (id, tenant_id, invoice_no, customer_id, issue_date, due_date, status, subtotal_amount, tax_amount, created_by, source_quotation_id)
+         VALUES ($1, $2, 'INV-DUP-QUOTE-001', $3, CURRENT_DATE, CURRENT_DATE + 30, 'draft', 10000, 1000, $4, $5)`,
+        [uuidv4(), tenantA, custAId, userA, concurQuote.id],
+      );
+    } catch (err: any) {
+      if (err.code === '23505' || err.message?.includes('unique') || err.message?.includes('duplicate key')) {
+        duplicateInvoiceQuoteUniqueRejected = true;
+      }
+    }
+    assert(duplicateInvoiceQuoteUniqueRejected, 'DB制約: 複数invoiceから同一quotationへのsource_quotation_id設定がUNIQUE制約で拒絶されること (ERRCODE: 23505)');
+
+    // 10.7 同時実行で失敗した側のトランザクションが完全にrollbackされ、孤立レコードが0件であること
     const allInvoicesCountRes = await client.query(
       `SELECT count(*)::int as cnt FROM invoices WHERE tenant_id = $1 AND customer_id = $2`,
       [tenantA, custAId],
