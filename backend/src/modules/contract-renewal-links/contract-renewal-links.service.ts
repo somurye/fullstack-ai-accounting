@@ -92,16 +92,20 @@ export class ContractRenewalLinksService {
       // 2. 顧客 (customer_id) の解決
       let customerId = input.customer_id;
       if (!customerId) {
-        // counterparty_name から同名の既存顧客を自テナント内で検索
+        // counterparty_name から同名の既存顧客を自テナント内で検索 (完全一致のみ)
         const custRes = await client.query<{ id: string }>(
           `SELECT id FROM customers
            WHERE tenant_id = $1 AND name = $2 AND is_active = TRUE
-           LIMIT 1`,
+           LIMIT 2`,
           [tenantId, contract.counterparty_name],
         );
 
-        if (custRes.rows.length > 0) {
+        if (custRes.rows.length === 1) {
           customerId = custRes.rows[0].id;
+        } else if (custRes.rows.length > 1) {
+          throw AppException.badRequest(
+            `契約の相手先「${contract.counterparty_name}」に一致する顧客が複数存在します。顧客ID (customer_id) を明示指定してください。`,
+          );
         } else {
           throw AppException.badRequest(
             `契約の相手先「${contract.counterparty_name}」に一致する顧客マスタが見つかりません。顧客ID (customer_id) を指定してください。`,
@@ -129,15 +133,22 @@ export class ContractRenewalLinksService {
       const expectedCloseDate = input.expected_close_date || contract.end_date || null;
 
       // DealsService.create は内部で db.transaction を呼ぶが、既にトランザクション内でも安全に実行される
-      const createdDeal = await this.dealsService.create(tenantId, userId, roles, {
-        customer_id: customerId,
-        title: dealTitle,
-        stage: 'lead',
-        expected_amount: expectedAmount,
-        currency_code: contract.currency || 'JPY',
-        expected_close_date: expectedCloseDate,
-        owner_user_id: input.owner_user_id || null,
-      });
+      // 設計確定-03: contract_renewal_link.create 権限を持つユーザーは deal.create を別途持たなくても起票可能
+      const createdDeal = await this.dealsService.create(
+        tenantId,
+        userId,
+        roles,
+        {
+          customer_id: customerId,
+          title: dealTitle,
+          stage: 'lead',
+          expected_amount: expectedAmount,
+          currency_code: contract.currency || 'JPY',
+          expected_close_date: expectedCloseDate,
+          owner_user_id: input.owner_user_id || null,
+        },
+        { skipPermissionCheck: true },
+      );
 
       // 4. contract_renewal_links へのリンク記録
       const linkInsertSql = `
@@ -306,5 +317,93 @@ export class ContractRenewalLinksService {
           }
         : undefined,
     }));
+  }
+
+  /**
+   * 契約更新案件に見積書を紐付ける (NULLから一度限りの設定、P4-T1 WORM準拠、設計確定-01, 02)
+   */
+  async attachQuotation(
+    tenantId: string,
+    userId: string,
+    roles: string[],
+    dealId: string,
+    quotationId: string,
+  ): Promise<ContractRenewalLinkDto> {
+    this.assertPermission(roles, 'contract_renewal_link.create');
+
+    return this.db.transaction(tenantId, userId, async (client) => {
+      // リンクレコードの存在確認
+      const linkRes = await client.query<{ id: string; quotation_id: string | null }>(
+        `SELECT id, quotation_id FROM contract_renewal_links
+         WHERE deal_id = $1 AND tenant_id = $2`,
+        [dealId, tenantId],
+      );
+
+      if (linkRes.rows.length === 0) {
+        throw AppException.notFound(`対象案件 (deal_id: ${dealId}) に紐づく契約更新リンクが見つかりません`);
+      }
+
+      if (linkRes.rows[0].quotation_id != null) {
+        throw AppException.badRequest(`この契約更新リンクには既に見積書が紐付けられています (再設定不可)`);
+      }
+
+      // UPDATE (DB側トリガー fn_validate_contract_renewal_link_quotation_deal により deal_id 不一致は 23503 で弾かれる)
+      await client.query(
+        `UPDATE contract_renewal_links
+         SET quotation_id = $1, updated_at = NOW()
+         WHERE id = $2 AND tenant_id = $3`,
+        [quotationId, linkRes.rows[0].id, tenantId],
+      );
+
+      // トランザクション内クライアントで最新状態を取得 (未コミット読み取り不整合を防止)
+      const fetchSql = `
+        SELECT
+          crl.id, crl.tenant_id, crl.contract_id, crl.deal_id, crl.quotation_id,
+          crl.created_by, crl.created_at::text, crl.updated_at::text,
+          c.contract_no, c.title AS contract_title, c.counterparty_name,
+          c.contract_type, c.contract_amount, c.start_date::text, c.end_date::text,
+          c.auto_renewal, c.status AS contract_status
+        FROM contract_renewal_links crl
+        JOIN contracts c ON c.id = crl.contract_id AND c.tenant_id = crl.tenant_id
+        WHERE crl.id = $1 AND crl.tenant_id = $2
+      `;
+      const fetchRes = await client.query(fetchSql, [linkRes.rows[0].id, tenantId]);
+      if (fetchRes.rows.length === 0) {
+        throw AppException.notFound(`更新後の連携情報が見つかりません`);
+      }
+      const row = fetchRes.rows[0];
+
+      await this.auditLogs.record(client, tenantId, {
+        actorUserId: userId,
+        action: 'contract_renewal_link.attach_quotation',
+        targetType: 'contract_renewal_link',
+        targetId: linkRes.rows[0].id,
+        beforeData: { quotation_id: null },
+        afterData: { quotation_id: quotationId, deal_id: dealId },
+      });
+
+      return {
+        id: row.id,
+        tenant_id: row.tenant_id,
+        contract_id: row.contract_id,
+        deal_id: row.deal_id,
+        quotation_id: row.quotation_id,
+        created_by: row.created_by,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        contract: {
+          id: row.contract_id,
+          contract_no: row.contract_no,
+          title: row.contract_title,
+          counterparty_name: row.counterparty_name,
+          contract_type: row.contract_type,
+          contract_amount: row.contract_amount ? Number(row.contract_amount) : null,
+          start_date: row.start_date,
+          end_date: row.end_date,
+          auto_renewal: row.auto_renewal,
+          status: row.contract_status,
+        },
+      };
+    });
   }
 }

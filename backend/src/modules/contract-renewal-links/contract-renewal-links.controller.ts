@@ -16,7 +16,10 @@ import { PermissionsGuard } from '../../common/guards/permissions.guard';
 import { RequirePermissions } from '../../common/decorators/permissions.decorator';
 import { successEnvelope } from '../../common/http/envelope';
 import { parseWithZod } from '../../common/validation/zod-parse';
-import { createRenewalDealSchema } from './dto/contract-renewal-link.schemas';
+import {
+  createRenewalDealSchema,
+  attachQuotationSchema,
+} from './dto/contract-renewal-link.schemas';
 
 const idParamSchema = z.string().uuid('IDはUUID形式で指定してください');
 
@@ -43,6 +46,27 @@ export class ContractRenewalLinksController {
       userId,
       roles,
       dto,
+    );
+    return successEnvelope(result);
+  }
+
+  /**
+   * 契約更新案件に見積書を紐付ける (NULLから1回限りの設定)
+   */
+  @Post('attach-quotation')
+  @RequirePermissions('contract_renewal_link.create')
+  @HttpCode(HttpStatus.OK)
+  async attachQuotation(@Req() req: AuthenticatedRequest, @Body() body: unknown) {
+    const tenantId = req.user.tenant_id;
+    const userId = req.user.sub;
+    const roles = req.user.roles || [];
+    const dto = parseWithZod(attachQuotationSchema, body);
+    const result = await this.renewalLinksService.attachQuotation(
+      tenantId,
+      userId,
+      roles,
+      dto.deal_id,
+      dto.quotation_id,
     );
     return successEnvelope(result);
   }

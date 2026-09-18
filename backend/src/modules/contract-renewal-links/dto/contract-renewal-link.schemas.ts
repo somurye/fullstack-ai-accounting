@@ -15,6 +15,13 @@ export const createRenewalDealSchema = z.object({
 
 export type CreateRenewalDealInput = z.input<typeof createRenewalDealSchema>;
 
+export const attachQuotationSchema = z.object({
+  deal_id: z.string().uuid('商談IDは有効なUUID形式で指定してください'),
+  quotation_id: z.string().uuid('見積書IDは有効なUUID形式で指定してください'),
+});
+
+export type AttachQuotationInput = z.input<typeof attachQuotationSchema>;
+
 export interface ContractRenewalLinkDto {
   id: string;
   tenant_id: string;
