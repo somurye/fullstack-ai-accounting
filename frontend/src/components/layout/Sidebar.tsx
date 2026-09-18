@@ -109,6 +109,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     title: '営業事務 (Phase 4)',
     items: [
+      { label: '営業ダッシュボード', to: '/sales-dashboard', icon: BarChart3 },
       { label: '商談・案件管理', to: '/deals', icon: Briefcase },
       { label: '見積書', to: '/quotations', icon: FileSpreadsheet },
     ],

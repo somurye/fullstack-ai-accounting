@@ -173,6 +173,9 @@ const DealFormPage = lazy(() =>
 const DealDetailPage = lazy(() =>
   import('./pages/deals/DealDetailPage').then((m) => ({ default: m.DealDetailPage })),
 );
+const SalesDashboardPage = lazy(() =>
+  import('./pages/sales-dashboard/SalesDashboardPage').then((m) => ({ default: m.SalesDashboardPage })),
+);
 const SettingsPage = lazy(() => import('./pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
 const MobileExpenseApplyPage = lazy(() =>
   import('./pages/mobile/MobileExpenseApplyPage').then((m) => ({ default: m.MobileExpenseApplyPage })),
@@ -275,6 +278,7 @@ export default function App() {
             <Route path="/deals/new" element={<DealFormPage />} />
             <Route path="/deals/:id" element={<DealDetailPage />} />
             <Route path="/deals/:id/edit" element={<DealFormPage />} />
+            <Route path="/sales-dashboard" element={<SalesDashboardPage />} />
             <Route path="/forbidden" element={<ForbiddenPage />} />
 
             {/* 職務分掌(SoD)RBAC: 財務諸表は ADMIN / ACCOUNTANT のみ */}
