@@ -51,6 +51,7 @@ import { YearEndAdjustmentsModule } from './modules/year-end-adjustments/year-en
 import { QuotationsModule } from './modules/quotations/quotations.module';
 import { DealsModule } from './modules/deals/deals.module';
 import { ContractRenewalLinksModule } from './modules/contract-renewal-links/contract-renewal-links.module';
+import { SalesDashboardModule } from './modules/sales-dashboard/sales-dashboard.module';
 
 /**
  * AppModule
@@ -119,6 +120,7 @@ import { ContractRenewalLinksModule } from './modules/contract-renewal-links/con
     QuotationsModule,
     DealsModule,
     ContractRenewalLinksModule,
+    SalesDashboardModule,
   ],
   controllers: [],
   providers: [
