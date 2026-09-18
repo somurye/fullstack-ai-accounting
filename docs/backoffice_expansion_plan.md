@@ -1,7 +1,7 @@
 # keiri-kaikei 全社バックオフィス統合SaaS 拡張計画書
 
 - 文書番号: PLAN-01
-- バージョン: 7.12.0
+- バージョン: 7.12.1
 - 対象リポジトリ: `fullstack-ai-accounting`（経理・会計基盤）
 - 関連文書: `docs/01_requirements.md`, `docs/02_architecture.md`, `docs/03_database_design.md`
 
@@ -20,24 +20,20 @@
 | Phase 1 | 総務・法務（契約書管理） | ✅ 完了 | 6/6 | 平均2〜3回、最大4回（P1-T5） |
 | Phase 2 | 購買・調達 | ✅ 完了 | 4/4 | 平均2回、最大3回（P2-T2/P2-T3） |
 | Phase 3 | 人事労務 | ✅ 完了 | 4/4 | 平均2〜3回、最大6回（P3-T3） |
-| Phase 4 | 営業事務 | 🔵 着手中 | 3/4（P4-T1・T2・T3 PASS、マージ待ち） | P4-T3: 2回 |
+| Phase 4 | 営業事務 | 🔵 着手中 | 3/4（P4-T1〜T3 PASS）。P4-T4はREQUEST CHANGES | P4-T4: 1回目REQUEST CHANGES |
 | Phase 5 | 統合最適化 | 未着手 | - | - |
 
 ### 直近のアクション
 
-- P4-T3-VERIFYの完了報告に対し、ChatGPT(SO)が**P4-T3を正式PASS**と判定。`contract_
-  renewal_links`のUNIQUE制約・WORM・`quotation`↔`deal`正当性検証・顧客自動探索の
-  fail-closed化等、前回CONDITIONAL PASSで求めた事項がすべて解消と評価され、追加FIXは
-  不要と明言。マージ指示プロンプトを作成し、mainへのマージと、DEBT-022（P4-T1・P4-T2の
-  マージコミットSHA未確認）の解消もあわせて指示した。
-- P4-T3のマージを前提に、**P4-T4（営業ダッシュボード・レポート）**——Phase 4最終タスク
-  ——のタスク詳細・実装指示プロンプトを作成した。既存P2-T4（購買ダッシュボード）の
-  パターンを踏襲し、既存テーブルの重複保持を避けたオンデマンド集計・tenant境界の遵守を
-  重視する設計とした。
-- 次はユーザーが【マージ指示プロンプト P4-T3】をGeminiに渡し、P4-T1・P4-T2・P4-T3の
-  マージコミットSHAをまとめて確認したうえでマージと再検証を実行する。完了報告を受け
-  取ったら、P4-T1〜T3を完全クローズに更新し、DEBT-022を解消する。その後【指示プロンプト
-  P4-T4】をGeminiに渡す。P4-T4完了でPhase 4が全4タスク完了となる。
+- P4-T4（営業ダッシュボード）の完了報告に対し、ChatGPT(SO)はREQUEST CHANGESと判定。
+  ただし「作り直しではなく実質1点」と明言されており、実装コード自体（集計ロジック・
+  RBAC・migration・git diffスコープ）は良好と評価されている。唯一の問題は、**実DB E2Eが
+  `postgres`superuser接続のまま実行されており、RLSを実際には経由していない**こと
+  （PostgreSQLのsuperuserは`FORCE ROW LEVEL SECURITY`でも常にRLSをバイパスするため）。
+  修正はE2E側の接続方式のみで、`SalesDashboardService`本体のSQL・ロジックは変更不要。
+  併せて完了報告内の「Jest 241 tests」「schema verifier 194件」「clean DB migration
+  適用」という異なる検証の数字が混同されていた点も、報告表現の整理として指示した。
+  フォローアップ指示プロンプト（P4-T4-FIX）を作成した。次はこれをGeminiに渡す。
 - DEBT-020（main実DB E2E未実行）は解消済み。DEBT-021（年末調整はtax_year=2026限定）・
   DEBT-022（P4-T1・T2のマージSHA未確認）等の技術的負債が7節に継続記録されている。
 
@@ -3797,7 +3793,7 @@ Phase 3（人事労務）と比べて低い。
 | P4-T1 | 見積書（見積作成・確定・受注転換） | 見積の作成・明細管理、`draft`→`sent`→`accepted`/`rejected`/`expired`の状態遷移、確定後の不変性、受注への一方向変換 | P0-T1, P0-T4 | ✅ SO正式PASS（証跡確認済み、E2E 57/57・Schema 169/169・clean DB 001〜028）。マージ指示プロンプト作成済み・Gemini実行待ち |
 | P4-T2 | 案件管理（商談パイプライン） | 案件（商談）の登録・ステージ管理（見込み〜受注/失注）、見積との紐付け | P4-T1 | ✅ SO正式PASS（証跡確認済み、E2E 51/51・Schema 176/176・P4-T1回帰57/57・clean DB 001〜029）。マージ指示プロンプト作成済み・Gemini実行待ち |
 | P4-T3 | 契約更新連携 | Phase 1の契約更新期限アラート（P1-T4）と営業案件・見積を連携し、更新期限が近い契約から更新提案の案件・見積を起票できるようにする | P4-T1, P4-T2 | ✅ SO正式PASS（証跡確認済み、regression 189/189・clean DB 001〜031）。マージ指示プロンプト作成済み・Gemini実行待ち（DEBT-022解消も併せて指示） |
-| P4-T4 | 営業ダッシュボード・レポート | 案件パイプライン・見積成約率等の可視化（P2-T4の購買ダッシュボードと同様の設計パターン） | P4-T1, P4-T2, P4-T3 | 🔲 指示プロンプト作成済み・Gemini実装待ち |
+| P4-T4 | 営業ダッシュボード・レポート | 案件パイプライン・見積成約率等の可視化（P2-T4の購買ダッシュボードと同様の設計パターン） | P4-T1, P4-T2, P4-T3 | 🔴 SO判定REQUEST CHANGES（実装自体は良好・スコープ内。E2EがRLSを経由せずsuperuser接続で実行されている点のみ修正要。P4-T4-FIX対応中） |
 
 P4-T2以降の詳細タスク分解・実装指示プロンプトは、P4-T1の実装結果を踏まえてClaudeが
 都度作成する（Phase 0/1/2/3と同じ方針）。
@@ -4784,6 +4780,73 @@ Phase 4で構築した見積（P4-T1）・案件（P4-T2）・契約更新連携
 
 ---
 
+#### 【フォローアップ指示プロンプト P4-T4-FIX】REQUEST CHANGES対応（実DB E2Eがsuperuser接続でRLSを経由していない）
+
+ChatGPT(SO)よりP4-T4は「実装自体は完成度が高く、GitHub上の実差分（`b67b356`→
+`1b0952e`、15ファイル）もスコープ内。ただし正式PASS・マージ前に1点の修正が必要」と
+判定された。作り直しではなく、実質1点（E2Eの接続方式）＋報告表現の整理のみである。
+
+```
+# SOレビュー結果：P4-T4 REQUEST CHANGES（実質1点: E2Eの接続方式）
+
+# BLOCKER-01: ダッシュボード集計のRLS実DB検証が、実際にはRLSを経由していない
+現在のP4-T4 E2Eは、`Pool`を直接生成して`DatabaseService`にセットし、`SalesDashboardService`
+を実行している。この接続はPostgreSQLの`postgres`（superuser）ロールのままであり、
+`SET LOCAL ROLE app_runtime`も`app.current_tenant_id`の設定も行われていない。
+PostgreSQLではsuperuserは`FORCE ROW LEVEL SECURITY`であってもRLSを常にバイパスするため、
+現在のE2Eが証明しているのは「`SalesDashboardService`のSQLに明示的な`WHERE tenant_id = $1`
+句がある」ことだけであり、「RLSというDB最終防御を実際に経由してtenant分離が機能している」
+ことの証明にはなっていない。これは実装コードの不備ではなく、E2Eの検証方法の不備である。
+
+# 修正方針
+1. P4-T4のE2Eスクリプト（`verify-sales-dashboard-e2e.ts`）を、既存の
+   `DatabaseService.transaction(tenantId, userId, callback)`（`BEGIN` →
+   `set_config('app.current_tenant_id', ...)` → `set_config('app.current_user_id', ...)`
+   → クエリ → `COMMIT`という、Phase 0〜4で確立済みの正規のRLSコンテキスト設定経路）を
+   通して`SalesDashboardService`を呼び出すように変更する。`Pool`を直接操作する現在の
+   方式を廃止する。
+2. 接続ロールが`app_runtime`（RLS対象ロール）であることを確認する。既存の
+   `verify_schema.py`の`tx_as(role="app_runtime", tenant_id=...)`ヘルパーと同水準の
+   検証パターンに合わせること。
+3. 上記の変更はテスト（E2Eスクリプト）側の修正であり、`SalesDashboardService`本体の
+   SQL・ロジックを変更する必要はない（既存の`WHERE tenant_id = $1`はそのまま維持して
+   良い。RLSは多層防御の一つであり、アプリ層のtenant filterを取り除く必要はない）。
+
+# 追加すべき実DB E2E（必須）
+- Tenant Aのコンテキスト（`app_runtime`ロール、`app.current_tenant_id = A`）で
+  ダッシュボード集計を実行し、Tenant Aのデータのみが結果に含まれることを確認する
+  （既存のTenant A/B分離テストを、この接続方式に置き換えて再実行する）
+- 同じRLSコンテキスト下で、Tenant Bの大きな金額データが一切混入しないことを確認する
+  （既存のテストデータ・期待値はそのまま使用可能）
+
+# 完了報告の証跡表現の整理（コード修正ではなく報告の書き方の修正）
+以下のように、それぞれ別の検証であることを明確に分離して記載すること。
+  - Backend Jest: 28 suites / 241 tests PASS
+  - `verify_schema.py`: 194件の検証項目PASS
+  - P4-T4 E2E: （件数）PASS
+  - clean DB 001〜032のmigration一括適用: PASS（これは「migration列が破綻していない」
+    ことの確認であり、「全機能をclean DB上でE2E再実行した」ことを意味しない、という
+    区別を明記する）
+
+# 受け入れ基準（Definition of Done）
+- [ ] P4-T4のE2Eが`app_runtime`ロール・`app.current_tenant_id`設定を経由して実行される
+      ように修正されている
+- [ ] Tenant A/B分離が、上記の正規RLSコンテキスト下で実DBにより確認されている
+- [ ] 完了報告の証跡表現が、Jest・schema verifier・E2E・clean DB migration適用の4つを
+      混同せず分離して記載されている
+- [ ] 既存のP4-T1〜T3回帰E2Eが引き続きすべてPASSする
+- [ ] コミットSHA・ブランチ名（本計画書0.4節）を明記する
+
+# ChatGPTレビュー時の確認観点
+- E2Eの接続がPostgreSQLの`app_runtime`ロールで実行され、superuserのRLSバイパスを
+  経由していないか
+- `SalesDashboardService`本体のロジックが不必要に変更されていないか（今回はE2E側の
+  修正のみで十分なはず）
+- 完了報告の数字（Jest/schema verifier/E2E/clean DB）が正確に区別されているか
+```
+
+---
+
 ## 7. 既知の技術的負債・フォローアップ事項
 
 タスク完了時にSOが「修正不要だが記録すべき」と判定した事項を追跡する。将来の関連タスク着手時に必ず参照すること。
@@ -4817,15 +4880,19 @@ Phase 4で構築した見積（P4-T1）・案件（P4-T2）・契約更新連携
 
 ## 8. 次のアクション
 
-1. 【マージ指示プロンプト P4-T3】をGeminiに渡す。P4-T1・P4-T2・P4-T3すべてのマージ
-   コミットSHAを確認・記録し（DEBT-022の解消）、マージ後の実DB E2E再検証を実行する。
-   完了報告を受け取ったら、P4-T1〜T3を完全クローズに更新し、DEBT-022を解消済みに更新
-   する。
-2. マージ完了後、【指示プロンプト P4-T4】（営業ダッシュボード・レポート）をGeminiに渡し、
-   Phase 4最終タスクに着手する。
-3. P4-T4が完了・PASSしたら、Phase 4（営業事務）を全4タスク完了として更新し、Phase 4
-   クローズのサマリ（往復回数、確立された恒久ルール、DEBT棚卸し）を追加する。その後
-   Phase 5（統合最適化）のタスク分解に着手する。
+1. 【フォローアップ指示プロンプト P4-T4-FIX】をGeminiに渡し、実DB E2Eを`app_runtime`
+   ロール・tenant context経由に修正し、RLSを実際に経由した検証に置き換える。併せて
+   完了報告の証跡表現（Jest/schema verifier/E2E/clean DB migrationの区別）を整理する。
+2. この機会に、DEBT-022（P4-T1〜T3のマージコミットSHA未確認）についても改めて状況を
+   確認・報告してもらう。
+3. P4-T4-FIXの結果、SOが最終PASSと判定したら、P4-T1〜T4をまとめてmainへマージする
+   指示プロンプトを作成する。
+4. P4-T4マージ完了・Phase 4全4タスク完了が確定したら、Phase 4クローズのサマリ（往復
+   回数、確立された恒久ルール、DEBT棚卸し）を追加し、Phase 5（統合最適化）のタスク分解
+   に着手する。
+5. 未解決DEBT（7節）は都度解消の方針。
+
+
 4. 未解決DEBT（7節）は都度解消の方針。
 
 ---
@@ -4906,3 +4973,4 @@ Phase 4で構築した見積（P4-T1）・案件（P4-T2）・契約更新連携
 | 7.11.0 | P4-T2-VERIFYがSO正式PASS（実DB E2E 51/51・Schema 176/176・P4-T1回帰57/57・clean DB 001〜029、非terminalステージの自由遷移設計・`owner_user_id`のFK/tenant境界・認証actor・`closed_at`後発改変防止・git diffスコープをすべて実DB証跡で確認）。**P4-T2（案件管理）が実装面で完了**。マージ指示プロンプトを追加（P4-T1のマージコミットSHA未確認分の確認も含む）。P4-T2のマージを前提に、P4-T3（契約更新連携）のタスク詳細・実装指示プロンプトを追加。ロードマップ表・エグゼクティブサマリーを更新 |
 | 7.11.1 | P4-T3はSO判定CONDITIONAL PASS（明示操作によるdeal作成・自動確定なし・RLS/tenant整合性・RBAC等の基本設計は妥当、明確なBLOCKERなし）。`contract_renewal_links`の一意性・不変性・`quotation_id`の正当性・複数顧客候補時の扱い・RBAC権限構成・`deals.mapper.ts`変更の必要性・git diffスコープを要確認事項として指摘。Claudeが4点の設計を確定（1契約に複数リンク許可・1dealは1契約のみ・quotation_idは一度限りの遷移かつdeal_id一致要求・contract-renewal-link.create単独で機能利用可・顧客自動探索は完全一致のみでfail-closed）し、UNIQUE制約・WORMトリガー追加と証跡確認を求めるフォローアップ指示プロンプト（P4-T3-VERIFY）を追加。P4-T1・P4-T2のマージコミットSHA未確認をDEBT-022として記録 |
 | 7.12.0 | P4-T3-VERIFYがSO正式PASS（regression 189/189、clean DB 001〜031、`contract_renewal_links`のUNIQUE制約・WORM・`quotation`↔`deal`正当性検証・顧客自動探索fail-closed化をすべて確認）。**P4-T3（契約更新連携）が実装面で完了**。マージ指示プロンプトを追加（DEBT-022解消のためP4-T1・P4-T2のマージコミットSHA確認も併せて指示）。P4-T3のマージを前提に、Phase 4最終タスクとなるP4-T4（営業ダッシュボード・レポート）のタスク詳細・実装指示プロンプトを追加。ロードマップ表・エグゼクティブサマリーを更新 |
+| 7.12.1 | P4-T4はSO判定REQUEST CHANGES（実装コード・集計ロジック・RBAC・migration・git diffスコープは良好、作り直しではなく実質1点の修正）。実DB E2Eが`postgres`superuser接続のまま実行されておりRLSを実際には経由していないことが判明（PostgreSQLのsuperuserはFORCE RLSでも常にバイパスするため）。E2Eを既存の`DatabaseService.transaction()`（app_runtimeロール・tenant context経由）に修正するよう求めるフォローアップ指示プロンプト（P4-T4-FIX）を追加。併せて完了報告内のJest/schema verifier/E2E/clean DB migrationの数字の混同について報告表現の整理を指示 |

@@ -33,19 +33,24 @@ function createMockContext(
   } as unknown as ExecutionContext;
 }
 
+let totalAssertions = 0;
+
 function expect(actual: unknown) {
   return {
     toBe(expected: unknown) {
+      totalAssertions++;
       if (actual !== expected) {
         throw new Error(`Expected ${JSON.stringify(expected)} but got ${JSON.stringify(actual)}`);
       }
     },
     toBeCloseTo(expected: number, precision = 2) {
+      totalAssertions++;
       if (typeof actual !== 'number' || Math.abs(actual - expected) > Math.pow(10, -precision)) {
         throw new Error(`Expected ${actual} to be close to ${expected} (diff > 10^-${precision})`);
       }
     },
     toEqual(expected: unknown) {
+      totalAssertions++;
       if (JSON.stringify(actual) !== JSON.stringify(expected)) {
         throw new Error(`Expected ${JSON.stringify(expected)} but got ${JSON.stringify(actual)}`);
       }
@@ -63,11 +68,27 @@ async function run() {
   const pool = new Pool({ connectionString: dsn });
   const db = new DatabaseService();
   (db as any).pool = pool;
+
+  // --------------------------------------------------------------------------
+  // 【BLOCKER-01対応】DatabaseService.transaction に SET LOCAL ROLE app_runtime をフック
+  // superuser (postgres) の RLS バイパスを防止し、正規の app_runtime ロール下で
+  // app.current_tenant_id / app.current_user_id による RLS ポリシーを確実に発動させる
+  // --------------------------------------------------------------------------
+  const origRunTransaction = (db as any).runTransaction.bind(db);
+  (db as any).runTransaction = async (tenantId: string | null, userId: string | null, callback: any) => {
+    return origRunTransaction(tenantId, userId, async (client: any) => {
+      // 1. RLS適用対象ロール app_runtime へ切り替え
+      await client.query('SET LOCAL ROLE app_runtime');
+      // 2. コールバック（SalesDashboardService の集計クエリ）を実行
+      return callback(client);
+    });
+  };
+
   const dashboardService = new SalesDashboardService(db);
   const dashboardController = new SalesDashboardController(dashboardService);
   const guard = new PermissionsGuard(new Reflector());
 
-  console.log('=== P4-T4 営業ダッシュボード・レポート 実DB E2E検証開始 ===');
+  console.log('=== P4-T4 営業ダッシュボード・レポート 実DB E2E検証開始 (RLS/app_runtime検証強化) ===');
 
   try {
     // --------------------------------------------------------------------------
@@ -324,9 +345,63 @@ async function run() {
     );
 
     // --------------------------------------------------------------------------
-    // 5. Tenant A 集計結果の完全性・計算式検証
+    // 5-0. 【BLOCKER-01対応】RLSコンテキストおよび app_runtime ロールの実証
     // --------------------------------------------------------------------------
-    console.log('[5] Tenant A 集計API実行 & 計算整合性検証');
+    console.log('[5-0] RLSコンテキストおよび app_runtime ロールの接続実証');
+    await db.transaction(tenantA, userA, async (txClient) => {
+      // 実行ロールが app_runtime であることを検証
+      const roleCheck = await txClient.query<{ current_user: string; session_user: string }>(
+        'SELECT current_user, session_user',
+      );
+      expect(roleCheck.rows[0].current_user).toBe('app_runtime');
+      console.log(`  -> 実行ロール実証: current_user=${roleCheck.rows[0].current_user} (RLS適用対象ロールであることを確認)`);
+
+      // app.current_tenant_id が Tenant A であることを検証
+      const tenantCheck = await txClient.query<{ tenant_id: string }>(
+        `SELECT current_setting('app.current_tenant_id', true) AS tenant_id`,
+      );
+      expect(tenantCheck.rows[0].tenant_id).toBe(tenantA);
+      console.log(`  -> テナントコンテキスト実証: app.current_tenant_id=${tenantCheck.rows[0].tenant_id}`);
+    });
+
+    // --------------------------------------------------------------------------
+    // 5-1. 【BLOCKER-01対応】RLSによる他テナントデータの直接不可視検証 (DB最終防御)
+    // app_runtime ロール下では WHERE tenant_id 句なしでも Tenant B のデータが 0件になることを実証
+    // --------------------------------------------------------------------------
+    console.log('[5-1] RLSによる他テナントデータ直接不可視検証 (app_runtime下でのDB最終防御実証)');
+    await db.transaction(tenantA, userA, async (txClient) => {
+      // Tenant B の商談 (dealWonB1: 9,999,999円) が Tenant A の RLS コンテキストから不可視であること
+      const rlsDeals = await txClient.query(
+        `SELECT * FROM deals WHERE id = $1`,
+        [dealWonB1],
+      );
+      expect(rlsDeals.rows.length).toBe(0);
+
+      // Tenant B の見積 (QT-B-999: 10,000,000円) が不可視であること
+      const rlsQuotes = await txClient.query(
+        `SELECT * FROM quotations WHERE quote_no = 'QT-B-999'`,
+      );
+      expect(rlsQuotes.rows.length).toBe(0);
+
+      // Tenant B の契約 (CNT-B-001) が不可視であること
+      const rlsContracts = await txClient.query(
+        `SELECT * FROM contracts WHERE contract_no = 'CNT-B-001'`,
+      );
+      expect(rlsContracts.rows.length).toBe(0);
+
+      // Tenant B の更新リンクが不可視であること
+      const rlsLinks = await txClient.query(
+        `SELECT * FROM contract_renewal_links WHERE contract_id = $1`,
+        [contractB1],
+      );
+      expect(rlsLinks.rows.length).toBe(0);
+    });
+    console.log('  -> RLS実効実証: app_runtime ロール下で Tenant B の商談・見積・契約・更新リンクが不可視 (0件) であることを確認');
+
+    // --------------------------------------------------------------------------
+    // 5. Tenant A 集計結果の完全性・計算式検証 (正規 RLS コンテキスト経由)
+    // --------------------------------------------------------------------------
+    console.log('[5] Tenant A 集計API実行 & 計算整合性検証 (app_runtime / RLS経由)');
     const summaryA = await dashboardService.getSummary(tenantA, userA, ['employee']);
 
     // (1) 案件パイプライン検証
@@ -497,9 +572,7 @@ async function run() {
     expect(Number(countCheck.rows[0].quotation_count)).toBe(9);
     expect(Number(countCheck.rows[0].contract_count)).toBe(5);
     expect(Number(countCheck.rows[0].link_count)).toBe(2);
-    console.log('  -> 既存レコード件数・整合性が完全保持されていることを確認');
-
-    console.log('=== P4-T4 営業ダッシュボード・レポート 実DB E2E検証 全項目合格 (ALL PASS) ===');
+    console.log(`=== P4-T4 営業ダッシュボード・レポート 実DB E2E検証 全項目合格 (ALL PASS: 全${totalAssertions}検証項目合格) ===`);
   } finally {
     await pool.end();
   }
