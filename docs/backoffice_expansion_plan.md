@@ -1,7 +1,7 @@
 # keiri-kaikei 全社バックオフィス統合SaaS 拡張計画書
 
 - 文書番号: PLAN-01
-- バージョン: 7.11.1
+- バージョン: 7.12.0
 - 対象リポジトリ: `fullstack-ai-accounting`（経理・会計基盤）
 - 関連文書: `docs/01_requirements.md`, `docs/02_architecture.md`, `docs/03_database_design.md`
 
@@ -20,23 +20,26 @@
 | Phase 1 | 総務・法務（契約書管理） | ✅ 完了 | 6/6 | 平均2〜3回、最大4回（P1-T5） |
 | Phase 2 | 購買・調達 | ✅ 完了 | 4/4 | 平均2回、最大3回（P2-T2/P2-T3） |
 | Phase 3 | 人事労務 | ✅ 完了 | 4/4 | 平均2〜3回、最大6回（P3-T3） |
-| Phase 4 | 営業事務 | 🔵 着手中 | 2/4（P4-T1・P4-T2 PASS、P4-T3 CONDITIONAL PASS） | P4-T3: 1回でCONDITIONAL PASS |
+| Phase 4 | 営業事務 | 🔵 着手中 | 3/4（P4-T1・T2・T3 PASS、マージ待ち） | P4-T3: 2回 |
 | Phase 5 | 統合最適化 | 未着手 | - | - |
 
 ### 直近のアクション
 
-- P4-T3（契約更新連携）の完了報告に対し、ChatGPT(SO)はCONDITIONAL PASSと判定。
-  明示操作によるdeal作成・自動確定なし・RLS/tenant整合性・RBAC等の基本設計は妥当で
-  **明確なBLOCKERはない**が、`contract_renewal_links`の一意性・不変性・
-  `quotation_id`の正当性・複数顧客候補時の扱い・RBAC権限構成・`deals.mapper.ts`変更の
-  必要性・git diffスコープが要確認事項として指摘された。Claudeとして4点の設計を確定
-  （1契約に複数リンクは許可・1dealは1契約のみ・quotation_idは一度限りの遷移かつ
-  deal_id一致を要求・contract-renewal-link.create単独で機能利用可・顧客自動探索は
-  完全一致のみでfail-closed）し、それに基づく実装追加（UNIQUE制約・WORMトリガー）と
-  証跡確認を求めるフォローアップ指示プロンプト（P4-T3-VERIFY）を作成した。次はこれを
-  Geminiに渡す。
-- DEBT-020（main実DB E2E未実行）は解消済み。DEBT-021（年末調整はtax_year=2026限定）等、
-  低リスクの技術的負債が7節に継続記録されている。
+- P4-T3-VERIFYの完了報告に対し、ChatGPT(SO)が**P4-T3を正式PASS**と判定。`contract_
+  renewal_links`のUNIQUE制約・WORM・`quotation`↔`deal`正当性検証・顧客自動探索の
+  fail-closed化等、前回CONDITIONAL PASSで求めた事項がすべて解消と評価され、追加FIXは
+  不要と明言。マージ指示プロンプトを作成し、mainへのマージと、DEBT-022（P4-T1・P4-T2の
+  マージコミットSHA未確認）の解消もあわせて指示した。
+- P4-T3のマージを前提に、**P4-T4（営業ダッシュボード・レポート）**——Phase 4最終タスク
+  ——のタスク詳細・実装指示プロンプトを作成した。既存P2-T4（購買ダッシュボード）の
+  パターンを踏襲し、既存テーブルの重複保持を避けたオンデマンド集計・tenant境界の遵守を
+  重視する設計とした。
+- 次はユーザーが【マージ指示プロンプト P4-T3】をGeminiに渡し、P4-T1・P4-T2・P4-T3の
+  マージコミットSHAをまとめて確認したうえでマージと再検証を実行する。完了報告を受け
+  取ったら、P4-T1〜T3を完全クローズに更新し、DEBT-022を解消する。その後【指示プロンプト
+  P4-T4】をGeminiに渡す。P4-T4完了でPhase 4が全4タスク完了となる。
+- DEBT-020（main実DB E2E未実行）は解消済み。DEBT-021（年末調整はtax_year=2026限定）・
+  DEBT-022（P4-T1・T2のマージSHA未確認）等の技術的負債が7節に継続記録されている。
 
 ### このプロジェクトを通じて確立された恒久ルール（詳細は0.4〜0.5節）
 
@@ -3793,8 +3796,8 @@ Phase 3（人事労務）と比べて低い。
 |----------|----------|------|------|-----------|
 | P4-T1 | 見積書（見積作成・確定・受注転換） | 見積の作成・明細管理、`draft`→`sent`→`accepted`/`rejected`/`expired`の状態遷移、確定後の不変性、受注への一方向変換 | P0-T1, P0-T4 | ✅ SO正式PASS（証跡確認済み、E2E 57/57・Schema 169/169・clean DB 001〜028）。マージ指示プロンプト作成済み・Gemini実行待ち |
 | P4-T2 | 案件管理（商談パイプライン） | 案件（商談）の登録・ステージ管理（見込み〜受注/失注）、見積との紐付け | P4-T1 | ✅ SO正式PASS（証跡確認済み、E2E 51/51・Schema 176/176・P4-T1回帰57/57・clean DB 001〜029）。マージ指示プロンプト作成済み・Gemini実行待ち |
-| P4-T3 | 契約更新連携 | Phase 1の契約更新期限アラート（P1-T4）と営業案件・見積を連携し、更新期限が近い契約から更新提案の案件・見積を起票できるようにする | P4-T1, P4-T2 | 🟡 SO判定CONDITIONAL PASS（基本設計は妥当。リンクの一意性・不変性・正当性等をP4-T3-VERIFYで設計確定・実装追加中） |
-| P4-T4 | 営業ダッシュボード・レポート | 案件パイプライン・見積成約率等の可視化（P2-T4の購買ダッシュボードと同様の設計パターン） | P4-T1, P4-T2, P4-T3 | ⏳ 未分解 |
+| P4-T3 | 契約更新連携 | Phase 1の契約更新期限アラート（P1-T4）と営業案件・見積を連携し、更新期限が近い契約から更新提案の案件・見積を起票できるようにする | P4-T1, P4-T2 | ✅ SO正式PASS（証跡確認済み、regression 189/189・clean DB 001〜031）。マージ指示プロンプト作成済み・Gemini実行待ち（DEBT-022解消も併せて指示） |
+| P4-T4 | 営業ダッシュボード・レポート | 案件パイプライン・見積成約率等の可視化（P2-T4の購買ダッシュボードと同様の設計パターン） | P4-T1, P4-T2, P4-T3 | 🔲 指示プロンプト作成済み・Gemini実装待ち |
 
 P4-T2以降の詳細タスク分解・実装指示プロンプトは、P4-T1の実装結果を踏まえてClaudeが
 都度作成する（Phase 0/1/2/3と同じ方針）。
@@ -4668,6 +4671,119 @@ E2Eが引き続きすべてPASSすることを確認・報告すること。
 
 ---
 
+#### 【マージ指示プロンプト P4-T3】mainへのマージ（SO正式PASS）＋DEBT-022の解消
+
+ChatGPT(SO)よりP4-T3-VERIFYが**PASS**と正式判定された。前回のCONDITIONAL PASSで求めた
+確認事項（linkの一意性・WORM、`quotation`↔`deal`正当性、複数顧客候補のfail-closed、
+RBAC権限構成、`deals.mapper.ts`変更範囲）はすべて解消と評価され、「追加FIXを要求する
+明確な理由はない」と明言されている。今回はP4-T3のマージに加えて、DEBT-022（P4-T1・
+P4-T2のマージコミットSHA未確認）もあわせて解消する。
+
+```
+# マージ指示：P4-T3（契約更新連携）＋ P4-T1・P4-T2のマージ状況確認（DEBT-022解消）
+ChatGPT(SO)がP4-T3を正式PASSと判定した。以下の手順でmainへマージし、あわせてP4-T1・
+P4-T2のマージ状況を確認・記録すること。
+
+# PASS根拠の要約（完了報告に転記・保持すること）
+- `contract_renewal_links`：`deal_id`・`quotation_id`への部分UNIQUE制約、`contract_id`・
+  `deal_id`のWORM（作成後変更不可）、`quotation_id`の一度限りの遷移をDBで保証
+- `quotation`↔`deal`正当性：`quotations.deal_id = contract_renewal_links.deal_id`を
+  DBトリガーで検証し、無関係なquotationのリンクを拒否
+- 顧客自動探索：完全一致0件・2件以上の両方でfail-closed（明示指定を要求）
+- RBAC：`contract-renewal-link.create`を「契約更新提案作成」の独立した複合業務権限として
+  整理（`deal.create`とは別軸）
+- 実DB E2E・回帰：189/189 PASS、clean DB 001〜031、P4-T1・P4-T2のWORM設計を壊さず
+  P4-T3を追加できていることを確認
+
+# マージ手順
+1. `feature/p4-t3-contract-renewal-link`ブランチ（および関連するVERIFYのコミット）を
+   mainへマージする。
+2. マージコミットのSHA（`git rev-parse HEAD`）を記録する。
+3. マージ後、mainブランチ上でclean DBへのmigration一括適用（001〜031）を再実行し、
+   実DB E2E（189項目、またはP4-T1 57・P4-T2 51・P4-T3の該当項目の合算）が引き続き
+   すべてPASSすることを確認する。
+4. **DEBT-022の解消として、`git log`等でP4-T1（feature/p4-t1-quotations）・
+   P4-T2（feature/p4-t2-deals）のmainへの反映が実際に完了しているマージコミットの
+   SHAを特定し、報告に明記すること。** 万一、いずれかが実際にはmainへ未反映のまま
+   後続タスクのブランチ上でのみ作業が続いていた場合は、その旨を正直に報告し、
+   Claude（進行管理）と対応方針を相談すること。
+5. 完了報告には、P4-T1・P4-T2・P4-T3それぞれのマージコミットSHA・mainブランチでの
+   再検証結果（E2E件数・PASS件数）を必ず明記すること。
+
+# 受け入れ基準（Definition of Done）
+- [ ] P4-T1・P4-T2・P4-T3それぞれのマージコミットSHAが報告に明記されている
+- [ ] マージ後、main上で001〜031のclean DB migration適用が成功する
+- [ ] マージ後、main上で実DB E2EがすべてPASSする（件数を明記）
+- [ ] DEBT-022の解消状況（P4-T1・P4-T2が実際にmainへ反映済みであることの確認結果）が
+      報告に明記されている
+```
+
+---
+
+#### 【指示プロンプト P4-T4】営業ダッシュボード・レポート
+
+P4-T3が正式PASSとなったことを受け、Phase 4最終タスク（営業ダッシュボード・レポート）の
+詳細を分解する。既存のP2-T4（購買ダッシュボード）と同様の設計パターンを踏襲する。
+
+```
+# 背景・目的
+Phase 4で構築した見積（P4-T1）・案件（P4-T2）・契約更新連携（P4-T3）のデータを集計し、
+案件パイプラインの状況・見積の成約率・契約更新提案の進捗を可視化する営業ダッシュボードを
+実装する。本タスクの完了をもってPhase 4（営業事務）が全4タスク完了となる。
+
+# 前提となる既存実装
+- P4-T1: `quotations`（status: draft/sent/accepted/rejected/expired）
+- P4-T2: `deals`（stage: lead/qualified/proposal/negotiation/won/lost）
+- P4-T3: `contract_renewal_links`
+- P2-T4（購買ダッシュボード）の設計パターン（集計クエリのtenant scoping、権限体系、
+  フロントエンドの可視化コンポーネント構成）
+
+# やってはいけないこと
+- 集計のために既存テーブル（quotations, deals, contract_renewal_links）のデータを
+  重複保持する新規テーブルを作らない。集計はSQLビュー、またはオンデマンドの集計クエリで
+  行う（パフォーマンス上必要な場合のみ、read-onlyのmaterialized viewを検討し、その場合は
+  更新タイミング・整合性の考慮を完了報告に明記する）。
+- 既存のP4-T1〜T3のmigration・WORM設計・RLS設計を変更・書き換えない。
+- 集計クエリがtenant_idでのフィルタを欠き、他テナントのデータが集計に混入する状態を
+  作らない（既存のRLSに依存する場合も、集計用のクエリ・ビュー自体がRLSの対象になって
+  いることを確認する）。
+- dashboard.view権限を持たないユーザーがダッシュボードデータにアクセスできる状態を
+  作らない。
+
+# 実装対象
+1. 案件パイプラインの集計API（ステージ別件数・金額合計、`won`/`lost`の件数と勝率）
+2. 見積の状態別集計API（`draft`/`sent`/`accepted`/`rejected`/`expired`の件数、
+   成約率 = accepted / (sent + accepted + rejected + expired)）
+3. 契約更新連携の進捗集計API（P1-T4のアラート対象契約数に対する
+   `contract_renewal_links`作成率、リンクされた案件のステージ分布）
+4. `dashboard.view`のpermissionをRBAC体系に追加し、Controller・Service両層でチェックする。
+5. 上記集計を可視化するフロントエンド画面（グラフ・KPIカード等、P2-T4の購買ダッシュボード
+   と一貫したデザイン）
+
+# 受け入れ基準（Definition of Done）
+- [ ] 案件パイプライン・見積状態・契約更新連携進捗の集計値が、テストデータに対して
+      正しいことを確認する
+- [ ] 他テナントのデータが集計結果に一切混入しないことを確認する
+- [ ] `dashboard.view`権限を持たないユーザーがアクセスできないことを確認する
+- [ ] P4-T1〜T3の既存E2E（回帰）が引き続きすべてPASSする
+- [ ] migrationがappend-only・fail-closedの原則（本計画書0.4節）に従っている（新規
+      ビュー等を追加する場合も既存migrationは書き換えない）
+- [ ] Phase 0で確立した実DB E2E検証基盤で、上記すべてを実PostgreSQL上で確認し、
+      結果を報告に添付する
+- [ ] 完了報告に正確なコミットSHA・ブランチ名・main...ブランチの比較URLを明記する
+      （本計画書0.4節ルール4）
+- [ ] feature/p4-t4-sales-dashboard ブランチにコミット・pushし、比較URLを報告に含める
+
+# ChatGPTレビュー時の確認観点
+- 集計クエリ・ビューがtenant境界を正しく守っているか（RLSに依存する場合、そのビュー・
+  クエリ自体がRLSの対象になっているか）
+- `dashboard.view`権限のチェックがController・Service両層で行われているか
+- 集計ロジックが既存のP4-T1〜T3のWORM・状態遷移設計を変更していないか
+- 成約率・進捗率等の計算式が、完了報告に明記された定義通りに実装されているか
+```
+
+---
+
 ## 7. 既知の技術的負債・フォローアップ事項
 
 タスク完了時にSOが「修正不要だが記録すべき」と判定した事項を追跡する。将来の関連タスク着手時に必ず参照すること。
@@ -4701,15 +4817,16 @@ E2Eが引き続きすべてPASSすることを確認・報告すること。
 
 ## 8. 次のアクション
 
-1. 【フォローアップ指示プロンプト P4-T3-VERIFY】をGeminiに渡し、設計確定4点に基づく
-   実装追加（UNIQUE制約・WORMトリガー）・追加E2E・証跡確認を実施する。
-2. あわせて、DEBT-022（P4-T1・P4-T2のマージコミットSHA未確認）の解消として、これまでの
-   マージ状況を整理・報告してもらう。
-3. P4-T3-VERIFYの結果、SOが最終PASSと判定したら、P4-T3のマージ指示プロンプトを作成する
-   （P4-T1・P4-T2と同様の手順）。
-4. P4-T3マージ完了後、P4-T4（営業ダッシュボード・レポート）のタスク分解・実装指示
-   プロンプトをClaudeが作成する（Phase 0/1/2/3と同じ方針）。
-5. 未解決DEBT（7節）は都度解消の方針。
+1. 【マージ指示プロンプト P4-T3】をGeminiに渡す。P4-T1・P4-T2・P4-T3すべてのマージ
+   コミットSHAを確認・記録し（DEBT-022の解消）、マージ後の実DB E2E再検証を実行する。
+   完了報告を受け取ったら、P4-T1〜T3を完全クローズに更新し、DEBT-022を解消済みに更新
+   する。
+2. マージ完了後、【指示プロンプト P4-T4】（営業ダッシュボード・レポート）をGeminiに渡し、
+   Phase 4最終タスクに着手する。
+3. P4-T4が完了・PASSしたら、Phase 4（営業事務）を全4タスク完了として更新し、Phase 4
+   クローズのサマリ（往復回数、確立された恒久ルール、DEBT棚卸し）を追加する。その後
+   Phase 5（統合最適化）のタスク分解に着手する。
+4. 未解決DEBT（7節）は都度解消の方針。
 
 ---
 
@@ -4788,3 +4905,4 @@ E2Eが引き続きすべてPASSすることを確認・報告すること。
 | 7.10.1 | P4-T2はSO判定CONDITIONAL PASS（terminal状態のDB最終防御・tenant分離・`quotations.deal_id`連携・P4-T1回帰57/57等の主要設計は妥当、明確なBLOCKERなし）。非terminalステージ間の遷移順序についてClaudeが設計方針を確定（terminal以外は自由遷移）。`owner_user_id`のFK/tenant境界・認証actor実装・`closed_at`後発改変防止・git diffスコープの4点を証跡確認事項として整理し、フォローアップ指示プロンプト（P4-T2-VERIFY）を追加 |
 | 7.11.0 | P4-T2-VERIFYがSO正式PASS（実DB E2E 51/51・Schema 176/176・P4-T1回帰57/57・clean DB 001〜029、非terminalステージの自由遷移設計・`owner_user_id`のFK/tenant境界・認証actor・`closed_at`後発改変防止・git diffスコープをすべて実DB証跡で確認）。**P4-T2（案件管理）が実装面で完了**。マージ指示プロンプトを追加（P4-T1のマージコミットSHA未確認分の確認も含む）。P4-T2のマージを前提に、P4-T3（契約更新連携）のタスク詳細・実装指示プロンプトを追加。ロードマップ表・エグゼクティブサマリーを更新 |
 | 7.11.1 | P4-T3はSO判定CONDITIONAL PASS（明示操作によるdeal作成・自動確定なし・RLS/tenant整合性・RBAC等の基本設計は妥当、明確なBLOCKERなし）。`contract_renewal_links`の一意性・不変性・`quotation_id`の正当性・複数顧客候補時の扱い・RBAC権限構成・`deals.mapper.ts`変更の必要性・git diffスコープを要確認事項として指摘。Claudeが4点の設計を確定（1契約に複数リンク許可・1dealは1契約のみ・quotation_idは一度限りの遷移かつdeal_id一致要求・contract-renewal-link.create単独で機能利用可・顧客自動探索は完全一致のみでfail-closed）し、UNIQUE制約・WORMトリガー追加と証跡確認を求めるフォローアップ指示プロンプト（P4-T3-VERIFY）を追加。P4-T1・P4-T2のマージコミットSHA未確認をDEBT-022として記録 |
+| 7.12.0 | P4-T3-VERIFYがSO正式PASS（regression 189/189、clean DB 001〜031、`contract_renewal_links`のUNIQUE制約・WORM・`quotation`↔`deal`正当性検証・顧客自動探索fail-closed化をすべて確認）。**P4-T3（契約更新連携）が実装面で完了**。マージ指示プロンプトを追加（DEBT-022解消のためP4-T1・P4-T2のマージコミットSHA確認も併せて指示）。P4-T3のマージを前提に、Phase 4最終タスクとなるP4-T4（営業ダッシュボード・レポート）のタスク詳細・実装指示プロンプトを追加。ロードマップ表・エグゼクティブサマリーを更新 |
