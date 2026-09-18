@@ -1,11 +1,13 @@
+import { useQuery } from '@tanstack/react-query';
 import {
   ArrowLeft,
+  FileText,
   Plus,
   Save,
   Trash2,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { toast } from '../../stores/toastStore';
 import {
   useCreateQuotation,
@@ -17,6 +19,7 @@ import type {
   QuotationFormInput,
   QuotationLineItemFormInput,
 } from './types';
+import { fetchRenewalLinkByDeal } from '../contracts/renewalApi';
 
 const currencyFormatter = new Intl.NumberFormat('ja-JP', { style: 'currency', currency: 'JPY' });
 
@@ -31,8 +34,12 @@ const initialLine: QuotationLineItemFormInput = {
 
 export function QuotationFormPage() {
   const { id } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const isEdit = Boolean(id);
+
+  const queryDealId = searchParams.get('deal_id');
+  const queryCustomerId = searchParams.get('customer_id');
 
   const { data: customers = [] } = useCustomers();
   const { data: existingQuotation, isLoading: isQuoteLoading } = useQuotation(id);
@@ -40,12 +47,24 @@ export function QuotationFormPage() {
   const createMutation = useCreateQuotation();
   const updateMutation = useUpdateQuotation(id ?? '');
 
-  const [customerId, setCustomerId] = useState('');
+  const [customerId, setCustomerId] = useState(queryCustomerId ?? '');
+  const [dealId, setDealId] = useState<string | null>(queryDealId ?? null);
   const [title, setTitle] = useState('');
   const [issueDate, setIssueDate] = useState(new Date().toISOString().slice(0, 10));
   const [validUntil, setValidUntil] = useState('');
   const [notes, setNotes] = useState('');
   const [lines, setLines] = useState<QuotationLineItemFormInput[]>([{ ...initialLine }]);
+
+  // 紐づく商談ID
+  const activeDealId = existingQuotation?.deal_id ?? dealId;
+
+  // 原契約更新連携情報取得 (P4-T3)
+  const { data: renewalLink } = useQuery({
+    queryKey: ['contract-renewal-link', 'by-deal', activeDealId],
+    queryFn: () => fetchRenewalLinkByDeal(activeDealId!),
+    enabled: Boolean(activeDealId),
+    retry: false,
+  });
 
   // 編集時の初期値セット
   useEffect(() => {
@@ -56,6 +75,7 @@ export function QuotationFormPage() {
         return;
       }
       setCustomerId(existingQuotation.customer_id);
+      setDealId(existingQuotation.deal_id ?? null);
       setTitle(existingQuotation.title);
       setIssueDate(existingQuotation.issue_date);
       setValidUntil(existingQuotation.valid_until ?? '');
@@ -147,6 +167,7 @@ export function QuotationFormPage() {
 
     const payload: QuotationFormInput = {
       customer_id: customerId,
+      deal_id: activeDealId || undefined,
       title: title.trim(),
       issue_date: issueDate || undefined,
       valid_until: validUntil || null,
@@ -215,6 +236,33 @@ export function QuotationFormPage() {
           </button>
         </div>
       </div>
+
+      {/* 原契約更新連携カード (P4-T3) */}
+      {renewalLink?.contract && (
+        <div className="p-4 bg-gradient-to-r from-emerald-950/40 via-teal-950/30 to-surface-900 border border-emerald-800/60 rounded-xl flex items-start justify-between gap-4 shadow-sm">
+          <div className="flex items-start gap-3">
+            <div className="p-2 bg-emerald-900/60 text-emerald-400 rounded-lg shrink-0 mt-0.5 border border-emerald-700/50">
+              <FileText className="w-5 h-5" />
+            </div>
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="px-2 py-0.5 text-[10px] font-bold bg-emerald-600 text-white rounded">
+                  契約更新案件に紐づく見積
+                </span>
+                <span className="text-xs font-mono text-emerald-400 font-semibold">
+                  {renewalLink.contract.contract_no}
+                </span>
+              </div>
+              <h3 className="text-sm font-bold text-surface-100">
+                原契約: {renewalLink.contract.title}
+              </h3>
+              <p className="text-xs text-surface-400">
+                契約相手先: <strong className="text-surface-200">{renewalLink.contract.counterparty_name}</strong> | 有効期間: {renewalLink.contract.start_date} 〜 {renewalLink.contract.end_date ?? '期間定めなし'}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 基本情報カード */}
       <div className="rounded-xl border border-surface-800 bg-surface-900 p-5 space-y-4">

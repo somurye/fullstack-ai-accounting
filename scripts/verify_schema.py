@@ -2622,6 +2622,78 @@ def run_verification(dsn: str) -> int:
     r.ok("案件管理E2E: 作成・更新・terminal不変性(won/lost)・失注理由必須・quotations外部キー連携・RBAC・RLSが動作する (P4-T2)",
          p4t2_run.returncode == 0)
 
+    # =========================================================================
+    # 26. 【Phase 4 P4-T3】契約更新連携 (030_contract_renewal_links.sql 追加マイグレーション)
+    # =========================================================================
+    print("\n--- 26. 契約更新連携 (030_contract_renewal_links.sql 追加マイグレーション) (P4-T3) ---")
+
+    # 26-1. 030_contract_renewal_links.sql の段階適用
+    sql_030_path = SQL_DIR / "030_contract_renewal_links.sql"
+    sql_030 = sql_030_path.read_text(encoding="utf-8")
+    apply_030_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_030)
+        finally:
+            conn.close()
+    except Exception as e:
+        apply_030_ok = False
+        print(f"  [ERROR] 030_contract_renewal_links.sql apply failed: {e}")
+    r.ok("030_contract_renewal_links.sql がエラーなく正常適用される", apply_030_ok)
+
+    # 26-2. contract_renewal_links テーブル作成確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("SELECT to_regclass('contract_renewal_links') IS NOT NULL AS exists")
+        links_tbl_exists = cur.fetchone()["exists"]
+    r.ok("contract_renewal_links テーブルが正常に作成されている", links_tbl_exists)
+
+    # 26-3. contract_renewal_links RLS確認 (ENABLE + FORCE)
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'contract_renewal_links'")
+        row = cur.fetchone()
+        links_rls_ok = bool(row and row["relrowsecurity"] and row["relforcerowsecurity"])
+    r.ok("contract_renewal_links の RLS が有効かつ FORCE されている", links_rls_ok)
+
+    # 26-4. permissions の登録確認 (contract_renewal_link.*)
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("""SELECT code FROM permissions WHERE code IN (
+            'contract_renewal_link.create', 'contract_renewal_link.view'
+        )""")
+        renewal_perms = {row["code"] for row in cur.fetchall()}
+    r.ok("契約更新連携の全権限 (2種) が permissions テーブルに登録されている",
+         len(renewal_perms) == 2, f"実測登録数: {len(renewal_perms)} / 2")
+
+    # 26-5. 段階的アップグレード・冪等性検証 (030を2回連続適用してもエラーにならないこと)
+    idempotent_030_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_030)
+        finally:
+            conn.close()
+    except Exception as e:
+        idempotent_030_ok = False
+        print(f"  [ERROR] 030 re-apply failed: {e}")
+    r.ok("段階的アップグレード検証 18: 030を2回連続適用してもエラーにならず正常終了する (DDL 冪等性保証)",
+         idempotent_030_ok)
+
+    # 26-6. 【P4-T3実証】実DB E2Eテスト (明示的商談起票, 相互参照, テナント整合性トリガー, RBAC, RLS, 既存非破壊)
+    cmd_p4t3 = f"npx ts-node src/scripts/verify-contract-renewal-links-e2e.ts \"{dsn}\""
+    p4t3_run = subprocess.run(cmd_p4t3, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
+    if p4t3_run.returncode != 0:
+        err_msg = f"\n[P4-T3 E2E ERROR STDOUT]:\n{p4t3_run.stdout}\n[P4-T3 E2E ERROR STDERR]:\n{p4t3_run.stderr}"
+        print(err_msg.encode("cp932", errors="replace").decode("cp932"))
+    else:
+        print("\n=== P4-T3 E2E 実測実行ログ ===")
+        print(p4t3_run.stdout)
+    r.ok("契約更新連携E2E: 明示的商談起票・相互参照・テナント整合性トリガー(23503)・RBAC・RLS・非自動確定・既存非破壊が動作する (P4-T3)",
+         p4t3_run.returncode == 0)
+
     return r.summary()
 
 
@@ -2650,12 +2722,12 @@ def main() -> int:
 
         # 1. まず 001〜014 までを適用 (P1-T5マージ直後の既存DB状態を再現)
         apply_schema(dsn, max_file="014_general_requests.sql")
-        # 2. 検証実行 (セクション12で015、...、セクション21で025、セクション22で026、セクション23で027、セクション24で028、セクション25で029段階適用 -> E2E実行)
+        # 2. 検証実行 (セクション12で015、...、セクション21で025、セクション22で026、セクション23で027、セクション24で028、セクション25で029、セクション26で030段階適用 -> E2E実行)
         exit_code = run_verification(dsn)
 
-        # 3. クリーンDBに最初から001〜029を一括適用した場合の回帰なし確認
+        # 3. クリーンDBに最初から001〜030を一括適用した場合の回帰なし確認
         if exit_code == 0:
-            fresh_db_name = "keiri_kaikei_fresh_029"
+            fresh_db_name = "keiri_kaikei_fresh_030"
             conn_raw = psycopg2.connect(dsn)
             conn_raw.autocommit = True
             try:
@@ -2666,9 +2738,9 @@ def main() -> int:
                 conn_raw.close()
 
             dsn_fresh = dsn.rsplit("/", 1)[0] + f"/{fresh_db_name}"
-            print("\n--- クリーンDBへの001〜029一括適用検証 (新規環境回帰なし確認) ---")
+            print("\n--- クリーンDBへの001〜030一括適用検証 (新規環境回帰なし確認) ---")
             apply_schema(dsn_fresh)
-            print("[schema] クリーンDBへの001〜029一括適用が正常終了しました (回帰なし確認完了)")
+            print("[schema] クリーンDBへの001〜030一括適用が正常終了しました (回帰なし確認完了)")
     finally:
         if args.use_docker and not args.keep_docker:
             docker_stop()

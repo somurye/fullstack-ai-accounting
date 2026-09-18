@@ -39,6 +39,8 @@ export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     'deal.view',
     'deal.edit',
     'deal.close',
+    'contract_renewal_link.create',
+    'contract_renewal_link.view',
   ],
   legal_admin: [
     'contract.create',
@@ -55,6 +57,8 @@ export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     'supplier.view',
     'quotation.view',
     'deal.view',
+    'contract_renewal_link.create',
+    'contract_renewal_link.view',
   ],
   legal_viewer: [
     'contract.view',
@@ -63,6 +67,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     'supplier.view',
     'quotation.view',
     'deal.view',
+    'contract_renewal_link.view',
   ],
   approver: [
     'contract.view',
@@ -75,6 +80,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     'supplier.view',
     'quotation.view',
     'deal.view',
+    'contract_renewal_link.view',
   ],
   accounting_manager: [
     'contract.view',
@@ -94,6 +100,8 @@ export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     'deal.view',
     'deal.edit',
     'deal.close',
+    'contract_renewal_link.create',
+    'contract_renewal_link.view',
   ],
   accountant: [
     'contract.view',
@@ -107,10 +115,12 @@ export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     'quotation.view',
     'quotation.convert',
     'deal.view',
+    'contract_renewal_link.view',
   ],
   bookkeeper: [
     'quotation.view',
     'deal.view',
+    'contract_renewal_link.view',
   ],
   employee: [
     'general_request.create',
@@ -129,6 +139,8 @@ export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     'deal.view',
     'deal.edit',
     'deal.close',
+    'contract_renewal_link.create',
+    'contract_renewal_link.view',
   ],
   payroll_admin: [],
   viewer_external: [],

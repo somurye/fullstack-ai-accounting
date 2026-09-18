@@ -50,6 +50,7 @@ import { PayslipsModule } from './modules/payslips/payslips.module';
 import { YearEndAdjustmentsModule } from './modules/year-end-adjustments/year-end-adjustments.module';
 import { QuotationsModule } from './modules/quotations/quotations.module';
 import { DealsModule } from './modules/deals/deals.module';
+import { ContractRenewalLinksModule } from './modules/contract-renewal-links/contract-renewal-links.module';
 
 /**
  * AppModule
@@ -117,6 +118,7 @@ import { DealsModule } from './modules/deals/deals.module';
     YearEndAdjustmentsModule,
     QuotationsModule,
     DealsModule,
+    ContractRenewalLinksModule,
   ],
   controllers: [],
   providers: [

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Bell, Check, ChevronDown, LogOut, User as UserIcon } from 'lucide-react';
+import { Bell, Check, ChevronDown, LogOut, RefreshCw, User as UserIcon } from 'lucide-react';
 import { type ChangeEvent, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { logout as logoutRequest } from '../../pages/auth/api';
 import { fetchNotifications, markNotificationAsRead } from '../../pages/notifications/api';
 import { useAuthStore } from '../../stores/authStore';
@@ -132,9 +133,22 @@ export function Header() {
                         </button>
                       </div>
                       <p className="mt-1 text-[11px] text-surface-300 leading-relaxed whitespace-pre-wrap">{notif.body}</p>
-                      <span className="mt-1.5 block text-[10px] text-surface-500">
-                        {new Date(notif.created_at).toLocaleDateString('ja-JP')}
-                      </span>
+                      <div className="mt-1.5 flex items-center justify-between">
+                        <span className="text-[10px] text-surface-500">
+                          {new Date(notif.created_at).toLocaleDateString('ja-JP')}
+                        </span>
+                        {(notif.target_type === 'contract' || notif.type === 'contract_expiry') &&
+                          notif.target_id && (
+                            <Link
+                              to={`/contracts?renew_contract_id=${notif.target_id}`}
+                              onClick={() => setIsNotificationsOpen(false)}
+                              className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-400 hover:text-emerald-300 transition-colors"
+                            >
+                              <RefreshCw className="h-3 w-3" />
+                              更新提案の案件を作成
+                            </Link>
+                          )}
+                      </div>
                     </div>
                   ))
                 )}
