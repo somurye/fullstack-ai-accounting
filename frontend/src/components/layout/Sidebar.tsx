@@ -54,7 +54,22 @@ interface NavGroup {
 const NAV_GROUPS: NavGroup[] = [
   {
     title: 'ホーム',
-    items: [{ label: 'ダッシュボード', to: '/dashboard', icon: LayoutDashboard }],
+    items: [
+      { label: 'ダッシュボード', to: '/dashboard', icon: LayoutDashboard },
+      {
+        label: '経営ダッシュボード (横断KPI)',
+        to: '/executive-dashboard',
+        icon: BarChart3,
+        roles: [
+          Role.ADMIN,
+          'accounting_manager',
+          Role.LEGAL_ADMIN,
+          Role.APPROVER,
+          Role.ACCOUNTANT,
+          'payroll_admin',
+        ],
+      },
+    ],
   },
   {
     title: '会計コア',

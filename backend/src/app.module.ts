@@ -52,6 +52,7 @@ import { QuotationsModule } from './modules/quotations/quotations.module';
 import { DealsModule } from './modules/deals/deals.module';
 import { ContractRenewalLinksModule } from './modules/contract-renewal-links/contract-renewal-links.module';
 import { SalesDashboardModule } from './modules/sales-dashboard/sales-dashboard.module';
+import { ExecutiveDashboardModule } from './modules/executive-dashboard/executive-dashboard.module';
 
 /**
  * AppModule
@@ -121,6 +122,7 @@ import { SalesDashboardModule } from './modules/sales-dashboard/sales-dashboard.
     DealsModule,
     ContractRenewalLinksModule,
     SalesDashboardModule,
+    ExecutiveDashboardModule,
   ],
   controllers: [],
   providers: [
