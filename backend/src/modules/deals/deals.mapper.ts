@@ -43,6 +43,17 @@ export interface DealDto {
   is_terminal: boolean;
 }
 
+function toDateString(val: string | Date | null | undefined): string | null {
+  if (!val) return null;
+  if (val instanceof Date) {
+    const year = val.getFullYear();
+    const month = String(val.getMonth() + 1).padStart(2, '0');
+    const day = String(val.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+  return String(val).slice(0, 10);
+}
+
 export function mapDealRow(row: DealRow): DealDto {
   const stage = row.stage;
   const isTerminal = stage === 'won' || stage === 'lost';
@@ -57,7 +68,7 @@ export function mapDealRow(row: DealRow): DealDto {
     stage,
     expected_amount: Number(row.expected_amount || 0),
     currency_code: row.currency_code,
-    expected_close_date: row.expected_close_date ? String(row.expected_close_date).slice(0, 10) : null,
+    expected_close_date: toDateString(row.expected_close_date),
     owner_user_id: row.owner_user_id ?? null,
     owner_name: row.owner_name ?? null,
     lost_reason: row.lost_reason ?? null,

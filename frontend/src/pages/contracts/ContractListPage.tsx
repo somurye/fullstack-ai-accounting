@@ -4,16 +4,18 @@ import {
   FileText,
   Loader2,
   Plus,
+  RefreshCw,
   Search,
   SlidersHorizontal,
   Sparkles,
   X,
 } from 'lucide-react';
 import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { apiClient } from '../../lib/apiClient';
 import { toast } from '../../stores/toastStore';
 import type { components } from '../../types/api.generated';
+import { RenewalDealModal } from './RenewalDealModal';
 
 type Contract = components['schemas']['Contract'];
 type SimilarContract = components['schemas']['SimilarContract'];
@@ -72,6 +74,12 @@ export function ContractListPage() {
   const [similarToContract, setSimilarToContract] = useState<SimilarContract[] | null>(null);
   const [isLoadingSimilarToContract, setIsLoadingSimilarToContract] = useState(false);
 
+  // 契約更新商談作成モーダルステート (P4-T3)
+  const [selectedContractForRenewal, setSelectedContractForRenewal] = useState<Contract | null>(
+    null,
+  );
+  const [searchParams] = useSearchParams();
+
   // 契約一覧取得
   const fetchContracts = async () => {
     setIsLoadingContracts(true);
@@ -91,6 +99,17 @@ export function ContractListPage() {
   useEffect(() => {
     void fetchContracts();
   }, []);
+
+  // URLパラメータで renew_contract_id が渡された場合に自動でモーダルを開く
+  useEffect(() => {
+    const renewId = searchParams.get('renew_contract_id');
+    if (renewId && contracts.length > 0) {
+      const target = contracts.find((c) => c.id === renewId);
+      if (target) {
+        setSelectedContractForRenewal(target);
+      }
+    }
+  }, [searchParams, contracts]);
 
   // 自然文類似検索実行 (GET /contracts/search/similar)
   const handleTextSearch = async (e: React.FormEvent) => {
@@ -399,15 +418,26 @@ export function ContractListPage() {
                         </span>
                       </td>
                       <td className="px-5 py-4 text-right">
-                        <button
-                          type="button"
-                          onClick={() => handleOpenSimilarModal(contract)}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 rounded-lg transition-colors border border-indigo-200"
-                          title="この契約書に類似する契約書をベクトル探索"
-                        >
-                          <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                          類似契約
-                        </button>
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedContractForRenewal(contract)}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-emerald-700 hover:text-emerald-800 hover:bg-emerald-50 rounded-lg transition-colors border border-emerald-200"
+                            title="この契約の更新提案商談（案件）を作成"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5 text-emerald-600" />
+                            更新商談作成
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenSimilarModal(contract)}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 rounded-lg transition-colors border border-indigo-200"
+                            title="この契約書に類似する契約書をベクトル探索"
+                          >
+                            <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                            類似契約
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -512,6 +542,17 @@ export function ContractListPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* 契約更新商談作成モーダル (P4-T3) */}
+      {selectedContractForRenewal && (
+        <RenewalDealModal
+          contract={selectedContractForRenewal}
+          onClose={() => setSelectedContractForRenewal(null)}
+          onSuccess={() => {
+            setSelectedContractForRenewal(null);
+          }}
+        />
       )}
     </div>
   );

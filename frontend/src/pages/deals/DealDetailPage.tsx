@@ -1,3 +1,4 @@
+import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
@@ -10,6 +11,7 @@ import {
   Edit3,
   Trash2,
   FileSpreadsheet,
+  FileText,
   Plus,
   ChevronRight,
   AlertTriangle,
@@ -19,6 +21,7 @@ import { useQuotations } from '../quotations/hooks';
 import { StatusBadge } from './StatusBadge';
 import { StatusBadge as QuotationStatusBadge } from '../quotations/StatusBadge';
 import { DEAL_STAGES, DEAL_STAGE_LABELS, type DealStage } from './types';
+import { fetchRenewalLinkByDeal } from '../contracts/renewalApi';
 
 export function DealDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -34,6 +37,14 @@ export function DealDetailPage() {
     limit: 50,
   });
   const quotations = quoteData?.quotations ?? [];
+
+  // 原契約更新連携情報取得 (P4-T3)
+  const { data: renewalLink } = useQuery({
+    queryKey: ['contract-renewal-link', 'by-deal', id],
+    queryFn: () => fetchRenewalLinkByDeal(id!),
+    enabled: Boolean(id),
+    retry: false,
+  });
 
   // 失注モーダル状態
   const [isLostModalOpen, setIsLostModalOpen] = useState(false);
@@ -117,6 +128,47 @@ export function DealDetailPage() {
           案件一覧に戻る
         </Link>
       </div>
+
+      {/* 原契約更新連携カード (P4-T3) */}
+      {renewalLink?.contract && (
+        <div className="p-4 bg-gradient-to-r from-emerald-50 via-teal-50 to-indigo-50 border border-emerald-200/80 rounded-xl flex items-start justify-between gap-4 shadow-sm">
+          <div className="flex items-start gap-3">
+            <div className="p-2.5 bg-emerald-100 text-emerald-700 rounded-lg shrink-0 mt-0.5">
+              <FileText className="w-5 h-5" />
+            </div>
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="px-2 py-0.5 text-[11px] font-bold bg-emerald-600 text-white rounded-md">
+                  契約更新連携商談
+                </span>
+                <span className="text-xs font-mono text-emerald-800 font-semibold">
+                  {renewalLink.contract.contract_no}
+                </span>
+              </div>
+              <h3 className="text-sm font-bold text-slate-900">
+                原契約: {renewalLink.contract.title}
+              </h3>
+              <p className="text-xs text-slate-600">
+                契約相手先: <strong className="text-slate-800">{renewalLink.contract.counterparty_name}</strong> | 有効期間: {renewalLink.contract.start_date} 〜 {renewalLink.contract.end_date ?? '期間定めなし'}
+                {renewalLink.contract.contract_amount != null && (
+                  <span className="ml-2">
+                    (契約金額: ¥{renewalLink.contract.contract_amount.toLocaleString()})
+                  </span>
+                )}
+              </p>
+            </div>
+          </div>
+          <div className="text-right shrink-0">
+            <Link
+              to="/contracts"
+              className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:text-emerald-800 hover:underline bg-white px-3 py-1.5 rounded-lg border border-emerald-200 shadow-sm"
+            >
+              契約書台帳を開く
+              <ChevronRight className="w-3.5 h-3.5" />
+            </Link>
+          </div>
+        </div>
+      )}
 
       {/* 案件ヘッダーカード */}
       <div className="p-6 bg-white rounded-xl border border-slate-200 shadow-sm space-y-4">

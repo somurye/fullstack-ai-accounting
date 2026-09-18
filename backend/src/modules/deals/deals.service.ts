@@ -158,8 +158,11 @@ export class DealsService {
     userId: string,
     roles: string[],
     input: CreateDealInput,
+    options?: { skipPermissionCheck?: boolean },
   ): Promise<DealDto> {
-    this.assertPermission(roles, 'deal.create');
+    if (!options?.skipPermissionCheck) {
+      this.assertPermission(roles, 'deal.create');
+    }
 
     return this.db.transaction(tenantId, userId, async (client) => {
       // 1. 顧客の存在・テナント所属チェック
