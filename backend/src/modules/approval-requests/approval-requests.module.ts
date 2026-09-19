@@ -7,5 +7,6 @@ import { ApprovalRequestsService } from './approval-requests.service';
   imports: [AuditLogsModule],
   controllers: [ApprovalRequestsController],
   providers: [ApprovalRequestsService],
+  exports: [ApprovalRequestsService],
 })
 export class ApprovalRequestsModule {}

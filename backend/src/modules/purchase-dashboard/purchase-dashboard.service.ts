@@ -11,6 +11,7 @@ import type {
   StatusCountsDto,
   SupplierRankingItem,
 } from './purchase-dashboard.dto';
+import type { PurchaseKpiDto } from '../executive-dashboard/executive-dashboard.dto';
 
 const TREND_MONTHS = 6;
 
@@ -76,6 +77,23 @@ export class PurchaseDashboardService {
         monthly_trends: monthlyTrends,
       };
     });
+  }
+
+  /**
+   * 経営者ダッシュボード向け購買KPIサマリーを取得する (P5-T1)
+   * 既存の getSummary (P2-T4) 集計ロジックを再利用し、重複実装を排除
+   */
+  async getExecutivePurchaseKpi(
+    tenantId: string,
+    userId: string | null,
+  ): Promise<PurchaseKpiDto> {
+    const summary = await this.getSummary(tenantId, userId, { supplier_limit: 1 });
+    return {
+      pending_approval_count: summary.status_counts.pending_approval.count,
+      pending_approval_amount: summary.status_counts.pending_approval.total_amount,
+      current_month_order_amount: summary.amount_summary.current_month_active_amount,
+      pending_receipts_count: summary.pending_receipts.total_pending_receipt_count,
+    };
   }
 
   /**

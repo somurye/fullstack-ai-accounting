@@ -1,7 +1,7 @@
 # keiri-kaikei 全社バックオフィス統合SaaS 拡張計画書
 
 - 文書番号: PLAN-01
-- バージョン: 7.14.0
+- バージョン: 7.14.1
 - 対象リポジトリ: `fullstack-ai-accounting`（経理・会計基盤）
 - 関連文書: `docs/01_requirements.md`, `docs/02_architecture.md`, `docs/03_database_design.md`
 
@@ -21,7 +21,7 @@
 | Phase 2 | 購買・調達 | ✅ 完了 | 4/4 | 平均2回、最大3回（P2-T2/P2-T3） |
 | Phase 3 | 人事労務 | ✅ 完了 | 4/4 | 平均2〜3回、最大6回（P3-T3） |
 | Phase 4 | 営業事務 | ✅ 完了 | 4/4 | 平均2〜3回、最大5回（P4-T1） |
-| Phase 5 | 統合最適化 | 🔵 着手中 | 0/4 | - |
+| Phase 5 | 統合最適化 | 🔵 着手中 | 0/4（P5-T1 REQUEST CHANGES） | P5-T1: 1回目REQUEST CHANGES |
 
 ### 直近のアクション
 
@@ -35,6 +35,15 @@
   提案に留め業務データを自動変更しない、レコメンドの根拠データは閲覧者の権限範囲に限定、
   提示・採用・見送りの監査可能性）を明記。タスク分解（P5-T1〜T4）とP5-T1（横断KPI
   ダッシュボード基盤）の実装指示プロンプトを追加した。
+- P5-T1（横断KPIダッシュボード基盤）の完了報告に対し、ChatGPT(SO)はREQUEST CHANGESと
+  判定。RLS実DB検証（`app_runtime`ロール・tenant context経由）・tenant分離・二重認可・
+  Git証跡はいずれも良好だが、**核心となるDoD（既存の各ドメインAPI・集計ロジックを
+  呼び出す形で実装し、重複実装しない）に違反**していた：`ExecutiveDashboardService`が
+  既存の`SalesDashboardService`（P4-T4）・`PurchaseDashboardService`（P2-T4）等を
+  呼び出さず、独自にSQL集計を再実装していた。修正はExecutiveDashboardServiceを薄い
+  レイヤー化し、各ドメインの既存Serviceを呼び出す（不足するメソッドは各ドメインの
+  Service側に追加する）方針とするフォローアップ指示プロンプト（P5-T1-FIX）を作成した。
+  次はこれをGeminiに渡す。
 - DEBT-020・DEBT-022は解消済み。DEBT-021（年末調整はtax_year=2026限定）等、低リスクの
   技術的負債が8節に継続記録されている。特にDEBT-001（添付ファイルの非原子性）は、
   Phase 5着手にあわせて優先的に棚卸しすることを推奨する。
@@ -4976,7 +4985,7 @@ Phase 0〜4で構築した各業務ドメイン（承認ワークフロー、契
 
 | タスクID | タスク名 | 概要 | 依存 | ステータス |
 |----------|----------|------|------|-----------|
-| P5-T1 | 横断KPIダッシュボード基盤 | Phase 0〜4の主要KPI（承認待ち件数、契約更新期限、購買稟議状況、給与・勤怠概況、営業パイプライン・見積成約率）を1画面に統合表示する経営者向けダッシュボード | P0〜P4の各ダッシュボード・集計API | 🟢 実装完了・実DB検証合格・PR準備完了 |
+| P5-T1 | 横断KPIダッシュボード基盤 | Phase 0〜4の主要KPI（承認待ち件数、契約更新期限、購買稟議状況、給与・勤怠概況、営業パイプライン・見積成約率）を1画面に統合表示する経営者向けダッシュボード | P0〜P4の各ダッシュボード・集計API | 🔴 SO判定REQUEST CHANGES（RLS・tenant分離・RBAC等は良好。既存ドメインの集計ロジックを再利用せず独自SQLで重複実装している点がDoD違反。P5-T1-FIX対応中） |
 | P5-T2 | AIレコメンドエンジン基盤 | 業務横断的なデータ相関から提案（レコメンド）を生成する基盤。提案の生成・表示・採用/見送りの記録に専念し、業務データの自動変更は行わない | P5-T1 | ⏳ P5-T1の実装結果を踏まえてタスク分解予定 |
 | P5-T3 | レコメンドの業務画面への統合表示 | P5-T2のレコメンドを、各ドメインの既存業務画面（契約詳細、案件詳細、購買申請等）に文脈に応じて表示する | P5-T2 | ⏳ 未分解 |
 | P5-T4 | 技術的負債の棚卸し・解消とPhase 5クローズ | DEBT-001等、Phase 5着手前に推奨された技術的負債の棚卸しと解消、プロジェクト全体の最終確認 | P5-T1, P5-T2, P5-T3 | ⏳ 未分解 |
@@ -5055,6 +5064,83 @@ P4-T4（営業ダッシュボード）の集計パターンを踏襲し、新た
 
 ---
 
+#### 【フォローアップ指示プロンプト P5-T1-FIX】REQUEST CHANGES対応（既存集計ロジックの重複実装というDoD違反）
+
+ChatGPT(SO)よりP5-T1は「RLS実DB検証・tenant isolation・二重認可・Git証跡はいずれも
+良好。ただし核心となるDoD（既存の各ドメインAPI・集計ロジックを呼び出す形で実装し、
+重複実装しない）を満たしていない」と判定された。セキュリティ検証のやり直しではなく、
+実装方針そのものの修正が必要である。
+
+```
+# SOレビュー結果：P5-T1 REQUEST CHANGES（既存集計ロジックの重複実装というBLOCKER）
+
+# BLOCKER: `ExecutiveDashboardService`が既存ドメインのServiceを呼び出さず、独自にSQL集計している
+現在の実装は、`deals`・`quotations`・`contract_renewal_links`・`purchase_requests`・
+`approval_requests`・`employees`・`attendance_records`等のテーブルに対して、
+`ExecutiveDashboardService`内で直接SQL集計を行っている。特に営業KPI（win rate、
+quotation conversion rate、renewal proposal rate）は、既存の`SalesDashboardService`
+（P4-T4）にほぼ同じ計算式のメソッドが既に存在するにもかかわらず、それを呼び出さず
+再実装している。購買KPIについても同様に、既存の`PurchaseDashboardService`（P2-T4）を
+呼び出さず直接`purchase_requests`を集計している。これはP5-T1の指示プロンプト本文・DoD
+（「既存の各ドメインAPI・集計ロジックを呼び出す形で実装し、ロジックを重複実装しない」）
+に対する明確な違反である。
+
+**「既存テーブルを参照している」ことと「既存の集計ロジックを再利用している」ことは
+別である**。今回求めているのは後者であり、前者への修正（SQLを変えずに残す等）では
+対応にならない。
+
+# 修正方針
+1. `ExecutiveDashboardService`から、各ドメインのテーブルへの直接SQL集計をすべて削除する。
+2. 営業KPIは、既存`SalesDashboardService`の該当メソッドを呼び出す形に変更する。
+   `ExecutiveDashboardService`が必要とする粒度のメソッドが`SalesDashboardService`に
+   存在しない場合は、**`SalesDashboardService`側に必要なメソッドを追加**し、それを
+   `ExecutiveDashboardService`から呼び出す（`ExecutiveDashboardService`側にSQL・
+   計算ロジックを持たせない）。
+3. 購買KPIについても、既存`PurchaseDashboardService`（P2-T4）の該当メソッドを呼び出す
+   形に変更する。必要なメソッドがなければ`PurchaseDashboardService`側に追加する。
+4. 承認ワークフロー（Phase 0）・契約更新（P1-T4）・人事労務（Phase 3）のKPIについても
+   同様に、各ドメインの既存Service（実際のクラス名・ファイルは既存コードから確認する
+   こと）に必要な集計メソッドがあれば呼び出し、なければそのドメインのService側に
+   追加してから呼び出す。
+5. `ExecutiveDashboardService`自身は、各ドメインServiceのメソッド呼び出し結果を合成する
+   だけの薄いレイヤーとし、SQLクエリを直接発行しないようにする。
+6. 既存Serviceにメソッドを追加する際、既存の呼び出し元（既存ダッシュボード画面等）の
+   挙動・既存のtenant/RLS/権限チェックの前提を壊さないこと。
+
+# 追加すべき実DB E2E（必須）
+- Executive Dashboardが返す各ドメインのKPI値が、対応する既存Service（
+  `SalesDashboardService`・`PurchaseDashboardService`等）のメソッドを直接呼び出した
+  結果と完全一致することを確認する（同じデータに対する独立した再計算ではなく、同一の
+  呼び出し経路であることの確認）
+- 既存のP2-T4・P4-T4ダッシュボードの既存E2Eが引き続きすべてPASSする（回帰確認）
+- `app_runtime`ロール・tenant context経由の実DB E2E（前回の54項目相当）が、修正後も
+  引き続きすべてPASSする
+
+# 受け入れ基準（Definition of Done）
+- [ ] `ExecutiveDashboardService`が独自のSQL集計を持たず、各ドメインの既存（または
+      新規追加された）Serviceメソッドの呼び出しのみで構成されていることをコードで
+      確認できる
+- [ ] 既存Serviceへの追加が必要だった箇所（例: `SalesDashboardService`,
+      `PurchaseDashboardService`）が、そのドメインのService内に追加され、
+      `ExecutiveDashboardService`側に重複実装されていないことを確認する
+- [ ] 上記「追加すべき実DB E2E」3点がすべてPASSする
+- [ ] 既存のP0〜P4回帰E2Eが引き続きすべてPASSする
+- [ ] `git diff main...HEAD`（修正後の最終コミット）で、意図しない変更が混入していない
+      ことを確認する
+- [ ] コミットSHA・ブランチ名・main...ブランチの比較URLを完了報告に明記する
+      （本計画書0.4節）
+
+# ChatGPTレビュー時の確認観点
+- `ExecutiveDashboardService`が本当に薄いレイヤーになっており、SQL・計算ロジックを
+  自前で持っていないか
+- 既存ドメインServiceへの追加メソッドが、そのドメインの既存tenant/RLS/権限チェックの
+  前提を壊していないか
+- 「既存テーブルを見ている」ことと「既存ロジックを呼び出している」ことを混同した誤修正
+  になっていないか
+```
+
+---
+
 ## 8. 既知の技術的負債・フォローアップ事項
 
 タスク完了時にSOが「修正不要だが記録すべき」と判定した事項を追跡する。将来の関連タスク着手時に必ず参照すること。
@@ -5088,7 +5174,8 @@ P4-T4（営業ダッシュボード）の集計パターンを踏襲し、新た
 
 ## 9. 次のアクション
 
-1. Phase 5（統合最適化）の【指示プロンプト P5-T1】をGeminiに渡し、着手する。
+1. 【フォローアップ指示プロンプト P5-T1-FIX】をGeminiに渡し、`ExecutiveDashboardService`
+   を既存ドメインServiceの呼び出しのみで構成する薄いレイヤーに修正する。
 2. DEBT-001（添付ファイルアップロードの非原子性）を、Phase 5着手にあわせて優先的に
    棚卸しする（8節）。
 3. 未解決DEBT（8節）は都度解消の方針。
@@ -5174,3 +5261,4 @@ P4-T4（営業ダッシュボード）の集計パターンを踏襲し、新た
 | 7.12.1 | P4-T4はSO判定REQUEST CHANGES（実装コード・集計ロジック・RBAC・migration・git diffスコープは良好、作り直しではなく実質1点の修正）。実DB E2Eが`postgres`superuser接続のまま実行されておりRLSを実際には経由していないことが判明（PostgreSQLのsuperuserはFORCE RLSでも常にバイパスするため）。E2Eを既存の`DatabaseService.transaction()`（app_runtimeロール・tenant context経由）に修正するよう求めるフォローアップ指示プロンプト（P4-T4-FIX）を追加。併せて完了報告内のJest/schema verifier/E2E/clean DB migrationの数字の混同について報告表現の整理を指示 |
 | 7.13.0 | P4-T4-FIXがSO正式PASS・mainマージ可能（`app_runtime`ロール・tenant context下でのRLS実DB検証、Tenant B直接不可視0件確認、実DB E2E 81/81・Jest 241/241・schema verifier 194/194）。SOがGitHub履歴からP4-T1〜T3の実際のマージコミットSHA（`7317b04`・`8227404`・`b67b356`）を確認し、**DEBT-022を解消済みに更新**。P4-T1〜T3の各タスク行にマージコミットSHAを反映。P4-T4のマージ指示プロンプトを追加（マージ完了でPhase 4全4タスク完了となる） |
 | 7.14.0 | P4-T4のmainマージ完了報告を受領（マージコミット`f697778`、main上でclean DB 001〜032・実DB E2E 81/81・schema verifier 194/194・Backend Jest 28 suites/241 tests・Frontend buildすべて確認済み）。**Phase 4（営業事務）が全4タスク完了**。ロードマップ表・エグゼクティブサマリーをPhase 4完了に更新し、Phase 4クローズのサマリ（往復回数、確立された恒久ルール、DEBT棚卸し）を追加。**Phase 5（統合最適化）のセクションを新設**。7.2節に本Phase特有の設計原則（横断ダッシュボードは既存ドメインのRLS/RBACを迂回しない、AIレコメンドは提案に留め業務データを自動変更しない、根拠データは閲覧者の権限範囲に限定、監査可能性）を明記。タスク分解（P5-T1〜T4）とP5-T1（横断KPIダッシュボード基盤）の実装指示プロンプトを追加。以降のセクション番号（旧7〜9節）を1つずつ繰り下げ（8: 技術的負債、9: 次のアクション、10: 変更履歴） |
+| 7.14.1 | P5-T1はSO判定REQUEST CHANGES（RLS実DB検証・tenant分離・二重認可・Git証跡は良好、明確なBLOCKERはDoD違反1点）。`ExecutiveDashboardService`が既存の`SalesDashboardService`（P4-T4）・`PurchaseDashboardService`（P2-T4）等を呼び出さず、独自SQLで集計ロジックを重複実装していたことが判明（P5-T1のDoD「既存ロジックを呼び出し、重複実装しない」への違反）。ExecutiveDashboardServiceを薄いレイヤー化し、不足メソッドは各ドメインのService側に追加した上で呼び出す方針の修正を求めるフォローアップ指示プロンプト（P5-T1-FIX）を追加 |

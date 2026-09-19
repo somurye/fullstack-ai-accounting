@@ -33,6 +33,7 @@ import type {
   SearchSimilarContractsQuery,
   SimilarContractsQuery,
 } from './dto/contract.schemas';
+import type { ContractKpiDto } from '../executive-dashboard/executive-dashboard.dto';
 import { extractTextFromPdfFile } from './utils/pdf-text-extractor';
 
 export interface ContractListResult {
@@ -858,6 +859,46 @@ export class ContractsService {
       );
 
       return result.rows.map(mapSimilarContractRow);
+    });
+  }
+
+  /**
+   * 契約更新期限サマリーを取得する (P5-T1 / 横断KPIダッシュボード用)
+   */
+  async getExpirySummary(tenantId: string, userId: string | null): Promise<ContractKpiDto> {
+    return this.db.transaction(tenantId, userId, async (client) => {
+      const contractRes = await client.query<{
+        active_count: number;
+        expiring_soon: number;
+        within_30: number;
+        within_60: number;
+      }>(
+        `SELECT
+           COUNT(*)::int AS active_count,
+           COUNT(CASE
+             WHEN end_date <= (CURRENT_DATE + (COALESCE(renewal_notice_days, 30) || ' days')::interval)
+              AND end_date >= CURRENT_DATE THEN 1
+           END)::int AS expiring_soon,
+           COUNT(CASE
+             WHEN end_date <= (CURRENT_DATE + interval '30 days')
+              AND end_date >= CURRENT_DATE THEN 1
+           END)::int AS within_30,
+           COUNT(CASE
+             WHEN end_date <= (CURRENT_DATE + interval '60 days')
+              AND end_date >= CURRENT_DATE THEN 1
+           END)::int AS within_60
+         FROM contracts
+         WHERE tenant_id = $1 AND status = 'active'`,
+        [tenantId],
+      );
+
+      const row = contractRes.rows[0];
+      return {
+        active_contracts_count: Number(row?.active_count || 0),
+        expiring_soon_count: Number(row?.expiring_soon || 0),
+        expiring_within_30_days: Number(row?.within_30 || 0),
+        expiring_within_60_days: Number(row?.within_60 || 0),
+      };
     });
   }
 }

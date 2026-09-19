@@ -3,6 +3,13 @@ import { randomUUID } from 'node:crypto';
 import { Reflector } from '@nestjs/core';
 import type { ExecutionContext } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
+import { AuditLogsService } from '../modules/audit-logs/audit-logs.service';
+import { AiSuggestionsService } from '../modules/ai-suggestions/ai-suggestions.service';
+import { ApprovalRequestsService } from '../modules/approval-requests/approval-requests.service';
+import { ContractsService } from '../modules/contracts/contracts.service';
+import { PurchaseDashboardService } from '../modules/purchase-dashboard/purchase-dashboard.service';
+import { AttendanceService } from '../modules/attendance/attendance.service';
+import { SalesDashboardService } from '../modules/sales-dashboard/sales-dashboard.service';
 import { ExecutiveDashboardService } from '../modules/executive-dashboard/executive-dashboard.service';
 import { ExecutiveDashboardController } from '../modules/executive-dashboard/executive-dashboard.controller';
 import { PermissionsGuard } from '../common/guards/permissions.guard';
@@ -110,7 +117,22 @@ async function run() {
     });
   };
 
-  const dashboardService = new ExecutiveDashboardService(db);
+  const auditLogsService = new AuditLogsService(db);
+  const aiSuggestionsService = new AiSuggestionsService(db);
+
+  const approvalRequestsService = new ApprovalRequestsService(db, auditLogsService);
+  const contractsService = new ContractsService(db, auditLogsService, aiSuggestionsService);
+  const purchaseDashboardService = new PurchaseDashboardService(db);
+  const attendanceService = new AttendanceService(db, auditLogsService);
+  const salesDashboardService = new SalesDashboardService(db);
+
+  const dashboardService = new ExecutiveDashboardService(
+    approvalRequestsService,
+    contractsService,
+    purchaseDashboardService,
+    attendanceService,
+    salesDashboardService,
+  );
   const dashboardController = new ExecutiveDashboardController(dashboardService);
   const guard = new PermissionsGuard(new Reflector());
 
@@ -124,9 +146,13 @@ async function run() {
     const tenantB = randomUUID();
     const tenantC = randomUUID();
 
-    const userA = randomUUID();
-    const userB = randomUUID();
-    const userC = randomUUID();
+    const userA = randomUUID(); // owner
+    const userB = randomUUID(); // owner
+    const userC = randomUUID(); // owner
+    const userLegal = randomUUID(); // legal_admin
+    const userPayroll = randomUUID(); // payroll_admin
+    const userEmployee = randomUUID(); // employee
+    const userExternal = randomUUID(); // viewer_external
 
     console.log(`[1] テナント初期化: Tenant A=${tenantA}, Tenant B=${tenantB}, Tenant C(空)=${tenantC}`);
 
@@ -138,15 +164,56 @@ async function run() {
       `INSERT INTO users (id, email, password_hash, name, created_at, updated_at) VALUES
        ($1, 'exec_a@test.com', 'hash', 'Exec User A', NOW(), NOW()),
        ($2, 'exec_b@test.com', 'hash', 'Exec User B', NOW(), NOW()),
-       ($3, 'exec_c@test.com', 'hash', 'Exec User C', NOW(), NOW())`,
-      [userA, userB, userC],
+       ($3, 'exec_c@test.com', 'hash', 'Exec User C', NOW(), NOW()),
+       ($4, 'exec_legal@test.com', 'hash', 'Exec Legal User', NOW(), NOW()),
+       ($5, 'exec_payroll@test.com', 'hash', 'Exec Payroll User', NOW(), NOW()),
+       ($6, 'exec_emp@test.com', 'hash', 'Exec Emp User', NOW(), NOW()),
+       ($7, 'exec_ext@test.com', 'hash', 'Exec Ext User', NOW(), NOW())`,
+      [userA, userB, userC, userLegal, userPayroll, userEmployee, userExternal],
     );
 
-    await pool.query(`INSERT INTO tenant_users (tenant_id, user_id) VALUES ($1, $2), ($3, $4), ($5, $6)`, [
-      tenantA, userA,
-      tenantB, userB,
-      tenantC, userC,
-    ]);
+    await pool.query(
+      `INSERT INTO tenant_users (tenant_id, user_id) VALUES
+       ($1, $2), ($3, $4), ($5, $6), ($7, $8), ($9, $10),
+       ($11, $12),
+       ($13, $14)`,
+      [
+        tenantA, userA,
+        tenantA, userLegal,
+        tenantA, userPayroll,
+        tenantA, userEmployee,
+        tenantA, userExternal,
+        tenantB, userB,
+        tenantC, userC,
+      ],
+    );
+
+    // ロール割り当て (user_roles)
+    await pool.query(
+      `INSERT INTO user_roles (tenant_id, user_id, role_id)
+       SELECT $1::uuid, $2::uuid, id FROM roles WHERE code = 'owner'
+       UNION ALL
+       SELECT $3::uuid, $4::uuid, id FROM roles WHERE code = 'owner'
+       UNION ALL
+       SELECT $5::uuid, $6::uuid, id FROM roles WHERE code = 'owner'
+       UNION ALL
+       SELECT $1::uuid, $7::uuid, id FROM roles WHERE code = 'legal_admin'
+       UNION ALL
+       SELECT $1::uuid, $8::uuid, id FROM roles WHERE code = 'payroll_admin'
+       UNION ALL
+       SELECT $1::uuid, $9::uuid, id FROM roles WHERE code = 'employee'
+       UNION ALL
+       SELECT $1::uuid, $10::uuid, id FROM roles WHERE code = 'viewer_external'`,
+      [
+        tenantA, userA,
+        tenantB, userB,
+        tenantC, userC,
+        userLegal,
+        userPayroll,
+        userEmployee,
+        userExternal,
+      ],
+    );
 
     // 顧客マスタ (customers) 登録
     const customerA = randomUUID();
@@ -376,6 +443,23 @@ async function run() {
     console.log('  -> (5) 営業KPI: 整合確認 (open=1件/100万円, 勝率=50%, 成約率=50%, 起票率=100%)');
 
     // --------------------------------------------------------------------------
+    // 5-2. 【P5-T1-FIX必須要件】各ドメイン既存Service直接呼び出し結果との完全一致検証
+    // --------------------------------------------------------------------------
+    console.log('[5-2] 各ドメイン既存Service直接呼び出し結果との完全一致検証 (委譲整合性)');
+    const directApprovals = await approvalRequestsService.getPendingSummary(tenantA, userA);
+    const directContracts = await contractsService.getExpirySummary(tenantA, userA);
+    const directPurchase = await purchaseDashboardService.getExecutivePurchaseKpi(tenantA, userA);
+    const directHr = await attendanceService.getHrKpiSummary(tenantA, userA);
+    const directSales = await salesDashboardService.getExecutiveSalesKpi(tenantA, userA, ['owner']);
+
+    expect(summaryA.approvals).toEqual(directApprovals);
+    expect(summaryA.contracts).toEqual(directContracts);
+    expect(summaryA.purchase).toEqual(directPurchase);
+    expect(summaryA.hr).toEqual(directHr);
+    expect(summaryA.sales).toEqual(directSales);
+    console.log('  -> ExecutiveDashboard返却値が各既存Service直接呼出結果と完全一致することを確認');
+
+    // --------------------------------------------------------------------------
     // 6. テナント分離検証 (Tenant B の巨大データ混入なし)
     // --------------------------------------------------------------------------
     console.log('[6] テナント分離検証 (Tenant B の巨大データ混入なし)');
@@ -406,7 +490,7 @@ async function run() {
     // (1) dashboard.executive_view を持たないロールの遮断
     let employeeBlocked = false;
     try {
-      await dashboardService.getSummary(tenantA, userA, ['employee']);
+      await dashboardService.getSummary(tenantA, userEmployee, ['employee']);
     } catch (err: any) {
       if (err instanceof AppException && err.getStatus() === 403) {
         employeeBlocked = true;
@@ -416,7 +500,7 @@ async function run() {
 
     let externalBlocked = false;
     try {
-      await dashboardService.getSummary(tenantA, userA, ['viewer_external']);
+      await dashboardService.getSummary(tenantA, userExternal, ['viewer_external']);
     } catch (err: any) {
       if (err instanceof AppException && err.getStatus() === 403) {
         externalBlocked = true;
@@ -425,7 +509,7 @@ async function run() {
     expect(externalBlocked).toBe(true);
 
     // PermissionsGuard レベルでの遮断確認
-    const employeeCtx = createMockContext(dashboardController.getSummary, ['employee'], tenantA, userA);
+    const employeeCtx = createMockContext(dashboardController.getSummary, ['employee'], tenantA, userEmployee);
     let guardBlocked = false;
     try {
       guard.canActivate(employeeCtx);
@@ -438,16 +522,17 @@ async function run() {
     console.log('  -> PermissionsGuard & Service層: employee / viewer_external を 403 遮断');
 
     // (2) ドメイン別部分返却検証: legal_admin は労務権限を持たないため hr: null
-    const summaryLegal = await dashboardService.getSummary(tenantA, userA, ['legal_admin']);
+    const summaryLegal = await dashboardService.getSummary(tenantA, userLegal, ['legal_admin']);
     expect(summaryLegal.contracts).not.toBeNull();
     expect(summaryLegal.approvals).not.toBeNull();
     expect(summaryLegal.sales).not.toBeNull();
+    expect(summaryLegal.purchase).not.toBeNull();
     expect(summaryLegal.hr).toBeNull(); // 労務権限なしのため null
     expect(summaryLegal.available_domains.includes('hr')).toBe(false);
     console.log('  -> legal_admin: 労務権限なしのため hr: null となることを確認 (情報推測防止)');
 
     // (3) ドメイン別部分返却検証: payroll_admin は契約・購買・営業権限を持たない
-    const summaryPayroll = await dashboardService.getSummary(tenantA, userA, ['payroll_admin']);
+    const summaryPayroll = await dashboardService.getSummary(tenantA, userPayroll, ['payroll_admin']);
     expect(summaryPayroll.hr).not.toBeNull();
     expect(summaryPayroll.contracts).toBeNull();
     expect(summaryPayroll.purchase).toBeNull();
