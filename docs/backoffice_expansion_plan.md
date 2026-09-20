@@ -1,7 +1,7 @@
 # keiri-kaikei 全社バックオフィス統合SaaS 拡張計画書
 
 - 文書番号: PLAN-01
-- バージョン: 7.15.0
+- バージョン: 7.15.1
 - 対象リポジトリ: `fullstack-ai-accounting`（経理・会計基盤）
 - 関連文書: `docs/01_requirements.md`, `docs/02_architecture.md`, `docs/03_database_design.md`
 
@@ -21,21 +21,23 @@
 | Phase 2 | 購買・調達 | ✅ 完了 | 4/4 | 平均2回、最大3回（P2-T2/P2-T3） |
 | Phase 3 | 人事労務 | ✅ 完了 | 4/4 | 平均2〜3回、最大6回（P3-T3） |
 | Phase 4 | 営業事務 | ✅ 完了 | 4/4 | 平均2〜3回、最大5回（P4-T1） |
-| Phase 5 | 統合最適化 | 🔵 着手中 | 1/4（P5-T1 PASS、マージ待ち） | P5-T1: 2回（既存ロジック委譲構造への修正） |
+| Phase 5 | 統合最適化 | 🔵 着手中 | 1/4（P5-T1 PASS、マージ待ち）。P5-T2はREQUEST CHANGES | P5-T1: 2回、P5-T2: 1回目REQUEST CHANGES |
 
 ### 直近のアクション
 
-- P5-T1-FIXの完了報告に対し、ChatGPT(SO)が**P5-T1を正式PASS**と判定。前回のBLOCKER
-  （既存集計ロジックの重複実装）は、`ExecutiveDashboardService`を各ドメインServiceへの
-  委譲のみで構成する薄いオーケストレーターに再設計し、委譲結果とドメインService直接
-  呼出結果の実DB一致検証まで行ったことで解消された。マージ指示プロンプトを作成した。
-  次はこれをGeminiに渡す。
-- P5-T1のマージを前提に、**P5-T2（AIレコメンドエンジン基盤）**のタスク詳細・実装指示
-  プロンプトを作成した。「AIレコメンド」の実装範囲について、外部LLM APIへのテナント
-  データ送信は行わず、構造化データに基づくルールベースの推奨エンジンとする方針をClaudeが
-  確定した（データガバナンス上の検討が本タスクのスコープを超えて重くなるため）。契約
-  更新提案・承認滞留・見積フォローアップの3種類のレコメンドルールを定義し、生成ロジックは
-  P5-T1で確立した「既存ドメインServiceへの委譲」パターンを踏襲する。
+- P5-T2（AIレコメンドエンジン基盤）の完了報告に対し、ChatGPT(SO)はREQUEST CHANGESと
+  判定。既存Service委譲・業務テーブル非変更・RLS実DB検証・外部LLM不使用の設計方針は
+  いずれも良好と評価されたが、**`recommendations`テーブルの「WORM」と`accept`/
+  `dismiss`によるstatus変更が矛盾している**（完全不変とstatus更新を両立させる設計の
+  整理不足）ことが指摘された。Claudeとして「`recommendations`は完全WORMではなく、
+  `pending→accepted`/`pending→dismissed`の一度限りの遷移のみを許可するappend-only
+  設計である」という定義を確定し、それ以外の状態遷移・`status`以外の列変更・DELETEを
+  DBトリガーで一貫して拒否するよう修正を求めるフォローアップ指示プロンプト
+  （P5-T2-FIX）を作成した。あわせて`target_domain`の未知の値に対するfail-closedの
+  確認、RBACマトリクス（view/act×他tenant）の実DB確認、git diffによる既存テスト
+  弱体化なしの確認も求めている。次はこれをGeminiに渡す。
+- P5-T1のマージ指示プロンプトはまだGeminiに渡されておらず、マージ待ちの状態が継続
+  している。
 - DEBT-020・DEBT-022は解消済み。DEBT-021（年末調整はtax_year=2026限定）等、低リスクの
   技術的負債が8節に継続記録されている。特にDEBT-001（添付ファイルの非原子性）は、
   Phase 5着手にあわせて優先的に棚卸しすることを推奨する。
@@ -4978,7 +4980,7 @@ Phase 0〜4で構築した各業務ドメイン（承認ワークフロー、契
 | タスクID | タスク名 | 概要 | 依存 | ステータス |
 |----------|----------|------|------|-----------|
 | P5-T1 | 横断KPIダッシュボード基盤 | Phase 0〜4の主要KPI（承認待ち件数、契約更新期限、購買稟議状況、給与・勤怠概況、営業パイプライン・見積成約率）を1画面に統合表示する経営者向けダッシュボード | P0〜P4の各ダッシュボード・集計API | ✅ SO正式PASS（既存ドメインServiceへの委譲構造に修正、委譲結果の実DB一致検証・RLS・RBAC確認済み）。マージ指示プロンプト作成済み・Gemini実行待ち |
-| P5-T2 | AIレコメンドエンジン基盤 | 業務横断的なデータ相関から提案（レコメンド）を生成する基盤。提案の生成・表示・採用/見送りの記録に専念し、業務データの自動変更は行わない | P5-T1 | 🔲 指示プロンプト作成済み・Gemini実装待ち |
+| P5-T2 | AIレコメンドエンジン基盤 | 業務横断的なデータ相関から提案（レコメンド）を生成する基盤。提案の生成・表示・採用/見送りの記録に専念し、業務データの自動変更は行わない | P5-T1 | 🔴 SO判定REQUEST CHANGES（既存Service委譲・業務テーブル非変更・RLS実DB検証は良好。`recommendations`の状態遷移モデルとDB最終防衛の整合性が要修正。P5-T2-FIX対応中） |
 | P5-T3 | レコメンドの業務画面への統合表示 | P5-T2のレコメンドを、各ドメインの既存業務画面（契約詳細、案件詳細、購買申請等）に文脈に応じて表示する | P5-T2 | ⏳ 未分解 |
 | P5-T4 | 技術的負債の棚卸し・解消とPhase 5クローズ | DEBT-001等、Phase 5着手前に推奨された技術的負債の棚卸しと解消、プロジェクト全体の最終確認 | P5-T1, P5-T2, P5-T3 | ⏳ 未分解 |
 
@@ -5274,6 +5276,90 @@ P5-T1が正式PASSとなったことを受け、Phase 5の2番目のタスク（
 
 ---
 
+#### 【フォローアップ指示プロンプト P5-T2-FIX】REQUEST CHANGES対応（WORMとaccept/dismissの状態遷移モデルの整理）
+
+ChatGPT(SO)よりP5-T2は「検証量自体はかなり多く良好。既存Service委譲・業務テーブル
+非変更・RLS実DB検証は評価できる。ただし`recommendations`の状態遷移モデルとDB最終防衛の
+整合性を詰め切れていない」と判定された。作り直しではなく、状態遷移トリガーの精緻化と
+それに対応するE2Eの追加が中心である。
+
+```
+# SOレビュー結果：P5-T2 REQUEST CHANGES（状態遷移モデルの整理＋証跡確認）
+
+# 設計確定-01（Claudeからの回答）: `recommendations`の不変性の正確な定義
+`recommendations`は完全なWORM（一切のUPDATE不可）ではなく、**「作成後は
+append-only、ただし`status`列に限り、`pending`から`accepted`または`dismissed`への
+一度限りの遷移のみを許可する」**という設計を正式な仕様とする。以下を明確に区別する。
+  - 許可される遷移：`pending → accepted`、`pending → dismissed`
+  - 拒否される遷移：`accepted → dismissed`、`dismissed → accepted`、
+    `accepted → pending`、`dismissed → pending`、およびその他のあらゆる`status`変更
+  - `status`以外の列（`tenant_id`, `type`, `target_domain`, `target_id`, `message`,
+    `reason`等、実際の列名は実装に合わせる）は、作成後は一切変更不可（真のWORM）
+  - `DELETE`は常に拒否（fail-closed）
+  - これらはアプリケーション層の権限チェックとは独立して、**DBトリガーが呼び出し元
+    （アプリ経由か直接SQLか、どのDBロールか）を問わず機械的に強制する**（P4-T1の
+    `superseded_by`等で確立した「一度限りの遷移」パターンと同じ考え方）
+
+# 修正方針
+1. `fn_guard_recommendation_immutability`（または同等のトリガー関数）を、上記
+   設計確定-01の内容通りに実装・修正する。「WORM」という呼称が完全不変を連想させ
+   誤解を招いていた場合は、完了報告・コード内コメントで「append-only +
+   許可された状態遷移」という表現に整理する。
+2. `target_domain`のポリモーフィック参照について、既知のドメイン（`contracts`,
+   `approval_requests`, `quotations`等、実装で対応している値のみ）以外の値が
+   `target_domain`に指定された場合、INSERT/UPDATE時にDBトリガーで明示的に拒否する
+   （未知のドメイン値でも整合性チェックを素通りしてINSERTが成功する状態を許さない）。
+3. `RecommendationsService`が業務テーブルへの直接SQLアクセス・`DatabaseService`の
+   直接injectによるquery発行を一切持たず、既存ドメインServiceへの委譲のみで構成されて
+   いることを、該当コード（`recommendations.service.ts`等）の該当箇所を示して報告に
+   明記する。
+
+# 追加すべき実DB E2E（必須）
+- 正規の`accept`/`dismiss`操作による`pending→accepted`・`pending→dismissed`遷移が
+  引き続き成功すること（回帰確認）
+- 直接SQLによる`accepted→dismissed`・`dismissed→accepted`・`accepted→pending`・
+  `dismissed→pending`のいずれの遷移も拒絶されること
+- 直接SQLによる`tenant_id`・`type`・`target_domain`・`target_id`・`message`等の
+  作成後の変更が拒絶されること
+- `target_domain`に未知の値（例: `future_domain`）を指定したINSERTが拒絶されること
+- 直接SQLによる`recommendations`レコードのDELETEが拒絶されること（既存確認分を維持）
+
+# 証跡確認: RBACマトリクスとgit diff
+1. 以下のマトリクスを、Controller層・Service層の両方について実DB E2Eで確認し、結果を
+   報告に含めること。
+   | 操作 | `recommendation.view`のみ | `recommendation.act`あり | 他tenant |
+   |------|---------------------------|---------------------------|----------|
+   | GET recommendations | 許可（一覧取得） | 許可 | 0件 |
+   | accept | 403 | 許可 | 404または不可視 |
+   | dismiss | 403 | 許可 | 404または不可視 |
+2. `git diff --name-only main...<今回のコミット>`および
+   `git diff main...<今回のコミット> -- '*.spec.ts'`を提出し、既存テストの削除・
+   期待値の弱体化・変更がないことを確認できるようにする（P5-T1で247→246という
+   テスト数変動があったため、今回の251件についても同様の透明性を確保する）。
+
+# 受け入れ基準（Definition of Done）
+- [ ] `recommendations`の状態遷移が設計確定-01の内容通りにDBトリガーで実装され、上記
+      「追加すべき実DB E2E」5点すべてがPASSする
+- [ ] `target_domain`の未知の値がfail-closedで拒否されることを確認する
+- [ ] `RecommendationsService`が業務テーブルへの直接アクセスを持たないことをコードで
+      示す
+- [ ] RBACマトリクス（6ケース）を実DB E2Eで確認する
+- [ ] `git diff --name-only`・`*.spec.ts`のdiffを提出し、既存テストの弱体化がないことを
+      示す
+- [ ] 既存のP5-T1回帰E2E・Backend Jestが引き続きすべてPASSする
+- [ ] コミットSHA・ブランチ名（本計画書0.4節）を明記する
+
+# ChatGPTレビュー時の確認観点
+- `recommendations`の状態遷移が、呼び出し経路（アプリ経由・直接SQL・どのDBロールか）を
+  問わずDBトリガーで一貫して強制されているか
+- `target_domain`の未知の値が本当にfail-closedで拒否されるか
+- 「WORM」という表現が実際の設計（append-only + 許可された状態遷移）と整合する形に
+  整理されているか
+- 既存テストが弱体化・削除されていないか（git diffで確認）
+```
+
+---
+
 ## 8. 既知の技術的負債・フォローアップ事項
 
 タスク完了時にSOが「修正不要だが記録すべき」と判定した事項を追跡する。将来の関連タスク着手時に必ず参照すること。
@@ -5307,11 +5393,12 @@ P5-T1が正式PASSとなったことを受け、Phase 5の2番目のタスク（
 
 ## 9. 次のアクション
 
-1. 【マージ指示プロンプト P5-T1】をGeminiに渡し、mainへのマージとマージ後の実DB E2E
-   再検証を実行する。完了報告（マージコミットSHA）を受け取ったら、P5-T1を完全クローズに
-   更新する。
-2. マージ完了後、【指示プロンプト P5-T2】（AIレコメンドエンジン基盤）をGeminiに渡し、
-   Phase 5のタスク2に着手する。
+1. 【フォローアップ指示プロンプト P5-T2-FIX】をGeminiに渡し、`recommendations`の状態
+   遷移モデル（append-only + 許可された状態遷移）をDBトリガーで正確に実装し、
+   `target_domain`のfail-closed・RBACマトリクス・git diffの確認を行う。
+2. あわせて、【マージ指示プロンプト P5-T1】がまだGeminiに渡されていない場合は、これも
+   実行し、P5-T1のmainマージを完了させる（P5-T2の開発はP5-T1のブランチを前提にしている
+   可能性があるため、マージ状況を確認する）。
 3. DEBT-001（添付ファイルアップロードの非原子性）を、Phase 5着手にあわせて優先的に
    棚卸しする（8節）。
 4. 未解決DEBT（8節）は都度解消の方針。
@@ -5399,3 +5486,4 @@ P5-T1が正式PASSとなったことを受け、Phase 5の2番目のタスク（
 | 7.14.0 | P4-T4のmainマージ完了報告を受領（マージコミット`f697778`、main上でclean DB 001〜032・実DB E2E 81/81・schema verifier 194/194・Backend Jest 28 suites/241 tests・Frontend buildすべて確認済み）。**Phase 4（営業事務）が全4タスク完了**。ロードマップ表・エグゼクティブサマリーをPhase 4完了に更新し、Phase 4クローズのサマリ（往復回数、確立された恒久ルール、DEBT棚卸し）を追加。**Phase 5（統合最適化）のセクションを新設**。7.2節に本Phase特有の設計原則（横断ダッシュボードは既存ドメインのRLS/RBACを迂回しない、AIレコメンドは提案に留め業務データを自動変更しない、根拠データは閲覧者の権限範囲に限定、監査可能性）を明記。タスク分解（P5-T1〜T4）とP5-T1（横断KPIダッシュボード基盤）の実装指示プロンプトを追加。以降のセクション番号（旧7〜9節）を1つずつ繰り下げ（8: 技術的負債、9: 次のアクション、10: 変更履歴） |
 | 7.14.1 | P5-T1はSO判定REQUEST CHANGES（RLS実DB検証・tenant分離・二重認可・Git証跡は良好、明確なBLOCKERはDoD違反1点）。`ExecutiveDashboardService`が既存の`SalesDashboardService`（P4-T4）・`PurchaseDashboardService`（P2-T4）等を呼び出さず、独自SQLで集計ロジックを重複実装していたことが判明（P5-T1のDoD「既存ロジックを呼び出し、重複実装しない」への違反）。ExecutiveDashboardServiceを薄いレイヤー化し、不足メソッドは各ドメインのService側に追加した上で呼び出す方針の修正を求めるフォローアップ指示プロンプト（P5-T1-FIX）を追加 |
 | 7.15.0 | P5-T1-FIXがSO正式PASS（`ExecutiveDashboardService`を各ドメインServiceへの委譲のみで構成する薄いオーケストレーターに再設計、委譲結果とドメインService直接呼出結果の実DB一致検証、RLS実DB検証・RBAC・ゼロ除算・WORM非破壊すべて確認）。**P5-T1（横断KPIダッシュボード基盤）が実装面で完了**。マージ指示プロンプトを追加。P5-T1のマージを前提に、P5-T2（AIレコメンドエンジン基盤）のタスク詳細・実装指示プロンプトを追加。「AIレコメンド」を外部LLM API不使用のルールベース推奨エンジンとする設計方針をClaudeが確定 |
+| 7.15.1 | P5-T2はSO判定REQUEST CHANGES（既存Service委譲・業務テーブル非変更・RLS実DB検証・外部LLM不使用は良好、明確なBLOCKERは状態遷移モデルの整理不足1点）。`recommendations`の「WORM」と`accept`/`dismiss`によるstatus更新が矛盾している点が指摘され、Claudeが「完全WORMではなく`pending→accepted`/`pending→dismissed`の一度限りの遷移のみを許可するappend-only設計」という定義を確定。それ以外の状態遷移・status以外の列変更・DELETEをDBトリガーで一貫拒否する修正、`target_domain`未知値のfail-closed確認、RBACマトリクス確認、git diffによる既存テスト弱体化なしの確認を求めるフォローアップ指示プロンプト（P5-T2-FIX）を追加 |

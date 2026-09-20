@@ -2934,6 +2934,137 @@ def run_verification(dsn: str) -> int:
     r.ok("横断KPIダッシュボード包括E2E: 各ドメインKPI集計・RLS app_runtime実行実証・他テナント直接不可視・ゼロ除算安全・RBAC多層防御・ドメイン別部分返却が動作する (P5-T1-VERIFY)",
          p5t1_verify_run.returncode == 0)
 
+    # ------------------------------------------------------------------------
+    # 30. AIレコメンドエンジン基盤 (034_recommendations.sql) (P5-T2-VERIFY)
+    # ------------------------------------------------------------------------
+    print("\n--- 30. AIレコメンドエンジン基盤 (034_recommendations.sql) (P5-T2-VERIFY) ---")
+
+    # 30-1. 034_recommendations.sql の段階的適用
+    sql_034 = (SQL_DIR / "034_recommendations.sql").read_text(encoding="utf-8")
+    apply_034_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_034)
+        finally:
+            conn.close()
+    except Exception as e:
+        apply_034_ok = False
+        print(f"  [ERROR] 034 apply failed: {e}")
+    r.ok("段階的アップグレード 23: 034_recommendations.sql がエラーなく適用できる", apply_034_ok)
+
+    # 30-2. recommendations テーブルの存在・RLS確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("""
+            SELECT c.relrowsecurity, c.relforcerowsecurity
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public' AND c.relname = 'recommendations';
+        """)
+        row = cur.fetchone()
+        rec_table_ok = row is not None and row["relrowsecurity"] and row["relforcerowsecurity"]
+    r.ok("recommendations テーブルが存在し、RLSが有効 (ENABLE + FORCE) である", rec_table_ok)
+
+    # 30-3. permissions テーブルの権限確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("""
+            SELECT code FROM permissions WHERE code IN ('recommendation.view', 'recommendation.act');
+        """)
+        perm_codes = {r_row["code"] for r_row in cur.fetchall()}
+        perm_ok = {'recommendation.view', 'recommendation.act'}.issubset(perm_codes)
+    r.ok("permissions テーブルに recommendation.view / recommendation.act が登録されている", perm_ok)
+
+    # 30-4. role_permissions のロール紐付け確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("""
+            SELECT r.code AS role_code, p.code AS perm_code
+            FROM role_permissions rp
+            JOIN roles r ON r.id = rp.role_id
+            JOIN permissions p ON p.id = rp.permission_id
+            WHERE p.code = 'recommendation.view';
+        """)
+        assigned_roles = {r_row["role_code"] for r_row in cur.fetchall()}
+        expected_roles = {
+            'owner', 'accounting_manager', 'legal_admin',
+            'approver', 'accountant', 'payroll_admin', 'employee'
+        }
+        roles_match = expected_roles.issubset(assigned_roles)
+    r.ok("role_permissions テーブルに recommendation.view が対象7ロールに紐付けられている", roles_match)
+
+    # 30-5. 段階的アップグレード・冪等性検証 (034を2回連続適用してもエラーにならないこと)
+    idempotent_034_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_034)
+        finally:
+            conn.close()
+    except Exception as e:
+        idempotent_034_ok = False
+        print(f"  [ERROR] 034 re-apply failed: {e}")
+    r.ok("段階的アップグレード検証 24: 034を2回連続適用してもエラーにならず正常終了する (DDL 冪等性保証)",
+         idempotent_034_ok)
+
+    # 30-6. 【P5-T2-FIX】035_recommendation_state_machine_guards.sql の段階的アップグレード適用
+    migration_035_path = SQL_DIR / "035_recommendation_state_machine_guards.sql"
+    sql_035 = migration_035_path.read_text(encoding="utf-8")
+    apply_035_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_035)
+        finally:
+            conn.close()
+    except Exception as e:
+        apply_035_ok = False
+        print(f"  [ERROR] 035 apply failed: {e}")
+    r.ok("段階的アップグレード 25: 035_recommendation_state_machine_guards.sql がエラーなく適用できる", apply_035_ok)
+
+    # 30-7. 035適用後: legal_viewer に recommendation.view が付与されていることの確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("""
+            SELECT 1 FROM role_permissions rp
+            JOIN roles r ON r.id = rp.role_id
+            JOIN permissions p ON p.id = rp.permission_id
+            WHERE r.code = 'legal_viewer' AND p.code = 'recommendation.view';
+        """)
+        viewer_perm_ok = cur.fetchone() is not None
+    r.ok("035適用後: legal_viewer ロールに recommendation.view (閲覧のみ) が付与されている", viewer_perm_ok)
+
+    # 30-8. 段階的アップグレード検証 26: 035を2回連続適用してもエラーにならないこと (DDL 冪等性)
+    idempotent_035_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_035)
+        finally:
+            conn.close()
+    except Exception as e:
+        idempotent_035_ok = False
+        print(f"  [ERROR] 035 re-apply failed: {e}")
+    r.ok("段階的アップグレード検証 26: 035を2回連続適用してもエラーにならず正常終了する (DDL 冪等性保証)",
+         idempotent_035_ok)
+
+    # 30-9. 【P5-T2-FIX 実DB包括E2Eテスト】
+    cmd_p5t2_verify = f"npx ts-node src/scripts/verify-recommendations-e2e.ts \"{dsn}\""
+    p5t2_verify_run = subprocess.run(cmd_p5t2_verify, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
+    if p5t2_verify_run.returncode != 0:
+        err_msg = f"\n[P5-T2-VERIFY E2E ERROR STDOUT]:\n{p5t2_verify_run.stdout}\n[P5-T2-VERIFY E2E ERROR STDERR]:\n{p5t2_verify_run.stderr}"
+        print(err_msg.encode("cp932", errors="replace").decode("cp932"))
+    else:
+        print("\n=== P5-T2-VERIFY E2E 実測実行ログ ===")
+        print(p5t2_verify_run.stdout)
+    r.ok("AIレコメンド包括E2E: 状態遷移マシン(一度限りの遷移)・真のWORM不変列・未知ドメインfail-closed・RBACマトリクス6ケース・委譲原則が動作する (P5-T2-FIX)",
+         p5t2_verify_run.returncode == 0)
+
     return r.summary()
 
 
@@ -2962,12 +3093,12 @@ def main() -> int:
 
         # 1. まず 001〜014 までを適用 (P1-T5マージ直後の既存DB状態を再現)
         apply_schema(dsn, max_file="014_general_requests.sql")
-        # 2. 検証実行 (セクション12で015、...、セクション28で032、セクション29で033段階適用 -> E2E実行)
+        # 2. 検証実行 (セクション12で015、...、セクション28で032、セクション29で033、セクション30で034/035段階適用 -> E2E実行)
         exit_code = run_verification(dsn)
 
-        # 3. クリーンDBに最初から001〜033を一括適用した場合の回帰なし確認
+        # 3. クリーンDBに最初から001〜035を一括適用した場合の回帰なし確認
         if exit_code == 0:
-            fresh_db_name = "keiri_kaikei_fresh_033"
+            fresh_db_name = "keiri_kaikei_fresh_035"
             conn_raw = psycopg2.connect(dsn)
             conn_raw.autocommit = True
             try:
@@ -2978,9 +3109,9 @@ def main() -> int:
                 conn_raw.close()
 
             dsn_fresh = dsn.rsplit("/", 1)[0] + f"/{fresh_db_name}"
-            print("\n--- クリーンDBへの001〜033一括適用検証 (新規環境回帰なし確認) ---")
+            print("\n--- クリーンDBへの001〜035一括適用検証 (新規環境回帰なし確認) ---")
             apply_schema(dsn_fresh)
-            print("[schema] クリーンDBへの001〜033一括適用が正常終了しました (回帰なし確認完了)")
+            print("[schema] クリーンDBへの001〜035一括適用が正常終了しました (回帰なし確認完了)")
     finally:
         if args.use_docker and not args.keep_docker:
             docker_stop()

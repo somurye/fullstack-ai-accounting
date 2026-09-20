@@ -859,4 +859,68 @@ export class QuotationsService {
 
     return mapQuotationDetail(quoteRes.rows[0], lineRes.rows);
   }
+
+  /**
+   * 送付後一定期間未回答のまま経過した見積一覧を取得する (P5-T2: レコメンドエンジン用)
+   */
+  async getStaleSentQuotations(
+    tenantId: string,
+    userId: string | null,
+    daysThreshold = 14,
+  ): Promise<
+    Array<{
+      id: string;
+      quote_no: string;
+      title: string;
+      customer_id: string;
+      deal_id: string | null;
+      subtotal: number;
+      tax_amount: number;
+      total_amount: number;
+      issue_date: string;
+      days_since_issue: number;
+    }>
+  > {
+    return this.db.transaction(tenantId, userId, async (client) => {
+      const sql = `
+        SELECT
+          q.id,
+          q.quote_no,
+          q.title,
+          q.customer_id,
+          q.deal_id,
+          q.subtotal::numeric AS subtotal,
+          q.tax_amount::numeric AS tax_amount,
+          (q.subtotal + q.tax_amount)::numeric AS total_amount,
+          q.issue_date::text,
+          GREATEST(0, (CURRENT_DATE - q.issue_date::date))::int AS days_since_issue
+        FROM quotations q
+        WHERE q.tenant_id = $1
+          AND q.status = 'sent'
+          AND q.converted_invoice_id IS NULL
+          AND q.issue_date <= (CURRENT_DATE - ($2 || ' days')::interval)
+        ORDER BY q.issue_date ASC
+      `;
+      const res = await client.query<{
+        id: string;
+        quote_no: string;
+        title: string;
+        customer_id: string;
+        deal_id: string | null;
+        subtotal: number;
+        tax_amount: number;
+        total_amount: number;
+        issue_date: string;
+        days_since_issue: number;
+      }>(sql, [tenantId, daysThreshold]);
+
+      return res.rows.map((row) => ({
+        ...row,
+        subtotal: Number(row.subtotal),
+        tax_amount: Number(row.tax_amount),
+        total_amount: Number(row.total_amount),
+      }));
+    });
+  }
 }
+
