@@ -32,6 +32,7 @@ export class RecommendationsController {
     @Req() req: AuthenticatedRequest,
     @Query('status') status?: RecommendationStatus,
     @Query('target_domain') targetDomain?: RecommendationDomain,
+    @Query('target_id') targetId?: string,
   ) {
     const tenantId = req.user.tenant_id;
     const userId = req.user.sub;
@@ -40,6 +41,7 @@ export class RecommendationsController {
     const items = await this.recommendationsService.list(tenantId, userId, roles, {
       status,
       target_domain: targetDomain,
+      target_id: targetId,
     });
     return successEnvelope(items);
   }

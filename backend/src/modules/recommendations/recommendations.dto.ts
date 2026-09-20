@@ -30,6 +30,7 @@ export interface RecommendationDto {
 export interface RecommendationListQueryDto {
   status?: RecommendationStatus;
   target_domain?: RecommendationDomain;
+  target_id?: string;
 }
 
 export interface RecommendationActionResponseDto {

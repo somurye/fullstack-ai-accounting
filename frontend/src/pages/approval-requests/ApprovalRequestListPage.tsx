@@ -10,6 +10,7 @@ import { fetchVendorBill } from '../vendor-bills/api';
 import { useApprovalRequests, useApproveApprovalRequest, useRejectApprovalRequest } from './hooks';
 import { TARGET_TYPE_LABEL } from './types';
 import type { ApprovalRequest } from './types';
+import { RecommendationWidget } from '../../components/recommendations/RecommendationWidget';
 
 const currencyFormatter = new Intl.NumberFormat('ja-JP', { style: 'currency', currency: 'JPY' });
 
@@ -124,6 +125,13 @@ function DetailModal({ request, onClose }: { request: ApprovalRequest; onClose: 
   return (
     <Modal title="承認申請の詳細" onClose={onClose}>
       <div className="space-y-4">
+        {/* AIレコメンド統合表示（P5-T3: 承認滞留アラート等） */}
+        <RecommendationWidget
+          targetDomain="approval_requests"
+          targetId={request.id}
+          variant="compact"
+        />
+
         <div className="rounded-lg border border-surface-800 bg-surface-900 p-3">
           <div className="mb-2 flex items-center justify-between">
             <span className="text-xs font-semibold text-surface-400">

@@ -1,6 +1,6 @@
 import { apiClient } from '../../lib/apiClient';
 
-export type RecommendationStatus = 'new' | 'shown' | 'accepted' | 'dismissed';
+export type RecommendationStatus = 'pending' | 'new' | 'shown' | 'accepted' | 'dismissed';
 export type RecommendationDomain = 'contracts' | 'approval_requests' | 'quotations';
 export type RecommendationType =
   | 'contract_renewal_pending'
@@ -34,6 +34,7 @@ export const recommendationsApi = {
   list: async (params?: {
     status?: RecommendationStatus;
     target_domain?: RecommendationDomain;
+    target_id?: string;
   }): Promise<Recommendation[]> => {
     const res = await apiClient.get<{ data: Recommendation[] }>('/recommendations', {
       params,
