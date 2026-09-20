@@ -15,6 +15,8 @@ import { Link } from 'react-router-dom';
 import { executiveDashboardApi } from './executiveDashboardApi';
 import type { ExecutiveDashboardSummary } from './types';
 
+import { RecommendationWidget } from '../../components/recommendations/RecommendationWidget';
+
 const currencyFormatter = new Intl.NumberFormat('ja-JP', {
   style: 'currency',
   currency: 'JPY',
@@ -96,7 +98,12 @@ export function ExecutiveDashboardPage() {
       )}
 
       {summary && (
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+        <>
+          <div className="mb-6">
+            <RecommendationWidget />
+          </div>
+
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
           {/* 1. 承認ワークフロー (Phase 0) */}
           {summary.approvals ? (
             <div className="card p-6 flex flex-col justify-between hover:border-primary/50 transition-colors shadow-sm">
@@ -414,7 +421,8 @@ export function ExecutiveDashboardPage() {
             </div>
           )}
         </div>
-      )}
-    </div>
+      </>
+    )}
+  </div>
   );
 }

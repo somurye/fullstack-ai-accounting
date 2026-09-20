@@ -725,4 +725,56 @@ export class ApprovalRequestsService {
       };
     });
   }
+
+  /**
+   * 一定日数以上滞留している未承認依頼を取得する (P5-T2: レコメンドエンジン用)
+   */
+  async getStalePendingRequests(
+    tenantId: string,
+    userId: string | null,
+    daysThreshold = 5,
+  ): Promise<
+    Array<{
+      id: string;
+      target_type: string;
+      target_id: string;
+      total_steps: number;
+      current_step: number;
+      submitted_by: string;
+      created_at: string;
+      days_pending: number;
+    }>
+  > {
+    return this.db.transaction(tenantId, userId, async (client) => {
+      const sql = `
+        SELECT
+          ar.id,
+          ar.target_type,
+          ar.target_id,
+          ar.total_steps,
+          ar.current_step,
+          ar.submitted_by,
+          ar.created_at::text,
+          GREATEST(0, (CURRENT_DATE - ar.created_at::date))::int AS days_pending
+        FROM approval_requests ar
+        WHERE ar.tenant_id = $1
+          AND ar.status = 'pending'
+          AND ar.created_at <= (NOW() - ($2 || ' days')::interval)
+        ORDER BY ar.created_at ASC
+      `;
+      const res = await client.query<{
+        id: string;
+        target_type: string;
+        target_id: string;
+        total_steps: number;
+        current_step: number;
+        submitted_by: string;
+        created_at: string;
+        days_pending: number;
+      }>(sql, [tenantId, daysThreshold]);
+
+      return res.rows;
+    });
+  }
 }
+

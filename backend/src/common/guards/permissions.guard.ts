@@ -43,6 +43,8 @@ export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     'contract_renewal_link.view',
     'dashboard.view',
     'dashboard.executive_view',
+    'recommendation.view',
+    'recommendation.act',
   ],
   legal_admin: [
     'contract.create',
@@ -63,6 +65,8 @@ export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     'contract_renewal_link.view',
     'dashboard.view',
     'dashboard.executive_view',
+    'recommendation.view',
+    'recommendation.act',
   ],
   legal_viewer: [
     'contract.view',
@@ -88,6 +92,8 @@ export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     'contract_renewal_link.view',
     'dashboard.view',
     'dashboard.executive_view',
+    'recommendation.view',
+    'recommendation.act',
   ],
   accounting_manager: [
     'contract.view',
@@ -111,6 +117,8 @@ export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     'contract_renewal_link.view',
     'dashboard.view',
     'dashboard.executive_view',
+    'recommendation.view',
+    'recommendation.act',
   ],
   accountant: [
     'contract.view',
@@ -127,6 +135,8 @@ export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     'contract_renewal_link.view',
     'dashboard.view',
     'dashboard.executive_view',
+    'recommendation.view',
+    'recommendation.act',
   ],
   bookkeeper: [
     'quotation.view',
@@ -154,9 +164,13 @@ export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     'contract_renewal_link.create',
     'contract_renewal_link.view',
     'dashboard.view',
+    'recommendation.view',
+    'recommendation.act',
   ],
   payroll_admin: [
     'dashboard.executive_view',
+    'recommendation.view',
+    'recommendation.act',
   ],
   viewer_external: [],
 };

@@ -406,4 +406,60 @@ export class ContractRenewalLinksService {
       };
     });
   }
+
+  /**
+   * 更新提案商談リンクが未作成の満了予定契約一覧を取得する (P5-T2: レコメンドエンジン用)
+   */
+  async getUnlinkedExpiringContracts(
+    tenantId: string,
+    userId: string | null,
+  ): Promise<
+    Array<{
+      id: string;
+      contract_no: string;
+      title: string;
+      counterparty_name: string;
+      end_date: string;
+      renewal_notice_days: number;
+      auto_renewal: boolean;
+      days_until_expiry: number;
+    }>
+  > {
+    return this.db.transaction(tenantId, userId, async (client) => {
+      const sql = `
+        SELECT
+          c.id,
+          c.contract_no,
+          c.title,
+          c.counterparty_name,
+          c.end_date::text,
+          COALESCE(c.renewal_notice_days, 30)::int AS renewal_notice_days,
+          c.auto_renewal,
+          (c.end_date - CURRENT_DATE)::int AS days_until_expiry
+        FROM contracts c
+        LEFT JOIN contract_renewal_links crl
+          ON crl.contract_id = c.id AND crl.tenant_id = c.tenant_id
+        WHERE c.tenant_id = $1
+          AND c.status = 'active'
+          AND c.end_date IS NOT NULL
+          AND c.end_date <= (CURRENT_DATE + (COALESCE(c.renewal_notice_days, 30) || ' days')::interval)
+          AND c.end_date >= CURRENT_DATE
+          AND crl.id IS NULL
+        ORDER BY c.end_date ASC
+      `;
+      const res = await client.query<{
+        id: string;
+        contract_no: string;
+        title: string;
+        counterparty_name: string;
+        end_date: string;
+        renewal_notice_days: number;
+        auto_renewal: boolean;
+        days_until_expiry: number;
+      }>(sql, [tenantId]);
+
+      return res.rows;
+    });
+  }
 }
+

@@ -53,6 +53,7 @@ import { DealsModule } from './modules/deals/deals.module';
 import { ContractRenewalLinksModule } from './modules/contract-renewal-links/contract-renewal-links.module';
 import { SalesDashboardModule } from './modules/sales-dashboard/sales-dashboard.module';
 import { ExecutiveDashboardModule } from './modules/executive-dashboard/executive-dashboard.module';
+import { RecommendationsModule } from './modules/recommendations/recommendations.module';
 
 /**
  * AppModule
@@ -123,6 +124,7 @@ import { ExecutiveDashboardModule } from './modules/executive-dashboard/executiv
     ContractRenewalLinksModule,
     SalesDashboardModule,
     ExecutiveDashboardModule,
+    RecommendationsModule,
   ],
   controllers: [],
   providers: [
