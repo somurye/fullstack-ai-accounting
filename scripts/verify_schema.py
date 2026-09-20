@@ -2858,6 +2858,82 @@ def run_verification(dsn: str) -> int:
     r.ok("営業ダッシュボード包括E2E: 案件パイプライン勝率・見積成約率・契約更新起票率・テナント完全分離・ゼロ除算安全処理・RBAC多層防御が動作する (P4-T4-VERIFY)",
          p4t4_verify_run.returncode == 0)
 
+    # =========================================================================
+    # 29. 横断KPIダッシュボード基盤 (033_executive_dashboard.sql) (P5-T1-VERIFY)
+    # =========================================================================
+    print("\n--- 29. 横断KPIダッシュボード基盤 (033_executive_dashboard.sql) (P5-T1-VERIFY) ---")
+    sql_033_path = SQL_DIR / "033_executive_dashboard.sql"
+    sql_033 = sql_033_path.read_text(encoding="utf-8")
+
+    # 29-1. 段階的アップグレード適用検証
+    apply_ok_033 = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_033)
+        finally:
+            conn.close()
+    except Exception as e:
+        apply_ok_033 = False
+        print(f"  [ERROR] 033 migration apply failed: {e}")
+    r.ok("段階的アップグレード検証 21: 033_executive_dashboard.sql がエラーなく正常適用される", apply_ok_033)
+
+    # 29-2. permissions テーブルの確認
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("SELECT id, code, description FROM permissions WHERE code = 'dashboard.executive_view'")
+        perm_row = cur.fetchone()
+    r.ok("permissions テーブルに dashboard.executive_view が正常に存在する",
+         perm_row is not None and perm_row["code"] == "dashboard.executive_view")
+
+    # 29-3. role_permissions 紐付けの確認 (6ロール限定)
+    with tx_as(dsn, role="postgres") as cur:
+        cur.execute("""
+            SELECT r.code AS role_code
+            FROM role_permissions rp
+            JOIN roles r ON r.id = rp.role_id
+            JOIN permissions p ON p.id = rp.permission_id
+            WHERE p.code = 'dashboard.executive_view'
+            ORDER BY r.code
+        """)
+        role_rows = cur.fetchall()
+        assigned_roles = {row["role_code"] for row in role_rows}
+        expected_roles = {
+            'owner', 'accounting_manager', 'legal_admin',
+            'approver', 'accountant', 'payroll_admin'
+        }
+        roles_match = expected_roles.issubset(assigned_roles)
+    r.ok("role_permissions テーブルに dashboard.executive_view が対象6ロールに紐付けられている", roles_match)
+
+    # 29-4. 段階的アップグレード・冪等性検証 (033を2回連続適用してもエラーにならないこと)
+    idempotent_033_ok = True
+    try:
+        conn = psycopg2.connect(dsn)
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql_033)
+        finally:
+            conn.close()
+    except Exception as e:
+        idempotent_033_ok = False
+        print(f"  [ERROR] 033 re-apply failed: {e}")
+    r.ok("段階的アップグレード検証 22: 033を2回連続適用してもエラーにならず正常終了する (DDL 冪等性保証)",
+         idempotent_033_ok)
+
+    # 29-5. 【P5-T1-VERIFY実証】実DB E2Eテスト (横断KPI集計・RLS app_runtime接続・他テナント直接不可視・ゼロ除算安全・RBAC多層防御・ドメイン別二重認可)
+    cmd_p5t1_verify = f"npx ts-node src/scripts/verify-executive-dashboard-e2e.ts \"{dsn}\""
+    p5t1_verify_run = subprocess.run(cmd_p5t1_verify, cwd=backend_dir, capture_output=True, text=True, shell=True, encoding="utf-8", errors="replace")
+    if p5t1_verify_run.returncode != 0:
+        err_msg = f"\n[P5-T1-VERIFY E2E ERROR STDOUT]:\n{p5t1_verify_run.stdout}\n[P5-T1-VERIFY E2E ERROR STDERR]:\n{p5t1_verify_run.stderr}"
+        print(err_msg.encode("cp932", errors="replace").decode("cp932"))
+    else:
+        print("\n=== P5-T1-VERIFY E2E 実測実行ログ ===")
+        print(p5t1_verify_run.stdout)
+    r.ok("横断KPIダッシュボード包括E2E: 各ドメインKPI集計・RLS app_runtime実行実証・他テナント直接不可視・ゼロ除算安全・RBAC多層防御・ドメイン別部分返却が動作する (P5-T1-VERIFY)",
+         p5t1_verify_run.returncode == 0)
+
     return r.summary()
 
 
@@ -2886,12 +2962,12 @@ def main() -> int:
 
         # 1. まず 001〜014 までを適用 (P1-T5マージ直後の既存DB状態を再現)
         apply_schema(dsn, max_file="014_general_requests.sql")
-        # 2. 検証実行 (セクション12で015、...、セクション27で031、セクション28で032段階適用 -> E2E実行)
+        # 2. 検証実行 (セクション12で015、...、セクション28で032、セクション29で033段階適用 -> E2E実行)
         exit_code = run_verification(dsn)
 
-        # 3. クリーンDBに最初から001〜032を一括適用した場合の回帰なし確認
+        # 3. クリーンDBに最初から001〜033を一括適用した場合の回帰なし確認
         if exit_code == 0:
-            fresh_db_name = "keiri_kaikei_fresh_032"
+            fresh_db_name = "keiri_kaikei_fresh_033"
             conn_raw = psycopg2.connect(dsn)
             conn_raw.autocommit = True
             try:
@@ -2902,9 +2978,9 @@ def main() -> int:
                 conn_raw.close()
 
             dsn_fresh = dsn.rsplit("/", 1)[0] + f"/{fresh_db_name}"
-            print("\n--- クリーンDBへの001〜032一括適用検証 (新規環境回帰なし確認) ---")
+            print("\n--- クリーンDBへの001〜033一括適用検証 (新規環境回帰なし確認) ---")
             apply_schema(dsn_fresh)
-            print("[schema] クリーンDBへの001〜032一括適用が正常終了しました (回帰なし確認完了)")
+            print("[schema] クリーンDBへの001〜033一括適用が正常終了しました (回帰なし確認完了)")
     finally:
         if args.use_docker and not args.keep_docker:
             docker_stop()

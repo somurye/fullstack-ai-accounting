@@ -19,6 +19,7 @@ import type {
   ApprovalRequestListQuery,
   ApprovalRequestRejectInput,
 } from './dto/approval-request.schemas';
+import type { ApprovalKpiDto } from '../executive-dashboard/executive-dashboard.dto';
 
 export interface ApprovalRequestListResult {
   requests: ApprovalRequestDto[];
@@ -683,5 +684,45 @@ export class ApprovalRequestsService {
       map.set(row.approval_request_id, list);
     }
     return map;
+  }
+
+  /**
+   * 承認待ち件数の集計サマリーを取得する (P5-T1 / 横断KPIダッシュボード用)
+   */
+  async getPendingSummary(tenantId: string, userId: string | null): Promise<ApprovalKpiDto> {
+    return this.db.transaction(tenantId, userId, async (client) => {
+      const res = await client.query<{
+        target_type: string;
+        count: number;
+      }>(
+        `SELECT
+           target_type,
+           COUNT(*)::int AS count
+         FROM approval_requests
+         WHERE tenant_id = $1 AND status = 'pending'
+         GROUP BY target_type`,
+        [tenantId],
+      );
+
+      const pendingByTarget: Record<string, number> = {
+        contract: 0,
+        purchase_request: 0,
+        general_request: 0,
+        expense_report: 0,
+        journal_entry: 0,
+        payroll: 0,
+      };
+
+      let total = 0;
+      for (const row of res.rows) {
+        pendingByTarget[row.target_type] = Number(row.count);
+        total += Number(row.count);
+      }
+
+      return {
+        pending_total_count: total,
+        pending_by_target: pendingByTarget as any,
+      };
+    });
   }
 }

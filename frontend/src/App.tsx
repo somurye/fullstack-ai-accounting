@@ -176,6 +176,9 @@ const DealDetailPage = lazy(() =>
 const SalesDashboardPage = lazy(() =>
   import('./pages/sales-dashboard/SalesDashboardPage').then((m) => ({ default: m.SalesDashboardPage })),
 );
+const ExecutiveDashboardPage = lazy(() =>
+  import('./pages/executive-dashboard/ExecutiveDashboardPage').then((m) => ({ default: m.ExecutiveDashboardPage })),
+);
 const SettingsPage = lazy(() => import('./pages/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
 const MobileExpenseApplyPage = lazy(() =>
   import('./pages/mobile/MobileExpenseApplyPage').then((m) => ({ default: m.MobileExpenseApplyPage })),
@@ -235,6 +238,7 @@ export default function App() {
           <Route element={<AppLayout />}>
             <Route index element={<HomeRedirect />} />
             <Route path="/dashboard" element={<DashboardPage />} />
+            <Route path="/executive-dashboard" element={<ExecutiveDashboardPage />} />
             <Route path="/journal-entries" element={<JournalEntryListPage />} />
             <Route path="/journal-entries/new" element={<JournalEntryFormPage />} />
             <Route path="/journal-entries/:id" element={<JournalEntryFormPage />} />

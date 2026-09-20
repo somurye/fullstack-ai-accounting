@@ -10,6 +10,7 @@ import {
   QuotationStatusCountItem,
   SalesDashboardQuery,
 } from './sales-dashboard.dto';
+import type { SalesKpiDto } from '../executive-dashboard/executive-dashboard.dto';
 
 @Injectable()
 export class SalesDashboardService {
@@ -326,5 +327,24 @@ export class SalesDashboardService {
   ): Promise<RenewalLinkSummaryDto> {
     const summary = await this.getSummary(tenantId, userId, roles);
     return summary.renewals;
+  }
+
+  /**
+   * 経営者ダッシュボード向け営業KPIサマリーを取得する (P5-T1)
+   * 既存の getSummary (P4-T4) 集計ロジックを再利用し、重複実装を排除
+   */
+  async getExecutiveSalesKpi(
+    tenantId: string,
+    userId: string,
+    roles: string[],
+  ): Promise<SalesKpiDto> {
+    const summary = await this.getSummary(tenantId, userId, roles);
+    return {
+      open_deals_count: summary.pipeline.open_deals.count,
+      open_deals_amount: summary.pipeline.open_deals.total_amount,
+      win_rate: summary.pipeline.win_rate,
+      quotation_conversion_rate: summary.quotations.conversion_rate,
+      renewal_proposal_rate: summary.renewals.renewal_proposal_rate,
+    };
   }
 }

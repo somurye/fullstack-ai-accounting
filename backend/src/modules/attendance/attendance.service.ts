@@ -21,6 +21,7 @@ import {
   calculateWeeklyWorkHours,
   type DailyWorkRecordForAggregation,
 } from './utils/work-hours-calculator';
+import type { HrKpiDto } from '../executive-dashboard/executive-dashboard.dto';
 
 export interface AttendanceListResult {
   records: AttendanceRecordDto[];
@@ -773,6 +774,46 @@ export class AttendanceService {
       await this.assertEmployeeViewAccess(client, tenantId, userId, row.employee_id);
 
       return mapAttendanceRecordRow(row);
+    });
+  }
+
+  /**
+   * 人事労務KPIサマリーを取得する (P5-T1 / 横断KPIダッシュボード用)
+   */
+  async getHrKpiSummary(tenantId: string, userId: string | null): Promise<HrKpiDto> {
+    return this.db.transaction(tenantId, userId, async (client) => {
+      const hrRes = await client.query<{
+        active_employees: number;
+        unresolved_attendance: number;
+        pending_attendance: number;
+        overtime_alerts: number;
+      }>(
+        `SELECT
+           (SELECT COUNT(*)::int FROM employees WHERE tenant_id = $1 AND status = 'active') AS active_employees,
+           COUNT(CASE
+             WHEN ar.work_date <= CURRENT_DATE
+              AND ar.clock_in IS NOT NULL
+              AND ar.clock_out IS NULL THEN 1
+           END)::int AS unresolved_attendance,
+           COUNT(CASE
+             WHEN ar.status = 'submitted' THEN 1
+           END)::int AS pending_attendance,
+           COUNT(CASE
+             WHEN ar.overtime_hours > 45
+              AND date_trunc('month', ar.work_date) = date_trunc('month', CURRENT_DATE) THEN 1
+           END)::int AS overtime_alerts
+         FROM attendance_records ar
+         WHERE ar.tenant_id = $1`,
+        [tenantId],
+      );
+
+      const row = hrRes.rows[0];
+      return {
+        active_employees_count: Number(row?.active_employees || 0),
+        unresolved_attendance_count: Number(row?.unresolved_attendance || 0),
+        pending_attendance_approvals: Number(row?.pending_attendance || 0),
+        overtime_alert_count: Number(row?.overtime_alerts || 0),
+      };
     });
   }
 }
