@@ -656,7 +656,95 @@ async function run() {
     expect(emptyList.length).toBe(0);
     console.log('  -> 空テナントでも例外なく安全に空配列 (0件) を返却することを確認');
 
-    console.log(`=== P5-T2-FIX AIレコメンドエンジン基盤 実DB E2E検証 全項目合格 (ALL PASS: 全${totalAssertions}検証項目合格) ===`);
+    // --------------------------------------------------------------------------
+    // 14. 【P5-T3】業務画面への統合表示 (target_domain + target_id による厳密な絞り込み)
+    // --------------------------------------------------------------------------
+    console.log('[14] 【P5-T3】業務画面への統合表示 (target_domain + target_id による厳密な絞り込み検証)');
+
+    // (1) 新規未処理レコード投入による、デフォルト未処理(pending)でのピンポイント絞り込み検証
+    const contractA4 = randomUUID();
+    await pool.query(
+      `INSERT INTO contracts (id, tenant_id, contract_no, title, counterparty_name, contract_type, status, start_date, end_date, renewal_notice_days, created_by, created_at, updated_at) VALUES
+       ($1, $2, 'CNT-REC-04', '新規業務委託A4 (満了間近)', 'Client A4', 'service', 'active', CURRENT_DATE - interval '300 days', CURRENT_DATE + interval '10 days', 30, $3, NOW(), NOW())`,
+      [contractA4, tenantA, userA],
+    );
+
+    // 未処理(pending)でのピンポイント取得: target_domain='contracts' & target_id=contractA4
+    const pendingContractRecs = await recommendationsService.list(tenantA, userA, ['owner'], {
+      target_domain: 'contracts',
+      target_id: contractA4,
+    });
+    expect(pendingContractRecs.length).toBe(1);
+    expect(pendingContractRecs[0].target_domain).toBe('contracts');
+    expect(pendingContractRecs[0].target_id).toBe(contractA4);
+    expect(pendingContractRecs[0].status).toBe('pending');
+    expect(pendingContractRecs[0].type).toBe('contract_renewal_pending');
+    console.log('  -> [P5-T3 1/7] 契約詳細(未処理): 指定 contract.id に紐づく推奨のみが返却され他ドメイン・他契約が混入しないことを確認');
+
+    // (2) 終端状態(accepted)の契約詳細用絞り込み: target_domain='contracts' & target_id=contractA1
+    const acceptedContractRecs = await recommendationsService.list(tenantA, userA, ['owner'], {
+      target_domain: 'contracts',
+      target_id: contractA1,
+      status: 'accepted',
+    });
+    expect(acceptedContractRecs.length).toBe(1);
+    expect(acceptedContractRecs[0].target_domain).toBe('contracts');
+    expect(acceptedContractRecs[0].target_id).toBe(contractA1);
+    expect(acceptedContractRecs[0].status).toBe('accepted');
+    console.log('  -> [P5-T3 2/7] 契約詳細(accepted): 指定 contract.id に紐づく採択済み推奨のみが返却されることを確認');
+
+    // (3) 終端状態(dismissed)の承認申請用絞り込み: target_domain='approval_requests' & target_id=approvalA1
+    const dismissedApprovalRecs = await recommendationsService.list(tenantA, userA, ['owner'], {
+      target_domain: 'approval_requests',
+      target_id: approvalA1,
+      status: 'dismissed',
+    });
+    expect(dismissedApprovalRecs.length).toBe(1);
+    expect(dismissedApprovalRecs[0].target_domain).toBe('approval_requests');
+    expect(dismissedApprovalRecs[0].target_id).toBe(approvalA1);
+    expect(dismissedApprovalRecs[0].status).toBe('dismissed');
+    expect(dismissedApprovalRecs[0].type).toBe('approval_stale');
+    console.log('  -> [P5-T3 3/7] 承認申請詳細(dismissed): 指定 approval_request.id に紐づく見送り推奨のみが返却されることを確認');
+
+    // (4) 見積詳細用絞り込み: target_domain='quotations' & target_id=quoteA1 (accepted)
+    const quotationRecs = await recommendationsService.list(tenantA, userA, ['owner'], {
+      target_domain: 'quotations',
+      target_id: quoteA1,
+      status: 'accepted',
+    });
+    expect(quotationRecs.length).toBe(1);
+    expect(quotationRecs[0].target_domain).toBe('quotations');
+    expect(quotationRecs[0].target_id).toBe(quoteA1);
+    expect(quotationRecs[0].type).toBe('quotation_follow_up');
+    console.log('  -> [P5-T3 4/7] 見積詳細: 指定 quotation.id に紐づく推奨のみが返却されることを確認');
+
+    // (5) 不一致 target_id / 未知UUID 指定時の0件安全性
+    const unknownIdRecs = await recommendationsService.list(tenantA, userA, ['owner'], {
+      target_domain: 'contracts',
+      target_id: randomUUID(),
+    });
+    expect(unknownIdRecs.length).toBe(0);
+    console.log('  -> [P5-T3 5/7] 不一致 target_id 指定時: 他のレコメンドが一切漏れず安全に 0件 となることを確認');
+
+    // (6) 他テナントの target_id 指定時の完全隔離 (RLS)
+    const crossTenantTargetRecs = await recommendationsService.list(tenantA, userA, ['owner'], {
+      target_domain: 'contracts',
+      target_id: contractB1, // Tenant B の契約ID
+    });
+    expect(crossTenantTargetRecs.length).toBe(0);
+    console.log('  -> [P5-T3 6/7] 他テナントの target_id 指定時: RLSにより完全不可視 (0件) であることを確認');
+
+    // (7) 二重認可制御 (業務レコード閲覧権限とレコメンド閲覧権限の連動)
+    // legal_admin は quotations の閲覧権限を持たないため、quotations を指定した場合は 0件
+    const legalAdminQuoteRecs = await recommendationsService.list(tenantA, userLegalViewer, ['legal_admin'], {
+      target_domain: 'quotations',
+      target_id: quoteA1,
+      status: 'accepted',
+    });
+    expect(legalAdminQuoteRecs.length).toBe(0);
+    console.log('  -> [P5-T3 7/7] 二重認可: 業務レコード閲覧権限を持たないドメイン指定時は 0件 となることを確認');
+
+    console.log(`=== P5-T3 レコメンド業務画面統合表示 実DB E2E検証 全項目合格 (ALL PASS: 全${totalAssertions}検証項目合格) ===`);
   } finally {
     await pool.end();
   }

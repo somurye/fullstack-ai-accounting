@@ -3062,7 +3062,7 @@ def run_verification(dsn: str) -> int:
     else:
         print("\n=== P5-T2-VERIFY E2E 実測実行ログ ===")
         print(p5t2_verify_run.stdout)
-    r.ok("AIレコメンド包括E2E: 状態遷移マシン(一度限りの遷移)・真のWORM不変列・未知ドメインfail-closed・RBACマトリクス6ケース・委譲原則が動作する (P5-T2-FIX)",
+    r.ok("AIレコメンド包括E2E: 状態遷移マシン(一度限りの遷移)・真のWORM不変列・未知ドメインfail-closed・RBACマトリクス・業務画面統合ピンポイント絞り込み(P5-T3)が動作する",
          p5t2_verify_run.returncode == 0)
 
     return r.summary()

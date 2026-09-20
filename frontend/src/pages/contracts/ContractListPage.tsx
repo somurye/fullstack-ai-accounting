@@ -387,7 +387,12 @@ export function ContractListPage() {
                         {contract.contract_no}
                       </td>
                       <td className="px-5 py-4">
-                        <div className="font-semibold text-slate-900">{contract.title}</div>
+                        <Link
+                          to={`/contracts/${contract.id}`}
+                          className="font-semibold text-slate-900 hover:text-indigo-600 hover:underline block"
+                        >
+                          {contract.title}
+                        </Link>
                         <div className="text-xs text-slate-500 mt-0.5">
                           {contract.counterparty_name}
                         </div>

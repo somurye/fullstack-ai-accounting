@@ -16,6 +16,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { toast } from '../../stores/toastStore';
 import { StatusBadge } from './StatusBadge';
 import { downloadQuotationPdf } from './api';
+import { RecommendationWidget } from '../../components/recommendations/RecommendationWidget';
 import {
   useAcceptQuotation,
   useConvertQuotation,
@@ -265,6 +266,14 @@ export function QuotationDetailPage() {
           )}
         </div>
       </div>
+
+      {/* AIレコメンド統合表示（P5-T3: 未回答フォロー推奨等） */}
+      <RecommendationWidget
+        targetDomain="quotations"
+        targetId={quotation.id}
+        requiredPermission="quotation.view"
+        variant="banner"
+      />
 
       {/* 改訂履歴・リンクバナー */}
       {quotation.superseded_by && (

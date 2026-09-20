@@ -227,6 +227,11 @@ export class RecommendationsService {
         conditions.push(`target_domain = $${params.length}`);
       }
 
+      if (query.target_id) {
+        params.push(query.target_id);
+        conditions.push(`target_id = $${params.length}`);
+      }
+
       const sql = `
         SELECT
           id, tenant_id, type, target_domain, target_id, title, message,

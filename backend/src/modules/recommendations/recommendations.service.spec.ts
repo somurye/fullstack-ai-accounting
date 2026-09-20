@@ -152,6 +152,48 @@ describe('RecommendationsService', () => {
       expect(params[1]).not.toContain('contracts');
       expect(params[1]).not.toContain('quotations');
     });
+
+    it('target_domain と target_id を指定した場合、SQLのWHERE句にtarget_domainおよびtarget_idが含まれること', async () => {
+      const querySpy = jest.fn().mockResolvedValue({
+        rows: [
+          {
+            id: 'rec-contract-1',
+            tenant_id: tenantId,
+            type: 'contract_renewal_pending',
+            target_domain: 'contracts',
+            target_id: 'c-1',
+            title: '契約更新推奨',
+            message: '契約更新案件作成',
+            status: 'pending',
+            action_url: '/deals/new?contract_id=c-1',
+            metadata: {},
+            shown_at: null,
+            responded_at: null,
+            created_at: '2026-09-20',
+            updated_at: '2026-09-20',
+          },
+        ],
+      });
+
+      mockDb.transaction.mockImplementation((tId: string, uId: string, cb: any) =>
+        cb({ query: querySpy }),
+      );
+
+      const results = await service.list(tenantId, userId, ['owner'], {
+        target_domain: 'contracts',
+        target_id: 'c-1',
+      });
+
+      expect(results.length).toBe(1);
+      expect(results[0].target_id).toBe('c-1');
+      const lastCall = querySpy.mock.calls[querySpy.mock.calls.length - 1];
+      const sql = lastCall[0];
+      const params = lastCall[1];
+      expect(sql).toContain('target_domain = $');
+      expect(sql).toContain('target_id = $');
+      expect(params).toContain('contracts');
+      expect(params).toContain('c-1');
+    });
   });
 
   describe('accept', () => {
