@@ -111,7 +111,7 @@ export class RecommendationsService {
           `INSERT INTO recommendations (
              tenant_id, type, target_domain, target_id, title, message, status, action_url, metadata, created_at, updated_at
            ) VALUES (
-             $1, 'contract_renewal_pending', 'contracts', $2, $3, $4, 'new', $5, $6, NOW(), NOW()
+             $1, 'contract_renewal_pending', 'contracts', $2, $3, $4, 'pending', $5, $6, NOW(), NOW()
            )
            ON CONFLICT (tenant_id, type, target_id) DO NOTHING`,
           [tenantId, contract.id, title, message, actionUrl, JSON.stringify(metadata)],
@@ -143,7 +143,7 @@ export class RecommendationsService {
           `INSERT INTO recommendations (
              tenant_id, type, target_domain, target_id, title, message, status, action_url, metadata, created_at, updated_at
            ) VALUES (
-             $1, 'approval_stale', 'approval_requests', $2, $3, $4, 'new', $5, $6, NOW(), NOW()
+             $1, 'approval_stale', 'approval_requests', $2, $3, $4, 'pending', $5, $6, NOW(), NOW()
            )
            ON CONFLICT (tenant_id, type, target_id) DO NOTHING`,
           [tenantId, approval.id, title, message, actionUrl, JSON.stringify(metadata)],
@@ -176,7 +176,7 @@ export class RecommendationsService {
           `INSERT INTO recommendations (
              tenant_id, type, target_domain, target_id, title, message, status, action_url, metadata, created_at, updated_at
            ) VALUES (
-             $1, 'quotation_follow_up', 'quotations', $2, $3, $4, 'new', $5, $6, NOW(), NOW()
+             $1, 'quotation_follow_up', 'quotations', $2, $3, $4, 'pending', $5, $6, NOW(), NOW()
            )
            ON CONFLICT (tenant_id, type, target_id) DO NOTHING`,
           [tenantId, quote.id, title, message, actionUrl, JSON.stringify(metadata)],
@@ -215,8 +215,8 @@ export class RecommendationsService {
         params.push(query.status);
         conditions.push(`status = $${params.length}`);
       } else {
-        // デフォルトでは未処理 (new, shown) を優先して表示
-        conditions.push(`status IN ('new', 'shown')`);
+        // デフォルトでは未処理 (pending, new, shown) を優先して表示
+        conditions.push(`status IN ('pending', 'new', 'shown')`);
       }
 
       if (query.target_domain) {

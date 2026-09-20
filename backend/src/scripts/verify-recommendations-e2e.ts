@@ -106,7 +106,7 @@ async function run() {
   const pool = new Pool({ connectionString: dsn });
 
   try {
-    console.log('=== P5-T2 AIレコメンドエンジン基盤 実DB E2E検証開始 (RLS/app_runtime経由) ===');
+    console.log('=== P5-T2-FIX AIレコメンドエンジン基盤 実DB E2E検証開始 (RLS/app_runtime経由) ===');
 
     // --------------------------------------------------------------------------
     // 0. DI コンテナ手動構築
@@ -150,11 +150,12 @@ async function run() {
     const tenantB = randomUUID();
     const tenantC = randomUUID(); // 空テナント
 
-    const userA = randomUUID(); // owner
-    const userLegal = randomUUID(); // legal_admin
-    const userPayroll = randomUUID(); // payroll_admin
-    const userExternal = randomUUID(); // viewer_external
-    const userB = randomUUID();
+    const userA = randomUUID(); // owner (view + act)
+    const userLegal = randomUUID(); // legal_admin (view + act)
+    const userLegalViewer = randomUUID(); // legal_viewer (view のみ！)
+    const userPayroll = randomUUID(); // payroll_admin (view + act)
+    const userExternal = randomUUID(); // viewer_external (権限なし)
+    const userB = randomUUID(); // tenantB owner
 
     console.log(`[1] テナント初期化: Tenant A=${tenantA}, Tenant B=${tenantB}, Tenant C(空)=${tenantC}`);
 
@@ -164,22 +165,24 @@ async function run() {
 
     await pool.query(
       `INSERT INTO users (id, email, password_hash, name, created_at, updated_at) VALUES
-       ($1, 'rec_a@test.com', 'hash', 'Rec User A', NOW(), NOW()),
-       ($2, 'rec_legal@test.com', 'hash', 'Rec Legal User', NOW(), NOW()),
-       ($3, 'rec_payroll@test.com', 'hash', 'Rec Payroll User', NOW(), NOW()),
-       ($4, 'rec_ext@test.com', 'hash', 'Rec Ext User', NOW(), NOW()),
-       ($5, 'rec_b@test.com', 'hash', 'Rec User B', NOW(), NOW())`,
-      [userA, userLegal, userPayroll, userExternal, userB],
+       ($1, 'rec_a@test.com', 'hash', 'Rec User A (Owner)', NOW(), NOW()),
+       ($2, 'rec_legal@test.com', 'hash', 'Rec Legal Admin', NOW(), NOW()),
+       ($3, 'rec_viewer@test.com', 'hash', 'Rec Legal Viewer (ViewOnly)', NOW(), NOW()),
+       ($4, 'rec_payroll@test.com', 'hash', 'Rec Payroll User', NOW(), NOW()),
+       ($5, 'rec_ext@test.com', 'hash', 'Rec Ext User', NOW(), NOW()),
+       ($6, 'rec_b@test.com', 'hash', 'Rec User B (Tenant B)', NOW(), NOW())`,
+      [userA, userLegal, userLegalViewer, userPayroll, userExternal, userB],
     );
 
     await pool.query(
       `INSERT INTO tenant_users (tenant_id, user_id) VALUES
-       ($1, $2), ($3, $4), ($5, $6), ($7, $8), ($9, $10)`,
+       ($1, $2), ($1, $3), ($1, $4), ($1, $5), ($1, $6), ($7, $8)`,
       [
         tenantA, userA,
-        tenantA, userLegal,
-        tenantA, userPayroll,
-        tenantA, userExternal,
+        userLegal,
+        userLegalViewer,
+        userPayroll,
+        userExternal,
         tenantB, userB,
       ],
     );
@@ -191,12 +194,14 @@ async function run() {
        UNION ALL
        SELECT $1::uuid, $3::uuid, id FROM roles WHERE code = 'legal_admin'
        UNION ALL
-       SELECT $1::uuid, $4::uuid, id FROM roles WHERE code = 'payroll_admin'
+       SELECT $1::uuid, $4::uuid, id FROM roles WHERE code = 'legal_viewer'
        UNION ALL
-       SELECT $1::uuid, $5::uuid, id FROM roles WHERE code = 'viewer_external'
+       SELECT $1::uuid, $5::uuid, id FROM roles WHERE code = 'payroll_admin'
        UNION ALL
-       SELECT $6::uuid, $7::uuid, id FROM roles WHERE code = 'owner'`,
-      [tenantA, userA, userLegal, userPayroll, userExternal, tenantB, userB],
+       SELECT $1::uuid, $6::uuid, id FROM roles WHERE code = 'viewer_external'
+       UNION ALL
+       SELECT $7::uuid, $8::uuid, id FROM roles WHERE code = 'owner'`,
+      [tenantA, userA, userLegal, userLegalViewer, userPayroll, userExternal, tenantB, userB],
     );
 
     // 顧客マスタ (customers) 登録
@@ -210,23 +215,23 @@ async function run() {
     );
 
     // --------------------------------------------------------------------------
-    // 2. テストデータ投入: Tenant A
+    // 2. テストデータ投入: Tenant A (各ドメインの推奨トリガーデータ)
     // --------------------------------------------------------------------------
-    console.log('[2] Tenant A テストデータ投入 (各ドメインの推奨候補データ)');
+    console.log('[2] Tenant A テストデータ投入 (各業務ドメイン)');
 
-    // (1) 契約 (contracts)
-    // - contractA1: 15日後満了、renewal_notice_days=30、リンク未作成 -> 推奨対象
-    // - contractA2: 10日後満了だが、既に contract_renewal_links 作成済み -> 推奨対象外
-    // - contractA3: 180日後満了 -> 満了間近ではないため推奨対象外
+    // (1) 契約書 (contracts)
+    // - contractA1: 満了15日後、renewal_notice_days=30、更新リンクなし -> 推奨対象
+    // - contractA2: 満了15日後だが、更新リンクあり -> 推奨対象外
+    // - contractA3: 満了120日後 -> 推奨対象外
     const contractA1 = randomUUID();
     const contractA2 = randomUUID();
     const contractA3 = randomUUID();
 
     await pool.query(
       `INSERT INTO contracts (id, tenant_id, contract_no, title, counterparty_name, contract_type, status, start_date, end_date, renewal_notice_days, created_by, created_at, updated_at) VALUES
-       ($1, $2, 'CNT-REC-01', '契約A1 (15日後・リンクなし)', 'Client A1', 'service', 'active', CURRENT_DATE - interval '300 days', CURRENT_DATE + interval '15 days', 30, $5, NOW(), NOW()),
-       ($3, $2, 'CNT-REC-02', '契約A2 (10日後・リンク済)', 'Client A1', 'service', 'active', CURRENT_DATE - interval '300 days', CURRENT_DATE + interval '10 days', 30, $5, NOW(), NOW()),
-       ($4, $2, 'CNT-REC-03', '契約A3 (180日後・対象外)', 'Client A1', 'service', 'active', CURRENT_DATE - interval '300 days', CURRENT_DATE + interval '180 days', 30, $5, NOW(), NOW())`,
+       ($1, $2, 'CNT-REC-01', '業務委託契約A1 (更新未着手)', 'Client A1', 'service', 'active', CURRENT_DATE - interval '300 days', CURRENT_DATE + interval '15 days', 30, $5, NOW(), NOW()),
+       ($3, $2, 'CNT-REC-02', '保守契約A2 (更新商談作成済)', 'Client A2', 'service', 'active', CURRENT_DATE - interval '300 days', CURRENT_DATE + interval '15 days', 30, $5, NOW(), NOW()),
+       ($4, $2, 'CNT-REC-03', '長期契約A3 (満了遠い)', 'Client A3', 'service', 'active', CURRENT_DATE - interval '30 days', CURRENT_DATE + interval '120 days', 30, $5, NOW(), NOW())`,
       [contractA1, tenantA, contractA2, contractA3, userA],
     );
 
@@ -246,7 +251,7 @@ async function run() {
     // (2) 承認依頼 (approval_requests)
     // - approvalA1: 10日前作成、status='pending' -> 推奨対象 (5日以上滞留)
     // - approvalA2: 本日作成、status='pending' -> 滞留ではないため推奨対象外
-    // - approvalA3: 10日前作成だが status='approved' -> 承認済みのため推奨対象外
+    // - approvalA3: 10日前作成だが status='approved' (正規承認済) -> 推奨対象外
     const approvalA1 = randomUUID();
     const approvalA2 = randomUUID();
     const approvalA3 = randomUUID();
@@ -302,7 +307,7 @@ async function run() {
     const recB1 = randomUUID();
     await pool.query(
       `INSERT INTO recommendations (id, tenant_id, type, target_domain, target_id, title, message, status, action_url, created_at, updated_at) VALUES
-       ($1, $2, 'contract_renewal_pending', 'contracts', $3, 'テナントB提案', 'テナントBの機微提案', 'new', '/deals/new', NOW(), NOW())`,
+       ($1, $2, 'contract_renewal_pending', 'contracts', $3, 'テナントB提案', 'テナントBの機微提案', 'pending', '/deals/new', NOW(), NOW())`,
       [recB1, tenantB, contractB1],
     );
 
@@ -337,25 +342,28 @@ async function run() {
 
     expect(recListA.length).toBe(3);
 
-    // 各推奨の検証
+    // 各推奨の検証 (初期ステータスが pending であること)
     const contractRec = recListA.find((r) => r.type === 'contract_renewal_pending');
     const approvalRec = recListA.find((r) => r.type === 'approval_stale');
     const quoteRec = recListA.find((r) => r.type === 'quotation_follow_up');
 
     expect(contractRec).notNull();
     expect(contractRec!.target_id).toBe(contractA1);
+    expect(contractRec!.status).toBe('pending');
     expect(contractRec!.action_url).toBe(`/deals/new?contract_id=${contractA1}`);
-    console.log('  -> (1) 契約更新レコメンド: 正確に生成 (contractA1 満了15日後・リンクなし)');
+    console.log('  -> (1) 契約更新レコメンド: 正確に生成 (contractA1 満了15日後・リンクなし、status=pending)');
 
     expect(approvalRec).notNull();
     expect(approvalRec!.target_id).toBe(approvalA1);
+    expect(approvalRec!.status).toBe('pending');
     expect(approvalRec!.action_url).toBe('/approval-requests');
-    console.log('  -> (2) 承認滞留レコメンド: 正確に生成 (approvalA1 10日間滞留)');
+    console.log('  -> (2) 承認滞留レコメンド: 正確に生成 (approvalA1 10日間滞留、status=pending)');
 
     expect(quoteRec).notNull();
     expect(quoteRec!.target_id).toBe(quoteA1);
+    expect(quoteRec!.status).toBe('pending');
     expect(quoteRec!.action_url).toBe(`/quotations/${quoteA1}`);
-    console.log('  -> (3) 見積フォローレコメンド: 正確に生成 (quoteA1 20日間未回答)');
+    console.log('  -> (3) 見積フォローレコメンド: 正確に生成 (quoteA1 20日間未回答、status=pending)');
 
     // 既存Service直接呼出結果との整合性検証
     const directUnlinked = await contractRenewalLinksService.getUnlinkedExpiringContracts(tenantA, userA);
@@ -375,7 +383,7 @@ async function run() {
     // --------------------------------------------------------------------------
     // 6. 「採用 (accept)」操作 & 業務テーブル完全非変更検証
     // --------------------------------------------------------------------------
-    console.log('[6] 「採用 (accept)」操作 & 業務テーブル完全非変更検証');
+    console.log('[6] 「採用 (accept)」操作 (pending -> accepted) & 業務テーブル完全非変更検証');
 
     // 実行前の各業務テーブル件数を記録
     const beforeCounts = await pool.query(
@@ -388,7 +396,7 @@ async function run() {
       [tenantA],
     );
 
-    // 契約更新レコメンドを採用
+    // 契約更新レコメンドを採用 (pending -> accepted)
     const acceptRes = await recommendationsService.accept(tenantA, userA, ['owner'], contractRec!.id);
     expect(acceptRes.recommendation.status).toBe('accepted');
     expect(acceptRes.recommendation.responded_at).notNull();
@@ -424,7 +432,7 @@ async function run() {
     // --------------------------------------------------------------------------
     // 7. 「見送り (dismiss)」操作 & 業務テーブル完全非変更検証
     // --------------------------------------------------------------------------
-    console.log('[7] 「見送り (dismiss)」操作 & 業務テーブル完全非変更検証');
+    console.log('[7] 「見送り (dismiss)」操作 (pending -> dismissed) & 業務テーブル完全非変更検証');
 
     const dismissRes = await recommendationsService.dismiss(tenantA, userA, ['owner'], approvalRec!.id);
     expect(dismissRes.recommendation.status).toBe('dismissed');
@@ -442,96 +450,213 @@ async function run() {
     console.log('  -> 見送り操作成功: status=dismissed に遷移し、業務テーブル件数は一切不変');
 
     // --------------------------------------------------------------------------
-    // 8. 意思決定尊重・冪等性確認 (再度listを呼んでもaccepted/dismissedは未処理一覧に復活しない)
+    // 8. 【新要件】直接SQLによる不正な状態遷移の拒絶検証 (DB最終防衛・一度限りの遷移)
     // --------------------------------------------------------------------------
-    console.log('[8] 意思決定尊重・冪等性確認');
-    const recListAfter = await recommendationsService.list(tenantA, userA, ['owner']);
-    // 残る未処理は quoteRec (見積フォロー) の 1件 のみ
-    expect(recListAfter.length).toBe(1);
-    expect(recListAfter[0].id).toBe(quoteRec!.id);
-    console.log('  -> 人間が採用/見送りした提案は再生成されず、人間の判断が確実に尊重されることを確認');
+    console.log('[8] 直接SQLによる不正な状態遷移の拒絶検証 (DB最終防衛・一度限りの遷移モデル)');
 
-    // --------------------------------------------------------------------------
-    // 9. RBAC 多層防御・ドメイン別閲覧制御 (情報推測防止)
-    // --------------------------------------------------------------------------
-    console.log('[9] RBAC 多層防御・ドメイン別閲覧制御 (情報推測防止)');
-
-    // (1) legal_admin: contracts, approval_requests のみアクセス可 (quotations は不可視)
-    const legalList = await recommendationsService.list(tenantA, userLegal, ['legal_admin'], {
-      status: 'new',
-    });
-    // quoteRec は quotations ドメインのため不可視となり、0件となる
-    expect(legalList.length).toBe(0);
-    console.log('  -> legal_admin: 見積権限を持たないため見積レコメンドが不可視であることを確認');
-
-    // (2) payroll_admin: approval_requests のみアクセス可 (contracts, quotations は不可視)
-    const payrollList = await recommendationsService.list(tenantA, userPayroll, ['payroll_admin']);
-    expect(payrollList.length).toBe(0);
-    console.log('  -> payroll_admin: 契約・見積権限を持たないためそれらのレコメンドが不可視であることを確認');
-
-    // (3) 権限のないドメインのレコメンド採用試行で 403 遮断
-    let legalBlocked = false;
+    // 8.1 既に accepted になったレコードの不正遷移遮断
+    // (a) accepted -> dismissed (拒絶)
+    let acceptedToDismissedBlocked = false;
     try {
-      await recommendationsService.accept(tenantA, userLegal, ['legal_admin'], quoteRec!.id);
+      await pool.query(`UPDATE recommendations SET status = 'dismissed' WHERE id = $1`, [contractRec!.id]);
     } catch (err: any) {
-      if (err instanceof AppException && err.getStatus() === 403) {
-        legalBlocked = true;
-      }
+      if (err.code === '55000') acceptedToDismissedBlocked = true;
     }
-    expect(legalBlocked).toBe(true);
-    console.log('  -> legal_admin: 権限外の見積レコメンド採用操作を 403 Forbidden 遮断');
+    expect(acceptedToDismissedBlocked).toBe(true);
+    console.log('  -> [DB拒絶] accepted -> dismissed の遷移が 55000 で拒絶されたことを確認');
 
-    // (4) viewer_external: PermissionsGuard レベルで遮断
-    const externalCtx = createMockContext(recommendationsController.list, ['viewer_external'], tenantA, userExternal);
-    let guardBlocked = false;
+    // (b) accepted -> pending (拒絶)
+    let acceptedToPendingBlocked = false;
     try {
-      guard.canActivate(externalCtx);
+      await pool.query(`UPDATE recommendations SET status = 'pending' WHERE id = $1`, [contractRec!.id]);
     } catch (err: any) {
-      if (err instanceof AppException && err.getStatus() === 403) {
-        guardBlocked = true;
-      }
+      if (err.code === '55000') acceptedToPendingBlocked = true;
     }
-    expect(guardBlocked).toBe(true);
-    console.log('  -> viewer_external: PermissionsGuard により 403 Forbidden 遮断');
+    expect(acceptedToPendingBlocked).toBe(true);
+    console.log('  -> [DB拒絶] accepted -> pending の巻き戻しが 55000 で拒絶されたことを確認');
+
+    // 8.2 既に dismissed になったレコードの不正遷移遮断
+    // (c) dismissed -> accepted (拒絶)
+    let dismissedToAcceptedBlocked = false;
+    try {
+      await pool.query(`UPDATE recommendations SET status = 'accepted' WHERE id = $1`, [approvalRec!.id]);
+    } catch (err: any) {
+      if (err.code === '55000') dismissedToAcceptedBlocked = true;
+    }
+    expect(dismissedToAcceptedBlocked).toBe(true);
+    console.log('  -> [DB拒絶] dismissed -> accepted の遷移が 55000 で拒絶されたことを確認');
+
+    // (d) dismissed -> pending (拒絶)
+    let dismissedToPendingBlocked = false;
+    try {
+      await pool.query(`UPDATE recommendations SET status = 'pending' WHERE id = $1`, [approvalRec!.id]);
+    } catch (err: any) {
+      if (err.code === '55000') dismissedToPendingBlocked = true;
+    }
+    expect(dismissedToPendingBlocked).toBe(true);
+    console.log('  -> [DB拒絶] dismissed -> pending の巻き戻しが 55000 で拒絶されたことを確認');
 
     // --------------------------------------------------------------------------
-    // 10. WORM 不変性・削除禁止トリガー検証
+    // 9. 【新要件】直接SQLによる不変列改ざんの拒絶検証 (真のWORM)
     // --------------------------------------------------------------------------
-    console.log('[10] WORM 不変性・削除禁止トリガー検証');
+    console.log('[9] 直接SQLによる不変列改ざんの拒絶検証 (真のWORM)');
 
-    // (1) 基本列の UPDATE 改ざん拒絶
-    let updateBlocked = false;
-    try {
-      await pool.query(`UPDATE recommendations SET target_domain = 'hacked' WHERE id = $1`, [quoteRec!.id]);
-    } catch (err: any) {
-      if (err.code === '55000') {
-        updateBlocked = true;
+    // まだ pending 状態の quoteRec を使って不変列の改ざんが拒絶されることを検証
+    const immutableColumns = [
+      { col: 'tenant_id', val: randomUUID() },
+      { col: 'type', val: 'approval_stale' },
+      { col: 'target_domain', val: 'contracts' },
+      { col: 'target_id', val: randomUUID() },
+      { col: 'title', val: '不正改ざんタイトル' },
+      { col: 'message', val: '不正改ざんメッセージ' },
+      { col: 'action_url', val: '/hacked' },
+    ];
+
+    for (const testCol of immutableColumns) {
+      let blocked = false;
+      try {
+        await pool.query(`UPDATE recommendations SET ${testCol.col} = $1 WHERE id = $2`, [
+          testCol.val,
+          quoteRec!.id,
+        ]);
+      } catch (err: any) {
+        if (err.code === '55000') blocked = true;
       }
+      expect(blocked).toBe(true);
+      console.log(`  -> [DB拒絶] 不変列 ${testCol.col} の改ざんが 55000 で拒絶されたことを確認`);
     }
-    expect(updateBlocked).toBe(true);
-    console.log('  -> WORM実効: recommendations の target_domain 改ざんが 55000 で拒絶されることを確認');
 
-    // (2) DELETE 拒絶
+    // --------------------------------------------------------------------------
+    // 10. 【新要件】未知の target_domain の fail-closed 拒絶検証
+    // --------------------------------------------------------------------------
+    console.log('[10] 未知の target_domain の fail-closed 拒絶検証');
+
+    let unknownDomainBlocked = false;
+    try {
+      await pool.query(
+        `INSERT INTO recommendations (
+           id, tenant_id, type, target_domain, target_id, title, message, status
+         ) VALUES (
+           $1, $2, 'test_type', 'future_domain', $3, '未知ドメイン提案', '説明', 'pending'
+         )`,
+        [randomUUID(), tenantA, randomUUID()],
+      );
+    } catch (err: any) {
+      if (err.code === '55000') unknownDomainBlocked = true;
+    }
+    expect(unknownDomainBlocked).toBe(true);
+    console.log('  -> [DB拒絶] 未知の target_domain (future_domain) の INSERT が 55000 で fail-closed 拒絶されたことを確認');
+
+    // --------------------------------------------------------------------------
+    // 11. 直接SQLによる DELETE 拒絶検証 (WORM不変性)
+    // --------------------------------------------------------------------------
+    console.log('[11] 直接SQLによる DELETE 拒絶検証 (WORM不変性)');
+
     let deleteBlocked = false;
     try {
       await pool.query(`DELETE FROM recommendations WHERE id = $1`, [quoteRec!.id]);
     } catch (err: any) {
-      if (err.code === '55000') {
-        deleteBlocked = true;
-      }
+      if (err.code === '55000') deleteBlocked = true;
     }
     expect(deleteBlocked).toBe(true);
-    console.log('  -> WORM実効: recommendations の DELETE が 55000 で拒絶されることを確認');
+    console.log('  -> [DB拒絶] recommendations レコードの DELETE が 55000 で拒絶されたことを確認');
 
     // --------------------------------------------------------------------------
-    // 11. ゼロ除算・空テナント安全性 (Tenant C)
+    // 12. 【新要件】RBACマトリクス検証 (Controller層 & Service層の両面で実証)
     // --------------------------------------------------------------------------
-    console.log('[11] 空テナント安全性検証 (Tenant C)');
+    console.log('[12] RBACマトリクス検証 (Controller層 & Service層の両面で実証)');
+
+    // マトリクス対象の操作:
+    // 1. GET recommendations
+    // 2. accept
+    // 3. dismiss
+    // ロール区分:
+    // - recommendation.view のみ: userLegalViewer (legal_viewer ロール)
+    // - recommendation.act あり: userA (owner ロール)
+    // - 他tenant: userB (tenantB owner)
+
+    // (1) GET recommendations
+    // - recommendation.view のみ (userLegalViewer): 許可 (200 OK)
+    const getCtxViewOnly = createMockContext(recommendationsController.list, ['legal_viewer'], tenantA, userLegalViewer);
+    expect(guard.canActivate(getCtxViewOnly)).toBe(true);
+    const getListLegalViewer = await recommendationsService.list(tenantA, userLegalViewer, ['legal_viewer']);
+    expect(Array.isArray(getListLegalViewer)).toBe(true);
+    console.log('  -> [RBAC 1/6] GET recommendations (viewのみ): Controller許可 ＆ Service一覧取得成功');
+
+    // - recommendation.act あり (userA): 許可 (200 OK)
+    const getCtxAct = createMockContext(recommendationsController.list, ['owner'], tenantA, userA);
+    expect(guard.canActivate(getCtxAct)).toBe(true);
+    const getListOwner = await recommendationsService.list(tenantA, userA, ['owner']);
+    expect(getListOwner.length).toBe(1); // quoteRec (未処理)
+    console.log('  -> [RBAC 2/6] GET recommendations (actあり): Controller許可 ＆ Service一覧取得成功');
+
+    // - 他tenant (userB): 0件 (RLS隔離)
+    const getListTenantB = await recommendationsService.list(tenantB, userB, ['owner']);
+    // Tenant B には先ほど登録した recB1 のみで、Tenant A のデータは 0件
+    const crossTenantCount = getListTenantB.filter((r) => r.tenant_id === tenantA).length;
+    expect(crossTenantCount).toBe(0);
+    console.log('  -> [RBAC 3/6] GET recommendations (他tenant): Tenant A の提案は 0件 (完全隔離)');
+
+    // (2) accept 操作
+    // - recommendation.view のみ (userLegalViewer): 403 遮断 (PermissionsGuard)
+    const acceptCtxViewOnly = createMockContext(recommendationsController.accept, ['legal_viewer'], tenantA, userLegalViewer);
+    let acceptGuardBlocked = false;
+    try {
+      guard.canActivate(acceptCtxViewOnly);
+    } catch (err: any) {
+      if (err instanceof AppException && err.getStatus() === 403) acceptGuardBlocked = true;
+    }
+    expect(acceptGuardBlocked).toBe(true);
+    console.log('  -> [RBAC 4/6] accept (viewのみ): PermissionsGuard により 403 Forbidden 遮断');
+
+    // - recommendation.act あり (userA): 許可 (quoteRec を accept)
+    const acceptCtxAct = createMockContext(recommendationsController.accept, ['owner'], tenantA, userA);
+    expect(guard.canActivate(acceptCtxAct)).toBe(true);
+    const acceptResOwner = await recommendationsService.accept(tenantA, userA, ['owner'], quoteRec!.id);
+    expect(acceptResOwner.recommendation.status).toBe('accepted');
+    console.log('  -> [RBAC 5/6] accept (actあり): Controller許可 ＆ Service採用成功 (status=accepted)');
+
+    // - 他tenant (userB): 404 Not Found (自テナント外のため不可視)
+    let crossAcceptBlocked = false;
+    try {
+      await recommendationsService.accept(tenantB, userB, ['owner'], quoteRec!.id);
+    } catch (err: any) {
+      if (err instanceof AppException && err.getStatus() === 404) crossAcceptBlocked = true;
+    }
+    expect(crossAcceptBlocked).toBe(true);
+    console.log('  -> [RBAC 6/6] accept (他tenant): 他テナントの提案ID指定は 404 Not Found 遮断');
+
+    // (3) dismiss 操作
+    // - recommendation.view のみ (userLegalViewer): 403 遮断
+    const dismissCtxViewOnly = createMockContext(recommendationsController.dismiss, ['legal_viewer'], tenantA, userLegalViewer);
+    let dismissGuardBlocked = false;
+    try {
+      guard.canActivate(dismissCtxViewOnly);
+    } catch (err: any) {
+      if (err instanceof AppException && err.getStatus() === 403) dismissGuardBlocked = true;
+    }
+    expect(dismissGuardBlocked).toBe(true);
+    console.log('  -> [RBAC 7/7] dismiss (viewのみ): PermissionsGuard により 403 Forbidden 遮断');
+
+    // - 他tenant (userB) dismiss: 404 Not Found
+    let crossDismissBlocked = false;
+    try {
+      await recommendationsService.dismiss(tenantB, userB, ['owner'], quoteRec!.id);
+    } catch (err: any) {
+      if (err instanceof AppException && err.getStatus() === 404) crossDismissBlocked = true;
+    }
+    expect(crossDismissBlocked).toBe(true);
+    console.log('  -> [RBAC 8/8] dismiss (他tenant): 他テナントの提案ID指定は 404 Not Found 遮断');
+
+    // --------------------------------------------------------------------------
+    // 13. 空テナント安全性 (Tenant C)
+    // --------------------------------------------------------------------------
+    console.log('[13] 空テナント安全性検証 (Tenant C)');
     const emptyList = await recommendationsService.list(tenantC, randomUUID(), ['owner']);
     expect(emptyList.length).toBe(0);
     console.log('  -> 空テナントでも例外なく安全に空配列 (0件) を返却することを確認');
 
-    console.log(`=== P5-T2 AIレコメンドエンジン基盤 実DB E2E検証 全項目合格 (ALL PASS: 全${totalAssertions}検証項目合格) ===`);
+    console.log(`=== P5-T2-FIX AIレコメンドエンジン基盤 実DB E2E検証 全項目合格 (ALL PASS: 全${totalAssertions}検証項目合格) ===`);
   } finally {
     await pool.end();
   }

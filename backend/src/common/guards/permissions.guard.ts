@@ -77,6 +77,7 @@ export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     'deal.view',
     'contract_renewal_link.view',
     'dashboard.view',
+    'recommendation.view',
   ],
   approver: [
     'contract.view',

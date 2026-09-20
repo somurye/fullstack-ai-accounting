@@ -1,4 +1,4 @@
-export type RecommendationStatus = 'new' | 'shown' | 'accepted' | 'dismissed';
+export type RecommendationStatus = 'pending' | 'new' | 'shown' | 'accepted' | 'dismissed';
 
 export type RecommendationType =
   | 'contract_renewal_pending'
