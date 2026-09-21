@@ -3,6 +3,14 @@ import type { DatabaseService } from '../../database/database.service';
 import type { AuditLogsService } from '../audit-logs/audit-logs.service';
 import type { AttachmentRow } from './attachments.mapper';
 
+jest.mock('node:fs/promises', () => ({
+  mkdir: jest.fn().mockResolvedValue(undefined),
+  writeFile: jest.fn().mockResolvedValue(undefined),
+  unlink: jest.fn().mockResolvedValue(undefined),
+}));
+
+import { unlink } from 'node:fs/promises';
+
 describe('AttachmentsService', () => {
   let service: AttachmentsService;
   let mockDb: { transaction: jest.Mock };
@@ -20,6 +28,7 @@ describe('AttachmentsService', () => {
   };
 
   beforeEach(() => {
+    (unlink as unknown as jest.Mock).mockClear();
     mockClient = {
       query: jest.fn(),
     };
@@ -114,6 +123,18 @@ describe('AttachmentsService', () => {
       expect(insertCall[1][5]).toBe('contract');
       expect(insertCall[1][6]).toBeNull();
       expect(insertCall[1][7]).toBeNull();
+    });
+
+    it('DBトランザクションが失敗した際に補償処理としてファイルが削除され例外が再送出される (DEBT-001)', async () => {
+      mockClient.query.mockRejectedValueOnce(new Error('DB transaction failure'));
+
+      await expect(
+        service.upload(tenantId, userId, sampleFile, {
+          document_category: 'receipt',
+        }),
+      ).rejects.toThrow('DB transaction failure');
+
+      expect(unlink).toHaveBeenCalled();
     });
   });
 

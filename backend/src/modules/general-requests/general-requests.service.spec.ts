@@ -171,6 +171,32 @@ describe('GeneralRequestsService', () => {
         service.update(TENANT_ID, USER_ID, REQUEST_ID, { title: '変更' }),
       ).rejects.toThrow(AppException);
     });
+
+    it('他人のdraftを一般ユーザーが更新しようとすると403 Forbidden例外を投げる (DEBT-010)', async () => {
+      const otherUserId = '99999999-9999-9999-9999-999999999999';
+      mockClient.query
+        .mockResolvedValueOnce({ rowCount: 1, rows: [sampleRequestRow] }) // existing draft (created_by: USER_ID)
+        .mockResolvedValueOnce({ rows: [{ code: 'employee' }] }); // user_roles (一般ユーザー)
+
+      await expect(
+        service.update(TENANT_ID, otherUserId, REQUEST_ID, { title: '他人のドラフト不正更新' }),
+      ).rejects.toThrow('起票者本人または管理者のみが稟議申請を編集または削除できます');
+    });
+
+    it('他人のdraftでも管理者(owner)であれば更新できる (DEBT-010)', async () => {
+      const adminUserId = '99999999-9999-9999-9999-999999999999';
+      mockClient.query
+        .mockResolvedValueOnce({ rowCount: 1, rows: [sampleRequestRow] }) // existing draft
+        .mockResolvedValueOnce({ rows: [{ code: 'owner' }] }) // user_roles (管理者)
+        .mockResolvedValueOnce({
+          rows: [{ ...sampleRequestRow, title: '管理者による代理更新' }],
+        });
+
+      const result = await service.update(TENANT_ID, adminUserId, REQUEST_ID, {
+        title: '管理者による代理更新',
+      });
+      expect(result.title).toBe('管理者による代理更新');
+    });
   });
 
   describe('delete', () => {
@@ -199,6 +225,36 @@ describe('GeneralRequestsService', () => {
 
       await expect(service.delete(TENANT_ID, USER_ID, REQUEST_ID)).rejects.toThrow(
         AppException,
+      );
+    });
+
+    it('他人のdraftを一般ユーザーが削除しようとすると403 Forbidden例外を投げる (DEBT-010)', async () => {
+      const otherUserId = '99999999-9999-9999-9999-999999999999';
+      mockClient.query
+        .mockResolvedValueOnce({ rowCount: 1, rows: [sampleRequestRow] }) // existing draft
+        .mockResolvedValueOnce({ rows: [{ code: 'employee' }] }); // user_roles (一般)
+
+      await expect(service.delete(TENANT_ID, otherUserId, REQUEST_ID)).rejects.toThrow(
+        '起票者本人または管理者のみが稟議申請を編集または削除できます',
+      );
+    });
+
+    it('他人のdraftでも管理者(legal_admin)であれば削除できる (DEBT-010)', async () => {
+      const adminUserId = '99999999-9999-9999-9999-999999999999';
+      mockClient.query
+        .mockResolvedValueOnce({ rowCount: 1, rows: [sampleRequestRow] }) // existing draft
+        .mockResolvedValueOnce({ rows: [{ code: 'legal_admin' }] }) // user_roles (管理者)
+        .mockResolvedValueOnce({ rowCount: 1 }); // delete
+
+      await service.delete(TENANT_ID, adminUserId, REQUEST_ID);
+
+      expect(mockAuditLogs.record).toHaveBeenCalledWith(
+        mockClient,
+        TENANT_ID,
+        expect.objectContaining({
+          action: 'general_request.deleted',
+          targetId: REQUEST_ID,
+        }),
       );
     });
   });

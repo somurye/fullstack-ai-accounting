@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, unlink, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { Injectable } from '@nestjs/common';
 import { DatabaseService } from '../../database/database.service';
@@ -74,44 +74,51 @@ export class AttachmentsService {
 
     const documentCategory = dto.document_category ?? 'receipt';
 
-    return this.db.transaction(tenantId, userId, async (client) => {
-      const inserted = await client.query<AttachmentRow>(
-        `INSERT INTO attachments
-           (tenant_id, file_name, storage_path, mime_type, file_hash, document_category, transaction_date, amount, counterparty_name, uploaded_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-         RETURNING ${ATTACHMENT_COLUMNS}`,
-        [
-          tenantId,
-          safeFileName,
-          storagePath,
-          file.mimetype,
-          fileHash,
-          documentCategory,
-          dto.transaction_date ?? null,
-          dto.amount ?? null,
-          dto.counterparty_name ?? null,
-          userId,
-        ],
-      );
-      const attachment = inserted.rows[0];
+    try {
+      return await this.db.transaction(tenantId, userId, async (client) => {
+        const inserted = await client.query<AttachmentRow>(
+          `INSERT INTO attachments
+             (tenant_id, file_name, storage_path, mime_type, file_hash, document_category, transaction_date, amount, counterparty_name, uploaded_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+           RETURNING ${ATTACHMENT_COLUMNS}`,
+          [
+            tenantId,
+            safeFileName,
+            storagePath,
+            file.mimetype,
+            fileHash,
+            documentCategory,
+            dto.transaction_date ?? null,
+            dto.amount ?? null,
+            dto.counterparty_name ?? null,
+            userId,
+          ],
+        );
+        const attachment = inserted.rows[0];
 
-      await this.auditLogs.record(client, tenantId, {
-        actorUserId: userId,
-        action: 'attachment.uploaded',
-        targetType: 'attachment',
-        targetId: attachment.id,
-        afterData: {
-          file_name: attachment.file_name,
-          file_hash: attachment.file_hash,
-          document_category: attachment.document_category,
-          transaction_date: attachment.transaction_date,
-          amount: attachment.amount,
-          counterparty_name: attachment.counterparty_name,
-        },
+        await this.auditLogs.record(client, tenantId, {
+          actorUserId: userId,
+          action: 'attachment.uploaded',
+          targetType: 'attachment',
+          targetId: attachment.id,
+          afterData: {
+            file_name: attachment.file_name,
+            file_hash: attachment.file_hash,
+            document_category: attachment.document_category,
+            transaction_date: attachment.transaction_date,
+            amount: attachment.amount,
+            counterparty_name: attachment.counterparty_name,
+          },
+        });
+
+        return mapAttachmentRow(attachment);
       });
-
-      return mapAttachmentRow(attachment);
-    });
+    } catch (error) {
+      // DEBT-001解消: DBトランザクション失敗時の補償処理
+      // ディスクに書き込み済みのファイルを削除し、DB rollback時の孤児ファイル発生を防止する。
+      await unlink(storagePath).catch(() => {});
+      throw error;
+    }
   }
 
   async list(

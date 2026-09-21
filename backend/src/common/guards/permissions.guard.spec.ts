@@ -156,5 +156,36 @@ describe('PermissionsGuard (DEBT-005)', () => {
       }
     });
   });
+
+  describe('ROLE_PERMISSIONS 静的定義整合性 (DEBT-008)', () => {
+    it('全想定ロールが定義されており、配列内に重複したパーミッションが存在しない', () => {
+      const expectedRoles = [
+        'owner',
+        'legal_admin',
+        'legal_viewer',
+        'approver',
+        'accounting_manager',
+        'accountant',
+        'bookkeeper',
+        'employee',
+        'payroll_admin',
+        'viewer_external',
+      ];
+
+      const { ROLE_PERMISSIONS } = require('./permissions.guard');
+      for (const role of expectedRoles) {
+        expect(ROLE_PERMISSIONS[role]).toBeDefined();
+        const perms = ROLE_PERMISSIONS[role];
+        expect(Array.isArray(perms)).toBe(true);
+        const uniquePerms = new Set(perms);
+        expect(uniquePerms.size).toBe(perms.length); // 重複なし
+      }
+    });
+
+    it('viewer_external ロールは意図的に空配列（外部閲覧者は時限アクセス表で個別制御）である', () => {
+      const { ROLE_PERMISSIONS } = require('./permissions.guard');
+      expect(ROLE_PERMISSIONS.viewer_external).toEqual([]);
+    });
+  });
 });
 
