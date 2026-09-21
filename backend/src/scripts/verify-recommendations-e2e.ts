@@ -816,7 +816,82 @@ async function run() {
       }
     }
     expect(deletedNotFound).toBe(true);
-    console.log('  -> [DEBT-010 4/4] 起票者本人による更新および管理者(owner)による代理削除が正常に動作することを確認');
+    console.log('  -> [DEBT-010 4/7] 起票者本人による更新および管理者(owner)による代理削除が正常に動作することを確認');
+
+    // (5) 【P5-T4-FIX ステータス制約】承認後(active)の稟議は本人であっても更新・削除不可 (409 Conflict)
+    // テスト用に active 状態の稟議を作成
+    const reqNoActive = 'REQ-TEST-ACT-001';
+    const activeReqInsert = await pool.query<{ id: string }>(
+      `INSERT INTO general_requests (
+         tenant_id, request_no, title, description, category, amount, status, created_by
+       ) VALUES ($1, $2, '承認済み稟議', '確定後', 'general', 50000, 'active', $3)
+       RETURNING id`,
+      [tenantA, reqNoActive, userEmployee1],
+    );
+    const activeReqId = activeReqInsert.rows[0].id;
+
+    // (5a) 本人による承認後(active)更新試行 -> 409 Conflict
+    let selfActiveUpdateBlocked = false;
+    try {
+      await generalRequestsService.update(tenantA, userEmployee1, activeReqId, {
+        title: '本人による承認後改ざん試行',
+      });
+    } catch (err: any) {
+      if (err instanceof AppException && err.getStatus() === 409) {
+        selfActiveUpdateBlocked = true;
+      }
+    }
+    expect(selfActiveUpdateBlocked).toBe(true);
+
+    // (5b) 本人による承認後(active)削除試行 -> 409 Conflict
+    let selfActiveDeleteBlocked = false;
+    try {
+      await generalRequestsService.delete(tenantA, userEmployee1, activeReqId);
+    } catch (err: any) {
+      if (err instanceof AppException && err.getStatus() === 409) {
+        selfActiveDeleteBlocked = true;
+      }
+    }
+    expect(selfActiveDeleteBlocked).toBe(true);
+    console.log('  -> [DEBT-010 5/7] ステータス制約確認: 承認後(active)の稟議は本人であっても更新・削除が409 Conflictで拒絶されることを確認');
+
+    // (6) 【P5-T4-FIX ステータス制約】承認後(active)の稟議は管理者であっても更新・削除不可 (409 Conflict)
+    // (6a) 管理者による承認後(active)更新試行 -> 409 Conflict
+    let adminActiveUpdateBlocked = false;
+    try {
+      await generalRequestsService.update(tenantA, userA, activeReqId, {
+        title: '管理者による承認後改ざん試行',
+      });
+    } catch (err: any) {
+      if (err instanceof AppException && err.getStatus() === 409) {
+        adminActiveUpdateBlocked = true;
+      }
+    }
+    expect(adminActiveUpdateBlocked).toBe(true);
+
+    // (6b) 管理者による承認後(active)削除試行 -> 409 Conflict
+    let adminActiveDeleteBlocked = false;
+    try {
+      await generalRequestsService.delete(tenantA, userA, activeReqId);
+    } catch (err: any) {
+      if (err instanceof AppException && err.getStatus() === 409) {
+        adminActiveDeleteBlocked = true;
+      }
+    }
+    expect(adminActiveDeleteBlocked).toBe(true);
+    console.log('  -> [DEBT-010 6/7] ステータス制約確認: 承認後(active)の稟議は管理者(owner)であっても更新・削除が409 Conflictで拒絶されることを確認');
+
+    // (7) 【P5-T4-FIX DB最終防御】直接SQLによる active 稟議の物理削除が DBトリガー(23001)で確実に阻止されること
+    let dbActiveDeleteBlocked = false;
+    try {
+      await pool.query(`DELETE FROM general_requests WHERE id = $1`, [activeReqId]);
+    } catch (err: any) {
+      if (err.code === '23001') {
+        dbActiveDeleteBlocked = true;
+      }
+    }
+    expect(dbActiveDeleteBlocked).toBe(true);
+    console.log('  -> [DEBT-010 7/7] DB最終防御確認: active稟議の物理DELETEがDBトリガー fn_guard_general_request_transition() によりエラー23001で確実に拒絶されることを確認');
 
     console.log(`=== P5-T4 技術的負債解消 (DEBT-001/008/010) 実DB E2E検証 全項目合格 (ALL PASS: 全${totalAssertions}検証項目合格) ===`);
   } finally {

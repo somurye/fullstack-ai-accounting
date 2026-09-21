@@ -161,18 +161,7 @@ describe('GeneralRequestsService', () => {
       );
     });
 
-    it('draft以外の稟議を更新しようとするとconflict例外を投げる', async () => {
-      mockClient.query.mockResolvedValueOnce({
-        rowCount: 1,
-        rows: [{ ...sampleRequestRow, status: 'active' }],
-      });
-
-      await expect(
-        service.update(TENANT_ID, USER_ID, REQUEST_ID, { title: '変更' }),
-      ).rejects.toThrow(AppException);
-    });
-
-    it('他人のdraftを一般ユーザーが更新しようとすると403 Forbidden例外を投げる (DEBT-010)', async () => {
+    it('他人のdraftを一般ユーザーが更新しようとすると403 Forbidden例外を投げる (DEBT-010 主体判定)', async () => {
       const otherUserId = '99999999-9999-9999-9999-999999999999';
       mockClient.query
         .mockResolvedValueOnce({ rowCount: 1, rows: [sampleRequestRow] }) // existing draft (created_by: USER_ID)
@@ -183,7 +172,7 @@ describe('GeneralRequestsService', () => {
       ).rejects.toThrow('起票者本人または管理者のみが稟議申請を編集または削除できます');
     });
 
-    it('他人のdraftでも管理者(owner)であれば更新できる (DEBT-010)', async () => {
+    it('他人のdraftでも管理者(owner)であれば更新できる (DEBT-010 主体判定)', async () => {
       const adminUserId = '99999999-9999-9999-9999-999999999999';
       mockClient.query
         .mockResolvedValueOnce({ rowCount: 1, rows: [sampleRequestRow] }) // existing draft
@@ -196,6 +185,29 @@ describe('GeneralRequestsService', () => {
         title: '管理者による代理更新',
       });
       expect(result.title).toBe('管理者による代理更新');
+    });
+
+    it('承認後(active)の稟議は本人であっても更新できずconflict例外を投げる (DEBT-010 ステータス制約)', async () => {
+      mockClient.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{ ...sampleRequestRow, status: 'active', created_by: USER_ID }],
+      });
+
+      await expect(
+        service.update(TENANT_ID, USER_ID, REQUEST_ID, { title: '本人による承認後更新' }),
+      ).rejects.toThrow('draft状態の稟議申請のみ更新可能です (現在: active)');
+    });
+
+    it('承認後(active)の稟議は管理者であっても更新できずconflict例外を投げる (DEBT-010 ステータス制約)', async () => {
+      const adminUserId = '99999999-9999-9999-9999-999999999999';
+      mockClient.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{ ...sampleRequestRow, status: 'active', created_by: USER_ID }],
+      });
+
+      await expect(
+        service.update(TENANT_ID, adminUserId, REQUEST_ID, { title: '管理者による承認後更新' }),
+      ).rejects.toThrow('draft状態の稟議申請のみ更新可能です (現在: active)');
     });
   });
 
@@ -217,18 +229,7 @@ describe('GeneralRequestsService', () => {
       );
     });
 
-    it('active状態の稟議を削除しようとするとconflict例外を投げる', async () => {
-      mockClient.query.mockResolvedValueOnce({
-        rowCount: 1,
-        rows: [{ ...sampleRequestRow, status: 'active' }],
-      });
-
-      await expect(service.delete(TENANT_ID, USER_ID, REQUEST_ID)).rejects.toThrow(
-        AppException,
-      );
-    });
-
-    it('他人のdraftを一般ユーザーが削除しようとすると403 Forbidden例外を投げる (DEBT-010)', async () => {
+    it('他人のdraftを一般ユーザーが削除しようとすると403 Forbidden例外を投げる (DEBT-010 主体判定)', async () => {
       const otherUserId = '99999999-9999-9999-9999-999999999999';
       mockClient.query
         .mockResolvedValueOnce({ rowCount: 1, rows: [sampleRequestRow] }) // existing draft
@@ -239,7 +240,7 @@ describe('GeneralRequestsService', () => {
       );
     });
 
-    it('他人のdraftでも管理者(legal_admin)であれば削除できる (DEBT-010)', async () => {
+    it('他人のdraftでも管理者(legal_admin)であれば削除できる (DEBT-010 主体判定)', async () => {
       const adminUserId = '99999999-9999-9999-9999-999999999999';
       mockClient.query
         .mockResolvedValueOnce({ rowCount: 1, rows: [sampleRequestRow] }) // existing draft
@@ -255,6 +256,29 @@ describe('GeneralRequestsService', () => {
           action: 'general_request.deleted',
           targetId: REQUEST_ID,
         }),
+      );
+    });
+
+    it('承認後(active)の稟議は本人であっても削除できずconflict例外を投げる (DEBT-010 ステータス制約)', async () => {
+      mockClient.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{ ...sampleRequestRow, status: 'active', created_by: USER_ID }],
+      });
+
+      await expect(service.delete(TENANT_ID, USER_ID, REQUEST_ID)).rejects.toThrow(
+        'draft状態の稟議申請のみ削除可能です (現在: active)',
+      );
+    });
+
+    it('承認後(active)の稟議は管理者であっても削除できずconflict例外を投げる (DEBT-010 ステータス制約)', async () => {
+      const adminUserId = '99999999-9999-9999-9999-999999999999';
+      mockClient.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{ ...sampleRequestRow, status: 'active', created_by: USER_ID }],
+      });
+
+      await expect(service.delete(TENANT_ID, adminUserId, REQUEST_ID)).rejects.toThrow(
+        'draft状態の稟議申請のみ削除可能です (現在: active)',
       );
     });
   });
