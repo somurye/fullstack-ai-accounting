@@ -209,6 +209,9 @@ export class GeneralRequestsService {
         );
       }
 
+      // DEBT-010解消: 起票者本人または管理者のみ編集可能
+      await this.assertCanModify(client, tenantId, userId, current);
+
       if (dto.attachment_id !== undefined && dto.attachment_id !== null) {
         const attCheck = await client.query(
           `SELECT 1 FROM attachments WHERE tenant_id = $1 AND id = $2`,
@@ -275,6 +278,9 @@ export class GeneralRequestsService {
           `draft状態の稟議申請のみ削除可能です (現在: ${current.status})`,
         );
       }
+
+      // DEBT-010解消: 起票者本人または管理者のみ削除可能
+      await this.assertCanModify(client, tenantId, userId, current);
 
       await client.query(`DELETE FROM general_requests WHERE tenant_id = $1 AND id = $2`, [
         tenantId,
@@ -405,5 +411,36 @@ export class GeneralRequestsService {
 
       return pendingRequest;
     });
+  }
+
+  /**
+   * DEBT-010解消: 起票者本人または管理者相当ロールのみ編集・削除可能
+   */
+  private async assertCanModify(
+    client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: any[] }> },
+    tenantId: string,
+    userId: string,
+    current: GeneralRequestRow,
+  ): Promise<void> {
+    if (current.created_by === userId) {
+      return;
+    }
+
+    const roleResult = await client.query(
+      `SELECT r.code
+       FROM user_roles ur
+       JOIN roles r ON r.id = ur.role_id
+       WHERE ur.tenant_id = $1 AND ur.user_id = $2`,
+      [tenantId, userId],
+    );
+    const roles = roleResult.rows.map((row) => (row as { code: string }).code);
+    const isAdmin = roles.some((role) =>
+      ['owner', 'admin', 'legal_admin'].includes(role),
+    );
+    if (!isAdmin) {
+      throw AppException.forbidden(
+        '起票者本人または管理者のみが稟議申請を編集または削除できます',
+      );
+    }
   }
 }

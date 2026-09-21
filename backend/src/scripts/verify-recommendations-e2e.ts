@@ -11,6 +11,7 @@ import { DealsService } from '../modules/deals/deals.service';
 import { QuotationPdfService } from '../modules/quotations/quotation-pdf.service';
 import { RecommendationsService } from '../modules/recommendations/recommendations.service';
 import { RecommendationsController } from '../modules/recommendations/recommendations.controller';
+import { GeneralRequestsService } from '../modules/general-requests/general-requests.service';
 import { PermissionsGuard } from '../common/guards/permissions.guard';
 import { AppException } from '../common/exceptions/app.exception';
 
@@ -140,6 +141,7 @@ async function run() {
     );
 
     const recommendationsController = new RecommendationsController(recommendationsService);
+    const generalRequestsService = new GeneralRequestsService(db, auditLogs);
     const reflector = new Reflector();
     const guard = new PermissionsGuard(reflector);
 
@@ -155,6 +157,8 @@ async function run() {
     const userLegalViewer = randomUUID(); // legal_viewer (view のみ！)
     const userPayroll = randomUUID(); // payroll_admin (view + act)
     const userExternal = randomUUID(); // viewer_external (権限なし)
+    const userEmployee1 = randomUUID(); // employee (一般従業員1)
+    const userEmployee2 = randomUUID(); // employee (一般従業員2)
     const userB = randomUUID(); // tenantB owner
 
     console.log(`[1] テナント初期化: Tenant A=${tenantA}, Tenant B=${tenantB}, Tenant C(空)=${tenantC}`);
@@ -170,19 +174,23 @@ async function run() {
        ($3, 'rec_viewer@test.com', 'hash', 'Rec Legal Viewer (ViewOnly)', NOW(), NOW()),
        ($4, 'rec_payroll@test.com', 'hash', 'Rec Payroll User', NOW(), NOW()),
        ($5, 'rec_ext@test.com', 'hash', 'Rec Ext User', NOW(), NOW()),
-       ($6, 'rec_b@test.com', 'hash', 'Rec User B (Tenant B)', NOW(), NOW())`,
-      [userA, userLegal, userLegalViewer, userPayroll, userExternal, userB],
+       ($6, 'rec_emp1@test.com', 'hash', 'Rec Employee 1', NOW(), NOW()),
+       ($7, 'rec_emp2@test.com', 'hash', 'Rec Employee 2', NOW(), NOW()),
+       ($8, 'rec_b@test.com', 'hash', 'Rec User B (Tenant B)', NOW(), NOW())`,
+      [userA, userLegal, userLegalViewer, userPayroll, userExternal, userEmployee1, userEmployee2, userB],
     );
 
     await pool.query(
       `INSERT INTO tenant_users (tenant_id, user_id) VALUES
-       ($1, $2), ($1, $3), ($1, $4), ($1, $5), ($1, $6), ($7, $8)`,
+       ($1, $2), ($1, $3), ($1, $4), ($1, $5), ($1, $6), ($1, $7), ($1, $8), ($9, $10)`,
       [
         tenantA, userA,
         userLegal,
         userLegalViewer,
         userPayroll,
         userExternal,
+        userEmployee1,
+        userEmployee2,
         tenantB, userB,
       ],
     );
@@ -200,8 +208,12 @@ async function run() {
        UNION ALL
        SELECT $1::uuid, $6::uuid, id FROM roles WHERE code = 'viewer_external'
        UNION ALL
-       SELECT $7::uuid, $8::uuid, id FROM roles WHERE code = 'owner'`,
-      [tenantA, userA, userLegal, userLegalViewer, userPayroll, userExternal, tenantB, userB],
+       SELECT $1::uuid, $7::uuid, id FROM roles WHERE code = 'employee'
+       UNION ALL
+       SELECT $1::uuid, $8::uuid, id FROM roles WHERE code = 'employee'
+       UNION ALL
+       SELECT $9::uuid, $10::uuid, id FROM roles WHERE code = 'owner'`,
+      [tenantA, userA, userLegal, userLegalViewer, userPayroll, userExternal, userEmployee1, userEmployee2, tenantB, userB],
     );
 
     // 顧客マスタ (customers) 登録
@@ -745,6 +757,143 @@ async function run() {
     console.log('  -> [P5-T3 7/7] 二重認可: 業務レコード閲覧権限を持たないドメイン指定時は 0件 となることを確認');
 
     console.log(`=== P5-T3 レコメンド業務画面統合表示 実DB E2E検証 全項目合格 (ALL PASS: 全${totalAssertions}検証項目合格) ===`);
+
+    // --------------------------------------------------------------------------
+    // 15. 【DEBT-010 実DB検証】汎用稟議（general_requests）の編集・削除における起票者本人 / 管理者制御
+    // --------------------------------------------------------------------------
+    console.log('[15] 【DEBT-010】汎用稟議（general_requests）の編集・削除における起票者本人 / 管理者制御 実DB検証');
+
+    // (1) 一般ユーザー userEmployee1 がドラフト稟議を作成
+    const employee1Draft = await generalRequestsService.create(tenantA, userEmployee1, {
+      title: '従業員1起票のドラフト稟議',
+      description: '備品購入申請',
+      category: 'equipment',
+      amount: 15000,
+    });
+    expect(employee1Draft.id).notNull();
+    expect(employee1Draft.created_by).toBe(userEmployee1);
+    console.log('  -> [DEBT-010 1/4] 一般ユーザーによるドラフト作成成功 (created_by 一致)');
+
+    // (2) 同一テナントの別の一般ユーザー userEmployee2 (employeeロール) が更新を試行 -> 403 Forbidden 拒絶
+    let updateByOtherBlocked = false;
+    try {
+      await generalRequestsService.update(tenantA, userEmployee2, employee1Draft.id, {
+        title: '不正な他人ドラフト更新',
+      });
+    } catch (err: any) {
+      if (err instanceof AppException && err.getStatus() === 403) {
+        updateByOtherBlocked = true;
+      }
+    }
+    expect(updateByOtherBlocked).toBe(true);
+    console.log('  -> [DEBT-010 2/4] 同一テナントの別ユーザーによるドラフト更新が403 Forbiddenで確実に拒絶されることを確認');
+
+    // (3) 同一テナントの別の一般ユーザー userEmployee2 が削除を試行 -> 403 Forbidden 拒絶
+    let deleteByOtherBlocked = false;
+    try {
+      await generalRequestsService.delete(tenantA, userEmployee2, employee1Draft.id);
+    } catch (err: any) {
+      if (err instanceof AppException && err.getStatus() === 403) {
+        deleteByOtherBlocked = true;
+      }
+    }
+    expect(deleteByOtherBlocked).toBe(true);
+    console.log('  -> [DEBT-010 3/4] 同一テナントの別ユーザーによるドラフト削除が403 Forbiddenで確実に拒絶されることを確認');
+
+    // (4) 起票者本人 userEmployee1 による更新成功 & 管理者 userA (owner) による代理削除成功
+    const selfUpdated = await generalRequestsService.update(tenantA, userEmployee1, employee1Draft.id, {
+      title: '起票者本人による正常更新',
+    });
+    expect(selfUpdated.title).toBe('起票者本人による正常更新');
+
+    await generalRequestsService.delete(tenantA, userA, employee1Draft.id);
+    let deletedNotFound = false;
+    try {
+      await generalRequestsService.getById(tenantA, userA, employee1Draft.id);
+    } catch (err: any) {
+      if (err instanceof AppException && err.getStatus() === 404) {
+        deletedNotFound = true;
+      }
+    }
+    expect(deletedNotFound).toBe(true);
+    console.log('  -> [DEBT-010 4/7] 起票者本人による更新および管理者(owner)による代理削除が正常に動作することを確認');
+
+    // (5) 【P5-T4-FIX ステータス制約】承認後(active)の稟議は本人であっても更新・削除不可 (409 Conflict)
+    // テスト用に active 状態の稟議を作成
+    const reqNoActive = 'REQ-TEST-ACT-001';
+    const activeReqInsert = await pool.query<{ id: string }>(
+      `INSERT INTO general_requests (
+         tenant_id, request_no, title, description, category, amount, status, created_by
+       ) VALUES ($1, $2, '承認済み稟議', '確定後', 'general', 50000, 'active', $3)
+       RETURNING id`,
+      [tenantA, reqNoActive, userEmployee1],
+    );
+    const activeReqId = activeReqInsert.rows[0].id;
+
+    // (5a) 本人による承認後(active)更新試行 -> 409 Conflict
+    let selfActiveUpdateBlocked = false;
+    try {
+      await generalRequestsService.update(tenantA, userEmployee1, activeReqId, {
+        title: '本人による承認後改ざん試行',
+      });
+    } catch (err: any) {
+      if (err instanceof AppException && err.getStatus() === 409) {
+        selfActiveUpdateBlocked = true;
+      }
+    }
+    expect(selfActiveUpdateBlocked).toBe(true);
+
+    // (5b) 本人による承認後(active)削除試行 -> 409 Conflict
+    let selfActiveDeleteBlocked = false;
+    try {
+      await generalRequestsService.delete(tenantA, userEmployee1, activeReqId);
+    } catch (err: any) {
+      if (err instanceof AppException && err.getStatus() === 409) {
+        selfActiveDeleteBlocked = true;
+      }
+    }
+    expect(selfActiveDeleteBlocked).toBe(true);
+    console.log('  -> [DEBT-010 5/7] ステータス制約確認: 承認後(active)の稟議は本人であっても更新・削除が409 Conflictで拒絶されることを確認');
+
+    // (6) 【P5-T4-FIX ステータス制約】承認後(active)の稟議は管理者であっても更新・削除不可 (409 Conflict)
+    // (6a) 管理者による承認後(active)更新試行 -> 409 Conflict
+    let adminActiveUpdateBlocked = false;
+    try {
+      await generalRequestsService.update(tenantA, userA, activeReqId, {
+        title: '管理者による承認後改ざん試行',
+      });
+    } catch (err: any) {
+      if (err instanceof AppException && err.getStatus() === 409) {
+        adminActiveUpdateBlocked = true;
+      }
+    }
+    expect(adminActiveUpdateBlocked).toBe(true);
+
+    // (6b) 管理者による承認後(active)削除試行 -> 409 Conflict
+    let adminActiveDeleteBlocked = false;
+    try {
+      await generalRequestsService.delete(tenantA, userA, activeReqId);
+    } catch (err: any) {
+      if (err instanceof AppException && err.getStatus() === 409) {
+        adminActiveDeleteBlocked = true;
+      }
+    }
+    expect(adminActiveDeleteBlocked).toBe(true);
+    console.log('  -> [DEBT-010 6/7] ステータス制約確認: 承認後(active)の稟議は管理者(owner)であっても更新・削除が409 Conflictで拒絶されることを確認');
+
+    // (7) 【P5-T4-FIX DB最終防御】直接SQLによる active 稟議の物理削除が DBトリガー(23001)で確実に阻止されること
+    let dbActiveDeleteBlocked = false;
+    try {
+      await pool.query(`DELETE FROM general_requests WHERE id = $1`, [activeReqId]);
+    } catch (err: any) {
+      if (err.code === '23001') {
+        dbActiveDeleteBlocked = true;
+      }
+    }
+    expect(dbActiveDeleteBlocked).toBe(true);
+    console.log('  -> [DEBT-010 7/7] DB最終防御確認: active稟議の物理DELETEがDBトリガー fn_guard_general_request_transition() によりエラー23001で確実に拒絶されることを確認');
+
+    console.log(`=== P5-T4 技術的負債解消 (DEBT-001/008/010) 実DB E2E検証 全項目合格 (ALL PASS: 全${totalAssertions}検証項目合格) ===`);
   } finally {
     await pool.end();
   }

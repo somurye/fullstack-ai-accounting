@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -3062,8 +3063,62 @@ def run_verification(dsn: str) -> int:
     else:
         print("\n=== P5-T2-VERIFY E2E 実測実行ログ ===")
         print(p5t2_verify_run.stdout)
-    r.ok("AIレコメンド包括E2E: 状態遷移マシン(一度限りの遷移)・真のWORM不変列・未知ドメインfail-closed・RBACマトリクス・業務画面統合ピンポイント絞り込み(P5-T3)が動作する",
+    r.ok("AIレコメンド包括E2E: 状態遷移マシン(一度限りの遷移)・真のWORM不変列・未知ドメインfail-closed・RBACマトリクス・業務画面統合ピンポイント絞り込み(P5-T3)・汎用稟議本人/管理者制御(DEBT-010)が動作する",
          p5t2_verify_run.returncode == 0)
+
+    # 31. 【DEBT-008 RBACドリフト検知: PermissionsGuard静的マップ vs DB role_permissionsテーブル完全一致検証】
+    print("\n--- 31. RBACドリフト検証 (DEBT-008: PermissionsGuard vs DB role_permissions) ---")
+    conn = psycopg2.connect(dsn)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT r.code::text, p.code::text
+                FROM role_permissions rp
+                JOIN roles r ON r.id = rp.role_id
+                JOIN permissions p ON p.id = rp.permission_id
+                ORDER BY r.code, p.code
+            """)
+            db_role_perm_pairs = set(cur.fetchall())
+    finally:
+        conn.close()
+
+    # PermissionsGuard.ts から ROLE_PERMISSIONS を直接抽出してDB定義と突合 (DEBT-008 RBACドリフト完全検知)
+    guard_ts_path = REPO_ROOT / "backend" / "src" / "common" / "guards" / "permissions.guard.ts"
+    guard_pairs = set()
+    if os.path.exists(guard_ts_path):
+        with open(guard_ts_path, "r", encoding="utf-8") as f:
+            guard_content = f.read()
+
+        # ROLE_PERMISSIONS 定義ブロックを抽出
+        match = re.search(r"export const ROLE_PERMISSIONS[^{]+{([^}]+(?:{[^}]+}[^}]+)*)};", guard_content, re.DOTALL)
+        if match:
+            block = match.group(1)
+            # 各ロールの配列を抽出: role_name: [ ... ]
+            role_matches = re.findall(r"(\w+):\s*\[([^\]]*)\]", block, re.DOTALL)
+            for role_name, perms_str in role_matches:
+                perms = re.findall(r"'([^']+)'", perms_str)
+                for p in perms:
+                    guard_pairs.add((role_name, p))
+            print(f"  [抽出] PermissionsGuard.ts から {len(role_matches)} ロール、計 {len(guard_pairs)} ペアのパーミッションを抽出")
+        else:
+            print("  [ERROR] PermissionsGuard.ts から ROLE_PERMISSIONS 定義ブロックを抽出できませんでした")
+    else:
+        print(f"  [ERROR] PermissionsGuard.ts が見つかりません: {guard_ts_path}")
+
+    diff_db_minus_guard = db_role_perm_pairs - guard_pairs
+    diff_guard_minus_db = guard_pairs - db_role_perm_pairs
+    rbac_drift_free = (len(diff_db_minus_guard) == 0 and len(diff_guard_minus_db) == 0 and len(guard_pairs) > 0)
+
+    if not rbac_drift_free:
+        if diff_db_minus_guard:
+            print(f"  [ERROR] DBにあってPermissionsGuardに未定義のロール権限: {sorted(list(diff_db_minus_guard))}")
+        if diff_guard_minus_db:
+            print(f"  [ERROR] PermissionsGuardにあってDBに未定義のロール権限: {sorted(list(diff_guard_minus_db))}")
+    else:
+        print(f"  [OK] DB role_permissions ({len(db_role_perm_pairs)}組) と PermissionsGuard.ROLE_PERMISSIONS ({len(guard_pairs)}組) が1件の過不足もなく完全一致")
+
+    r.ok(f"RBACドリフト検知 (DEBT-008): PermissionsGuard静的マップとDB role_permissionsテーブルが完全一致する (過不足ゼロ: DB={len(db_role_perm_pairs)}組, Guard={len(guard_pairs)}組)",
+         rbac_drift_free)
 
     return r.summary()
 
