@@ -352,3 +352,48 @@ erDiagram
 | 18 | `app_readonly_external`ロールへの書き込み拒否(権限レベル) | PASS |
 
 この検証手順は `scripts/verify_schema.py`(Docker PostgreSQL向け)としてPhase 3で再現可能な形に整備している。
+
+---
+
+## 8. 付録: 拡張スキーマ一覧（sql/002〜035）
+
+基盤スキーマ（`001_initial_schema_all_in_one.sql`）に対し、バックオフィス拡張（Phase 0〜5）によって順次適用された拡張マイグレーションファイルの一覧です。すべての拡張テーブルにも `tenant_id`・RLS・WORM不変性トリガー・多層防御制約が適用されています。詳細なDDL仕様およびレビュー検証記録は [docs/backoffice_expansion_plan.md](backoffice_expansion_plan.md) の各該当タスクを参照してください。
+
+| ファイル名 | 拡張対象ドメイン | 概要・主要制約 | 計画書参照 |
+|---|---|---|---|
+| `002_bank_integration.sql` | 経理コア | 銀行口座・明細連携用カラム（銀行コード、支店コード、口座種別等）の拡張 | Phase 0 |
+| `003_bank_connector_link_status.sql` | 経理コア | 銀行API連携コネクタの状態管理（`link_status`, `last_synced_at`） | Phase 0 |
+| `004_rbac_bookkeeper_role.sql` | RBAC基盤 | 記帳担当者（`bookkeeper`）ロールの新設と基本権限の付与 | Phase 0 |
+| `005_audit_logs_search_upgrade.sql` | ガバナンス | 監査ログ検索高速化のためのGINインデックス（`before_data`, `after_data`）および複合インデックス追加 | Phase 0 |
+| `006_generic_approval_targets.sql` | ワークフロー | 承認依頼（`approval_requests`）の対象リソース拡張（`target_type` ENUM追加） | Phase 0 |
+| `007_attachments_document_category.sql` | 電帳法 | 電子帳簿保存法スキャナ保存区分（`document_category`）の追加 | Phase 0 |
+| `008a_legal_roles_enum.sql` | 法務RBAC | 法務担当ロール（`legal_officer`）ENUM値の追加 | Phase 1 |
+| `008b_legal_roles_setup.sql` | 法務RBAC | 法務ロール向け権限（`contracts.view`, `contracts.edit`, `contracts.delete` 等）の登録 | Phase 1 |
+| `009_contracts.sql` | 契約管理 | 契約書テーブル（`contracts`）、契約書バージョン（`contract_versions`）の作成とRLS | Phase 1 (P1-T1) |
+| `010_contract_enhancements.sql` | 契約管理 | 契約書ステータス遷移（`draft`, `negotiating`, `active`, `expired`, `terminated`）とトリガー制約 | Phase 1 (P1-T1) |
+| `011_ai_suggestions_generic_types.sql` | AI基盤 | AI提案（`ai_suggestions`）の汎用化（契約書条項抽出等への対応） | Phase 1 (P1-T2) |
+| `012_contract_rbac_and_lifecycle.sql` | 契約管理 | 契約ライフサイクル制御と法務RBAC権限の厳格化 | Phase 1 (P1-T2) |
+| `013_notifications.sql` | 通知基盤 | 契約更新期限アラート用通知テーブル（`notifications`）の作成とRLS | Phase 1 (P1-T3) |
+| `014_general_requests.sql` | 総務・稟議 | 社内稟議・汎用申請テーブル（`general_requests`）の作成と多段階承認連携 | Phase 1 (P1-T4) |
+| `015_general_request_constraints.sql` | 総務・稟議 | 汎用申請の本人性・管理者権限チェックおよびステータス遷移制約（`fn_guard_general_request_transition`） | Phase 1 (P1-T4) |
+| `016_contract_fulltext_search.sql` | 契約検索 | 契約書全文検索用 `pg_trgm` GINインデックスおよび `tsvector` 生成トリガー | Phase 1 (P1-T5) |
+| `017_purchase_requests.sql` | 購買管理 | 購買申請テーブル（`purchase_requests`）、購買申請明細（`purchase_request_items`）の作成とRLS | Phase 2 (P2-T1) |
+| `018_suppliers.sql` | 購買管理 | サプライヤーマスタ（`suppliers`）、適格請求書発行事業者番号（T番号）CHECK制約 | Phase 2 (P2-T2) |
+| `019_purchase_receipts_and_billing.sql` | 購買・受領 | 発注受領書（`purchase_receipts`）、受領明細、仕入請求書連携、3点照合基盤 | Phase 2 (P2-T3) |
+| `020_purchase_receipt_worm_delete.sql` | 購買・受領 | 発注受領書のWORM不変性（確定後のUPDATE/物理DELETE禁止トリガー） | Phase 2 (P2-T3) |
+| `021_employees_and_attendance.sql` | 人事労務 | 従業員マスタ（`employees`）、勤怠打刻（`attendance_records`）テーブルとRLS | Phase 3 (P3-T1) |
+| `022_insurance_and_tax_rates.sql` | 給与マスタ | 有効期間付き社会保険料率（`insurance_rate_tables`）、所得税源泉徴収税額表（`income_tax_withholding_brackets`） | Phase 3 (P3-T2) |
+| `023_rate_master_immutability.sql` | 給与マスタ | 料率マスタの適用日到来後WORM不変性トリガー（`fn_prevent_insurance_rate_past_update` 等） | Phase 3 (P3-T2) |
+| `024_payroll_engine.sql` | 給与計算 | 給与計算期間（`payroll_periods`）、給与計算結果（`payroll_calculations`）、承認後WORM不変性トリガー | Phase 3 (P3-T3) |
+| `025_payslips_and_year_end_adjustments.sql` | 給与・年末調整 | Web給与明細、2026年分年末調整テーブル（`year_end_adjustments`）とWORM不変性 | Phase 3 (P3-T4) |
+| `026_quotations.sql` | 営業・見積 | 見積書（`quotations`）、見積明細（`quotation_items`）、改訂リンク（`superseded_by`）、確定後WORM不変性 | Phase 4 (P4-T1) |
+| `027_quotation_revision_and_conversion_guards.sql` | 営業・見積 | 見積書改訂ガードトリガー、請求書変換ガードトリガー（`fn_guard_quotation_conversion`） | Phase 4 (P4-T1) |
+| `028_invoice_source_quotation_guard.sql` | 営業・請求 | 売上請求書（`invoices.source_quotation_id`）の不変性ガードトリガー（対称的保護） | Phase 4 (P4-T1) |
+| `029_deals.sql` | 営業・案件 | 案件パイプライン（`deals`）、ステージ進捗、成約・失注終端ロック不変性トリガー（`fn_guard_deal_immutability`） | Phase 4 (P4-T2) |
+| `030_contract_renewal_links.sql` | 営業・契約 | 契約書↔案件↔見積書の契約更新リンクテーブル（`contract_renewal_links`）とRLS | Phase 4 (P4-T3) |
+| `031_contract_renewal_link_guards.sql` | 営業・契約 | 契約更新リンクのWORM不変性ガード（`fn_guard_contract_renewal_link_immutability`）、テナント整合性 | Phase 4 (P4-T3) |
+| `032_sales_dashboard.sql` | 営業KPI | 営業KPIダッシュボード用インデックス・集計用ビュー定義 | Phase 4 (P4-T4) |
+| `033_executive_dashboard.sql` | 横断KPI | 全社横断エグゼクティブダッシュボード用集計インデックス | Phase 5 (P5-T1) |
+| `034_recommendations.sql` | AIレコメンド | ルールベースAIレコメンドテーブル（`recommendations`）の作成とRLS | Phase 5 (P5-T2) |
+| `035_recommendation_state_machine_guards.sql` | AIレコメンド | レコメンド状態遷移ガードトリガー（`fn_guard_recommendation_state_machine`、終端ロックWORM、DELETE禁止） | Phase 5 (P5-T2) |
+

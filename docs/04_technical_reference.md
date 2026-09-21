@@ -305,12 +305,58 @@ signup/招待受諾フローでは、`setSession()`(トークン保存)後に**`
 
 ## 7. テスト・検証資産
 
-| 資産 | 用途 |
-|---|---|
-| `scripts/verify_schema.py` | Docker上に使い捨てPostgreSQLを起動し、RLS分離・貸借チェック・追記専用・24h Void・自己承認禁止・外部時限アクセスをpsycopg2で自動検証 |
-| `scripts/seed_*.sql` | 開発時の手動確認用の簡易シードSQL(経費/請求書/仕入請求書/レポート) |
-| `backend/src/scripts/simulate-100-users-year.ts` | 100名規模テナントの1年分(12ヶ月)フル業務フローを実サービス層経由で生成する統合シミュレーションスクリプト。BS/PL/CFの1円単位整合性検証込み。詳細は`05_deployment_guide.md` 9章 |
-| `backend/test/`(Jest) | ユニット/統合テスト(`npm test`) |
+本プロジェクトでは、「DB制約による最終防御」および「実DBによる多層防御検証」の原則に基づき、単体テスト（Jest）に加え、使い捨てDocker PostgreSQLコンテナを用いたスキーマ検証スクリプト、および各業務ドメインを網羅する実DB E2Eテスト群を体系的に整備しています。
+
+### 7.1 検証方針とセキュリティ境界の検証原則
+- **`app_runtime` ロール・テナントコンテキスト経由の必須化**: スーパーユーザー（`postgres`）によるテストはRLSを迂回してしまうため、RLSの検証には必ず実際のアプリケーション接続ロールである `app_runtime` を使用し、`SET LOCAL app.current_tenant_id` を設定したトランザクション下で実行します。未設定時のfail-closed（0件返却）および他テナントIDへのアクセス遮断を自動テストで常時証明しています（P4-T4にて確立）。
+- **アドバイザリロックによる並行性・二重防止検証**: 見積書の請求書二重変換防止、採番レース防止、サプライヤー名変更の直列化など、PostgreSQLアドバイザリロック（`pg_advisory_xact_lock`）を用いた同時実行制御が実DB上でテストされています。
+
+### 7.2 バックエンド単体・結合テスト（Jest）
+- **規模**: **30 Test Suites / 261 Tests（100% 合格）**
+- **実行コマンド**: `npm --prefix backend test`
+- **対象領域**: 財務会計・経費精算・請求書・仕訳・銀行連携・固定資産・契約管理・購買調達・勤怠・給与計算エンジン・年末調整・見積書・案件・ダッシュボード・AIレコメンド等の全ドメインService、Controller、PermissionsGuard、PDF生成ユーティリティ（`pdf-lib`, `ipaexg.ttf` 日本語フォント埋込）、PDFテキスト抽出（`pdfjs-dist`）。
+
+### 7.3 スキーマ・ルール自動検証スクリプト（`scripts/verify_schema.py`）
+- **規模**: **209 / 209 checks passed（全209項目 100% 合格）**
+- **実行コマンド**: `python scripts/verify_schema.py --use-docker`（または `--dsn <接続文字列>`）
+- **主要検証カテゴリ（全31セクション）**:
+  1. **基盤スキーマ検証（セクション1〜7）**: `app_runtime` RLSテナント越境遮断、fail-closed、貸借不一致時のposted拒絶、確定仕訳・監査ログのWORM追記専用制約、24時間Void、自己承認禁止、外部税理士時限アクセス制御。
+  2. **法務・契約書管理（セクション8〜12）**: 契約書ライフサイクル、条項AI抽出、更新期限通知、汎用申請WF、`pg_trgm` 全文検索。
+  3. **購買・調達管理（セクション13〜16）**: 購買申請多段階承認、サプライヤーT番号CHECK制約、納品受領書・仕入請求書・発注書の3点照合、受領書WORM不変性（物理DELETE禁止）。
+  4. **人事労務・給与内製化（セクション17〜23）**: 勤怠打刻整合性、有効期間付き料率マスタ（EXCLUDE制約）、適用日到来後WORM不変性、給与計算エンジン（支給・控除・社保・所得税自動算出・確定後WORM不変性）、2026年分年末調整簡略モデル。
+  5. **営業事務・商流管理（セクション24〜29）**: 見積書ライフサイクル・改訂リンク・WORM不変性、請求書変換ガード（`fn_guard_quotation_conversion`）、売上請求書の対称的保護、案件パイプラインwon/lost終端ロック、契約更新リンクWORM保護。
+  6. **横断ダッシュボード & AIレコメンド（セクション30）**: 横断KPI参照整合性、レコメンド状態遷移マシン（pending→accepted/dismissed、終端ロックWORM、DELETE禁止トリガー `55000`）。
+  7. **RBACドリフト自動検知（セクション31 / DEBT-008）**: アプリケーション層 `PermissionsGuard.ROLE_PERMISSIONS`（200組）と DB `role_permissions`（200組）を双方向突合し、不整合・過不足がゼロであることを常時検証。
+  8. **クリーンDB一括適用テスト**: 空のPostgreSQL環境に対し `001` から `035` までの全マイグレーションを一括適用し、エラーや回帰が発生しないことを検証。
+
+### 7.4 ドメイン別実DB E2E検証スクリプト群（`backend/src/scripts/verify-*-e2e.ts`）
+実際のPostgreSQL環境に対し、NestJSのService層および生SQLトランザクションを経由して、業務シナリオを一気通貫で検証するスクリプト群（計19本）です。
+
+| スクリプト名 | 検証対象ドメイン | 主な検証内容 |
+|---|---|---|
+| `verify-contract-expiry-alerts-e2e.ts` | 契約管理 | 契約更新期限アラート通知の自動生成、期限判定ロジック、通知重複防止 |
+| `verify-contract-pdf-e2e.ts` | 契約管理 | 契約書PDFテキスト抽出（`pdfjs-dist`）、メタデータ解析、添付ファイル連携 |
+| `verify-contract-rbac-e2e.ts` | 契約管理 | 法務ロール（`legal_officer` 等）による契約書閲覧・編集権限およびライフサイクル制御 |
+| `verify-contract-renewal-links-e2e.ts` | 営業・契約 | 契約書↔案件↔見積書の契約更新リンク連携、対称的WORM保護、重複リンク防止 |
+| `verify-contract-search-e2e.ts` | 契約管理 | `pg_trgm` GINインデックスおよび `tsvector` を用いた契約書全文検索・絞り込み |
+| `verify-deals-e2e.ts` | 営業・案件 | 商談・案件パイプライン管理、ステージ遷移、成約（won）・失注（lost）の終端ロック不変性 |
+| `verify-employees-attendance-e2e.ts` | 人事労務 | 従業員台帳マスタ、Web勤怠打刻、所定外・深夜労働時間の自動集計、承認フロー |
+| `verify-executive-dashboard-e2e.ts` | 統合最適化 | 財務・購買・人事・営業の4領域を統合する横断KPI集計（サービス委譲型アーキテクチャ） |
+| `verify-general-requests-e2e.ts` | 総務・稟議 | 社内稟議・汎用申請ワークフロー、起票者本人/管理者制御（DEBT-010）、ステータス遷移 |
+| `verify-payroll-engine-e2e.ts` | 給与計算 | 給与計算エンジン（基本給・手当・社会保険料・源泉所得税自動計算、確定後WORM不変性） |
+| `verify-payslips-year-end-adjustment-e2e.ts` | 給与・年末調整 | Web給与明細PDF生成（フォント埋込）、2026年分年末調整計算エンジン（所得控除・年税額算定） |
+| `verify-purchase-dashboard-e2e.ts` | 購買管理 | 購買・調達KPIダッシュボード（発注残・未払残・部門別支出集計） |
+| `verify-purchase-receipts-billing-e2e.ts` | 購買・調達 | 発注受領書登録、仕入請求書受領、発注書・受領書・請求書の3点照合、買掛金自動計上 |
+| `verify-purchase-requests-e2e.ts` | 購買管理 | 購買申請起票、品目別多段階承認、発注ステータス管理 |
+| `verify-quotations-e2e.ts` | 営業・見積 | 見積書作成・改訂履歴リンク・確定後WORM不変性、請求書二重変換防止アドバイザリロック |
+| `verify-rate-masters-e2e.ts` | 給与マスタ | 健康保険・厚生年金・雇用保険・所得税率マスタの有効期間管理、適用日到来後WORM不変性 |
+| `verify-recommendations-e2e.ts` | 統合最適化 | 文脈連動型AIレコメンドエンジン、状態遷移ガード（全93検証項目、DEBT-010検証込み） |
+| `verify-sales-dashboard-e2e.ts` | 営業KPI | 営業KPIダッシュボード（パイプライン金額・受注率集計、`app_runtime` RLS検証） |
+| `verify-suppliers-e2e.ts` | 購買管理 | サプライヤーマスタ管理、適格請求書発行事業者番号（T番号）バリデーション、並行直列化 |
+
+### 7.5 シードデータおよび統合シミュレーション
+- `scripts/seed_*.sql`: 開発時の手動確認用の簡易シードSQL（経費/請求書/仕入請求書/レポート）。
+- `backend/src/scripts/simulate-100-users-year.ts`: 100名規模テナントの1年分（12ヶ月）フル業務フローを実サービス層経由で生成する統合シミュレーションスクリプト。BS/PL/CFの1円単位整合性検証込み。詳細は `05_deployment_guide.md` 9章を参照。
 
 ---
 
