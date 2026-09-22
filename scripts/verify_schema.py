@@ -3066,6 +3066,24 @@ def run_verification(dsn: str) -> int:
     r.ok("AIレコメンド包括E2E: 状態遷移マシン(一度限りの遷移)・真のWORM不変列・未知ドメインfail-closed・RBACマトリクス・業務画面統合ピンポイント絞り込み(P5-T3)・汎用稟議本人/管理者制御(DEBT-010)が動作する",
          p5t2_verify_run.returncode == 0)
 
+    # 30-10. 036_role_permissions_and_grants_fix.sql の段階的適用 (001初期RBAC欠落修正 & 025 GRANT付与)
+    sql_036_file = SQL_DIR / "036_role_permissions_and_grants_fix.sql"
+    if sql_036_file.exists():
+        sql_036 = sql_036_file.read_text(encoding="utf-8")
+        apply_036_ok = True
+        try:
+            conn = psycopg2.connect(dsn)
+            conn.autocommit = True
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(sql_036)
+            finally:
+                conn.close()
+        except Exception as e:
+            apply_036_ok = False
+            print(f"  [ERROR] 036 apply failed: {e}")
+        r.ok("段階的アップグレード 27: 036_role_permissions_and_grants_fix.sql がエラーなく適用できる", apply_036_ok)
+
     # 31. 【DEBT-008 RBACドリフト検知: PermissionsGuard静的マップ vs DB role_permissionsテーブル完全一致検証】
     print("\n--- 31. RBACドリフト検証 (DEBT-008: PermissionsGuard vs DB role_permissions) ---")
     conn = psycopg2.connect(dsn)

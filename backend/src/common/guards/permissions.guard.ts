@@ -63,6 +63,16 @@ export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     'year_end_adjustment.create',
     'year_end_adjustment.view',
     'year_end_adjustment.approve',
+    // 会計・仕訳・経費・税務初期パーミッション (036)
+    'journal_entry.create',
+    'journal_entry.post',
+    'journal_entry.void',
+    'invoice.issue',
+    'vendor_bill.approve',
+    'payment_batch.export',
+    'expense_report.approve',
+    'payroll.import',
+    'tax_return.finalize',
   ],
   legal_admin: [
     'contract.create',
@@ -119,6 +129,9 @@ export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     'payroll.view',
     'payroll.approve',
     'rate_master.view',
+    // 会計・仕訳・経費・税務初期パーミッション (036)
+    'expense_report.approve',
+    'vendor_bill.approve',
   ],
   accounting_manager: [
     'contract.view',
@@ -154,6 +167,16 @@ export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     'rate_master.view',
     'year_end_adjustment.view',
     'year_end_adjustment.approve',
+    // 会計・仕訳・経費・税務初期パーミッション (036)
+    'journal_entry.create',
+    'journal_entry.post',
+    'journal_entry.void',
+    'invoice.issue',
+    'vendor_bill.approve',
+    'payment_batch.export',
+    'expense_report.approve',
+    'payroll.import',
+    'tax_return.finalize',
   ],
   accountant: [
     'contract.view',
@@ -172,12 +195,18 @@ export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     'dashboard.executive_view',
     'recommendation.view',
     'recommendation.act',
+    // 会計・仕訳・経費・税務初期パーミッション (036)
+    'journal_entry.create',
+    'invoice.issue',
+    'payment_batch.export',
   ],
   bookkeeper: [
     'quotation.view',
     'deal.view',
     'contract_renewal_link.view',
     'dashboard.view',
+    // 会計・仕訳・経費・税務初期パーミッション (036)
+    'journal_entry.create',
   ],
   employee: [
     'general_request.create',
@@ -231,6 +260,8 @@ export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     'year_end_adjustment.create',
     'year_end_adjustment.view',
     'year_end_adjustment.approve',
+    // 会計・仕訳・経費・税務初期パーミッション (036)
+    'payroll.import',
   ],
   viewer_external: [],
 };
