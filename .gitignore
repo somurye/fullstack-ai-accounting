@@ -19,9 +19,11 @@ vite.config.d.ts
 vite.config.js
 Gemini_Generated_Image_*.png
 
-# OS / エディタ
+# OS / エディタ / 一時キャッシュ
 .DS_Store
 Thumbs.db
+__pycache__/
+*.pyc
 .vscode/*
 !.vscode/extensions.json
 

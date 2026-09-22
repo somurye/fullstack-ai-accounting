@@ -25,6 +25,21 @@ import { AiSuggestionsService } from '../modules/ai-suggestions/ai-suggestions.s
 import { ExternalAccessGrantsService } from '../modules/external-access-grants/external-access-grants.service';
 import { ConsumptionTaxReturnsService } from '../modules/consumption-tax-returns/consumption-tax-returns.service';
 import { ReportsService } from '../modules/reports/reports.service';
+import { ApprovalRequestsService } from '../modules/approval-requests/approval-requests.service';
+import { ContractsService } from '../modules/contracts/contracts.service';
+import { GeneralRequestsService } from '../modules/general-requests/general-requests.service';
+import { SuppliersService } from '../modules/suppliers/suppliers.service';
+import { PurchaseRequestsService } from '../modules/purchase-requests/purchase-requests.service';
+import { EmployeesService } from '../modules/employees/employees.service';
+import { AttendanceService } from '../modules/attendance/attendance.service';
+import { RateMastersService } from '../modules/rate-masters/rate-masters.service';
+import { PayrollCalculationsService } from '../modules/payroll-calculations/payroll-calculations.service';
+import { YearEndAdjustmentsService } from '../modules/year-end-adjustments/year-end-adjustments.service';
+import { QuotationsService } from '../modules/quotations/quotations.service';
+import { DealsService } from '../modules/deals/deals.service';
+import { ContractRenewalLinksService } from '../modules/contract-renewal-links/contract-renewal-links.service';
+import { ExecutiveDashboardService } from '../modules/executive-dashboard/executive-dashboard.service';
+import { RecommendationsService } from '../modules/recommendations/recommendations.service';
 
 // ----------------------------------------------------------------------------
 // .env loader (このプロジェクトにdotenv依存が無いため、最小限のパーサーを自前で用意する)
@@ -168,7 +183,17 @@ interface SimUser {
   id: string;
   email: string;
   name: string;
-  role: 'owner' | 'accounting_manager' | 'employee' | 'viewer_external';
+  role:
+    | 'owner'
+    | 'accounting_manager'
+    | 'accountant'
+    | 'bookkeeper'
+    | 'approver'
+    | 'payroll_admin'
+    | 'legal_admin'
+    | 'legal_viewer'
+    | 'viewer_external'
+    | 'employee';
 }
 
 interface ErrorRecord {
@@ -199,6 +224,21 @@ async function main(): Promise<void> {
   const externalAccessSvc = app.get(ExternalAccessGrantsService);
   const consumptionTaxSvc = app.get(ConsumptionTaxReturnsService);
   const reportsSvc = app.get(ReportsService);
+  const approvalRequestsSvc = app.get(ApprovalRequestsService);
+  const contractsSvc = app.get(ContractsService);
+  const generalRequestsSvc = app.get(GeneralRequestsService);
+  const suppliersSvc = app.get(SuppliersService);
+  const purchaseRequestsSvc = app.get(PurchaseRequestsService);
+  const employeesSvc = app.get(EmployeesService);
+  const attendanceSvc = app.get(AttendanceService);
+  const rateMastersSvc = app.get(RateMastersService);
+  const payrollCalculationsSvc = app.get(PayrollCalculationsService);
+  const yearEndAdjustmentsSvc = app.get(YearEndAdjustmentsService);
+  const quotationsSvc = app.get(QuotationsService);
+  const dealsSvc = app.get(DealsService);
+  const contractRenewalLinksSvc = app.get(ContractRenewalLinksService);
+  const executiveDashboardSvc = app.get(ExecutiveDashboardService);
+  const recommendationsSvc = app.get(RecommendationsService);
 
   const errors: ErrorRecord[] = [];
   function recordError(phase: string, e: unknown): void {
@@ -207,6 +247,7 @@ async function main(): Promise<void> {
   }
 
   const stats = {
+    // 既存
     expenseReportsCreated: 0,
     expenseReportsApproved: 0,
     expenseReportsRejected: 0,
@@ -221,14 +262,44 @@ async function main(): Promise<void> {
     vendorBillsPaidViaBankMatch: 0,
     payrollRuns: 0,
     depreciationRuns: 0,
+    // Phase 1: 契約・稟議
+    contractsCreated: 0,
+    contractsApproved: 0,
+    generalRequestsCreated: 0,
+    generalRequestsApproved: 0,
+    generalRequestsRejected: 0,
+    // Phase 2: 購買調達
+    suppliersCreated: 0,
+    purchaseRequestsCreated: 0,
+    purchaseRequestsApproved: 0,
+    purchaseReceiptsCreated: 0,
+    threeWayMatchesCompleted: 0,
+    // Phase 3: 人事労務
+    employeesCreated: 0,
+    attendanceRecordsCreated: 0,
+    payrollEngineCalculations: 0,
+    yearEndAdjustmentsCompleted: 0,
+    // Phase 4: 営業事務
+    quotationsCreated: 0,
+    quotationsAccepted: 0,
+    quotationsRejected: 0,
+    quotationsStaleSent: 0,
+    dealsCreated: 0,
+    dealsWon: 0,
+    contractRenewalDealsCreated: 0,
+    // Phase 5: 統合最適化
+    recommendationsGenerated: 0,
+    recommendationsAccepted: 0,
+    recommendationsDismissed: 0,
   };
 
   console.log('=== フェーズ1: テナント・オーナー作成(signup) ===');
-  const ownerEmail = 'owner1@sim.example.jp';
-  const tenantName = '100人規模シミュレーション株式会社';
+  const EMAIL_DOMAIN = process.env.SIM_EMAIL_DOMAIN ?? `enterprise-${Date.now()}.sim.example.jp`;
+  const ownerEmail = `owner1@${EMAIL_DOMAIN}`;
+  const tenantName = '100人規模全社バックオフィス統合シミュレーション株式会社';
   const signupResult = await auth.signup({
     email: ownerEmail,
-    password: 'Owner!Passw0rd2025',
+    password: 'SimPass!2025',
     name: '代表 太郎',
     tenant_name: tenantName,
   });
@@ -244,10 +315,11 @@ async function main(): Promise<void> {
 
   await settings.updateTenant(tenantId, owner1Id, {
     name: tenantName,
-    legal_name: `株式会社100人規模シミュレーション`,
+    legal_name: `株式会社全社バックオフィス統合シミュレーション`,
     representative_name: '代表 太郎',
     address: '東京都千代田区大手町一丁目1番1号',
     fiscal_year_start_month: 4,
+
     invoice_registration_number: 'T1234567890123',
     consumption_tax_filing_method: 'twenty_percent_special',
     base_currency_code: 'JPY',
@@ -315,46 +387,65 @@ async function main(): Promise<void> {
     users.push({ id, email, name, role: roleCode });
   };
 
-  for (let i = 2; i <= 3; i++) {
-    await addUser(`役員${i}`, `owner${i}@sim.example.jp`, 'owner', `E${String(i).padStart(3, '0')}`, '役員');
-  }
-  for (let i = 1; i <= 4; i++) {
-    await addUser(
-      `経理担当${i}`,
-      `mgr${i}@sim.example.jp`,
-      'accounting_manager',
-      `M${String(i).padStart(3, '0')}`,
-      '経理部',
-    );
-  }
+  // 1. owner (2名: owner1は登録済み、owner2を追加)
+  await addUser('役員 次郎', `owner2@${EMAIL_DOMAIN}`, 'owner', 'EXEC002', '役員');
+
+  // 2. accounting_manager (1名)
+  await addUser('経理責任者 花子', `mgr1@${EMAIL_DOMAIN}`, 'accounting_manager', 'MGR001', '経理部');
+
+  // 3. accountant (1名)
+  await addUser('経理担当 一郎', `accountant1@${EMAIL_DOMAIN}`, 'accountant', 'ACC001', '経理部');
+
+  // 4. bookkeeper (1名)
+  await addUser('記帳担当 二郎', `bookkeeper1@${EMAIL_DOMAIN}`, 'bookkeeper', 'BKP001', '経理部');
+
+  // 5. approver (1名)
+  await addUser('承認責任者 三郎', `approver1@${EMAIL_DOMAIN}`, 'approver', 'APP001', '経営管理部');
+
+  // 6. payroll_admin (1名)
+  await addUser('給与担当 四郎', `payroll1@${EMAIL_DOMAIN}`, 'payroll_admin', 'PAY001', '人事労務部');
+
+  // 7. legal_admin (1名)
+  await addUser('法務管理者 五郎', `legal_admin1@${EMAIL_DOMAIN}`, 'legal_admin', 'LGL001', '法務部');
+
+  // 8. legal_viewer (1名)
+  await addUser('法務閲覧者 六郎', `legal_viewer1@${EMAIL_DOMAIN}`, 'legal_viewer', 'LGL002', '法務部');
+
+  // 9. viewer_external (1名)
+  await addUser('外部監査担当(税理士法人)', `auditor@audit.${EMAIL_DOMAIN}`, 'viewer_external', 'AUD001', '社外');
+
+  // 10. employee (90名: 計100名)
   await mapPool(
-    Array.from({ length: 93 }, (_, idx) => idx + 1),
+    Array.from({ length: 90 }, (_, idx) => idx + 1),
     8,
     (i) =>
       addUser(
         `社員${String(i).padStart(3, '0')}`,
-        `emp${String(i).padStart(3, '0')}@sim.example.jp`,
+        `emp${String(i).padStart(3, '0')}@${EMAIL_DOMAIN}`,
         'employee',
-        `S${String(i).padStart(3, '0')}`,
+        `EMP${String(i).padStart(3, '0')}`,
         departments[i % departments.length],
       ),
   );
-  await addUser(
-    '外部監査担当(税理士法人)',
-    'auditor@sim-tax-firm.example.jp',
-    'viewer_external',
-    'AUD001',
-    '社外',
-  );
 
+  const ownerUser = users.find((u) => u.email === `owner1@${EMAIL_DOMAIN}`)!;
+  const owner2User = users.find((u) => u.email === `owner2@${EMAIL_DOMAIN}`)!;
+  const accountingManagerUser = users.find((u) => u.email === `mgr1@${EMAIL_DOMAIN}`)!;
+  const accountantUser = users.find((u) => u.email === `accountant1@${EMAIL_DOMAIN}`)!;
+  const bookkeeperUser = users.find((u) => u.email === `bookkeeper1@${EMAIL_DOMAIN}`)!;
+  const approverUser = users.find((u) => u.email === `approver1@${EMAIL_DOMAIN}`)!;
+  const payrollAdminUser = users.find((u) => u.email === `payroll1@${EMAIL_DOMAIN}`)!;
+  const legalAdminUser = users.find((u) => u.email === `legal_admin1@${EMAIL_DOMAIN}`)!;
+  const legalViewerUser = users.find((u) => u.email === `legal_viewer1@${EMAIL_DOMAIN}`)!;
+  const auditorUser = users.find((u) => u.email === `auditor@audit.${EMAIL_DOMAIN}`)!;
   const owners = users.filter((u) => u.role === 'owner');
   const managers = users.filter((u) => u.role === 'accounting_manager');
   const employees = users.filter((u) => u.role === 'employee');
-  const auditorUser = users.find((u) => u.role === 'viewer_external')!;
-  const allStaff = [...owners, ...managers, ...employees];
+  const allStaff = users.filter((u) => u.role !== 'viewer_external');
   console.log(
-    `  users total=${users.length} (owner=${owners.length} manager=${managers.length} employee=${employees.length} auditor=1)`,
+    `  users total=${users.length} (全10ロール: owner=${owners.length} mgr=${managers.length} acc=1 bkp=1 app=1 pay=1 lgl_adm=1 lgl_viw=1 aud=1 emp=${employees.length})`,
   );
+
 
   console.log('=== フェーズ5: 勘定科目マスタ作成 ===');
   const acctId: Record<string, string> = {};
@@ -475,13 +566,23 @@ async function main(): Promise<void> {
   });
   const bankAccountId = bankAccount.id as string;
 
-  console.log('=== フェーズ9: 承認ルール(経費精算)作成 ===');
+  console.log('=== フェーズ9: 承認ルール作成(経費・契約・稟議・発注・給与・年末調整) ===');
   await db.transaction(tenantId, owner1Id, async (client) => {
-    await client.query(
-      `INSERT INTO approval_rules (tenant_id, target_type, step_number, condition, approver_role_id, is_active)
-       VALUES ($1, 'expense_report', 1, '{}'::jsonb, $2, TRUE)`,
-      [tenantId, roleIdByCode.get('accounting_manager')],
-    );
+    const rules = [
+      { target_type: 'expense_report', roleCode: 'accounting_manager' },
+      { target_type: 'general_request', roleCode: 'approver' },
+      { target_type: 'contract', roleCode: 'owner' },
+      { target_type: 'purchase_request', roleCode: 'approver' },
+      { target_type: 'payroll', roleCode: 'owner' },
+      { target_type: 'year_end_adjustment', roleCode: 'owner' },
+    ];
+    for (const r of rules) {
+      await client.query(
+        `INSERT INTO approval_rules (tenant_id, target_type, step_number, condition, approver_role_id, is_active)
+         VALUES ($1, $2, 1, '{}'::jsonb, $3, TRUE)`,
+        [tenantId, r.target_type, roleIdByCode.get(r.roleCode)],
+      );
+    }
   });
 
   console.log('=== フェーズ10: 給与CSV取込マッピング作成 ===');
@@ -530,9 +631,243 @@ async function main(): Promise<void> {
   // 給与プロファイル(従業員ごとに月額基本給を固定して持たせる。7月・12月は賞与を加算する)
   const payrollProfile = new Map<string, { isExecutive: boolean; base: number }>();
   for (const u of owners) payrollProfile.set(u.id, { isExecutive: true, base: randInt(800_000, 1_200_000) });
-  for (const u of [...managers, ...employees]) {
+  for (const u of users.filter((u) => u.role !== 'owner')) {
     payrollProfile.set(u.id, { isExecutive: false, base: randInt(280_000, 480_000) });
   }
+
+  console.log('=== フェーズ11b: Phase 1〜5 マスタ・初期データ登録 ===');
+  // (A) サプライヤーマスタ登録 (Phase 2)
+  const supplierIds: string[] = [];
+  const supplierDefs = [
+    { code: 'SUP001', name: 'オフィスサプライ株式会社', terms: '月末締め翌月末振込' },
+    { code: 'SUP002', name: 'クラウドインフラ株式会社', terms: '当月末日振込' },
+    { code: 'SUP003', name: 'IT機器調達パートナーズ', terms: '納品後30日以内' },
+    { code: 'SUP004', name: 'オフィス什器販売株式会社', terms: '月末締め翌月末振込' },
+  ];
+  for (const s of supplierDefs) {
+    try {
+      const created = await suppliersSvc.create(tenantId, owner1Id, {
+        name: s.name,
+        payment_terms: s.terms,
+        status: 'active',
+      });
+      supplierIds.push(created.id as string);
+      stats.suppliersCreated++;
+    } catch (e) {
+      recordError('init:supplier', e);
+    }
+  }
+
+  // (B) 従業員マスタ登録 (Phase 3)
+  const employeeIdByUserId = new Map<string, string>();
+  for (let idx = 0; idx < users.length; idx++) {
+    const u = users[idx];
+    try {
+      const emp = await employeesSvc.create(tenantId, owner1Id, {
+        user_id: u.id,
+        employee_no: `EMP${String(idx + 1).padStart(3, '0')}`,
+        name: u.name,
+        hire_date: '2024-04-01',
+        employment_type: 'full_time',
+        status: 'active',
+      });
+      employeeIdByUserId.set(u.id, emp.id as string);
+      stats.employeesCreated++;
+    } catch (e) {
+      recordError('init:employee', e);
+    }
+  }
+
+  // (C) 保険料率マスタ登録 (Phase 3)
+  try {
+    await rateMastersSvc.createInsuranceRate(tenantId, owner1Id, {
+      rate_type: 'health_insurance',
+      prefecture: '東京都',
+      rate_employee: 0.04985,
+      rate_employer: 0.04985,
+      effective_from: '2025-04-01',
+      description: '令和7年度 東京都健康保険料率(折半)',
+    });
+    await rateMastersSvc.createInsuranceRate(tenantId, owner1Id, {
+      rate_type: 'care_insurance',
+      rate_employee: 0.008,
+      rate_employer: 0.008,
+      effective_from: '2025-04-01',
+      description: '令和7年度 介護保険料率(折半)',
+    });
+    await rateMastersSvc.createInsuranceRate(tenantId, owner1Id, {
+      rate_type: 'pension',
+      rate_employee: 0.0915,
+      rate_employer: 0.0915,
+      effective_from: '2025-04-01',
+      description: '令和7年度 厚生年金保険料率(折半)',
+    });
+    await rateMastersSvc.createInsuranceRate(tenantId, owner1Id, {
+      rate_type: 'employment_insurance',
+      rate_employee: 0.006,
+      rate_employer: 0.0095,
+      effective_from: '2025-04-01',
+      description: '令和7年度 雇用保険料率',
+    });
+    await rateMastersSvc.createTaxBracket(tenantId, owner1Id, {
+      dependents_count: 0,
+      income_min: 0,
+      income_max: null,
+      tax_amount: 0,
+      effective_from: '2025-01-01',
+      description: '所得税源泉徴収基本税額帯(0円以上全域)',
+    });
+  } catch (e) {
+    recordError('init:rate_masters', e);
+  }
+
+  // (D) 内製給与計算用プロファイル登録 (Phase 3)
+  for (const u of users) {
+    const empId = employeeIdByUserId.get(u.id);
+    if (!empId) continue;
+    const prof = payrollProfile.get(u.id)!;
+    try {
+      await payrollCalculationsSvc.createProfile(tenantId, owner1Id, {
+        employee_id: empId,
+        salary_type: 'monthly',
+        base_salary: prof.base,
+        hourly_wage: 0,
+        resident_tax_amount: 15_000,
+        standard_monthly_remuneration: prof.base,
+        has_health_insurance: true,
+        has_care_insurance: false,
+        has_pension: true,
+        has_employment_insurance: !prof.isExecutive,
+        prefecture: '東京都',
+        dependents_count: 0,
+        effective_from: '2025-04-01',
+      });
+    } catch (e) {
+      recordError('init:payroll_profile', e);
+    }
+  }
+
+  // (E) 初期契約書の作成 (Phase 1)
+  const initialContracts: { id: string; title: string; type: string; isExpiringNear: boolean }[] = [];
+  try {
+    const contractDefs = [
+      {
+        title: 'クラウドインフラ利用基本契約',
+        contract_type: 'service' as const,
+        counterparty_name: 'ITハードウェア商事株式会社',
+        start_date: '2025-04-01',
+        end_date: '2026-03-31',
+        amount: 3_600_000,
+        auto_renewal: false,
+        notice_days: 30,
+        shouldApprove: true,
+        isExpiringNear: true,
+      },
+      {
+        title: '本社オフィス賃貸借契約',
+        contract_type: 'lease' as const,
+        counterparty_name: '不動産管理株式会社',
+        start_date: '2025-04-01',
+        end_date: '2028-03-31',
+        amount: 24_000_000,
+        auto_renewal: true,
+        notice_days: 90,
+        shouldApprove: true,
+        isExpiringNear: false,
+      },
+      {
+        title: '基幹業務システム保守委託契約',
+        contract_type: 'outsourcing' as const,
+        counterparty_name: '外注先パートナー株式会社',
+        start_date: '2025-05-01',
+        end_date: '2026-04-30',
+        amount: 6_000_000,
+        auto_renewal: false,
+        notice_days: 60,
+        shouldApprove: true,
+        isExpiringNear: true,
+      },
+      {
+        title: '年間ソフトウェアライセンス提供契約',
+        contract_type: 'license' as const,
+        counterparty_name: '得意先1株式会社',
+        start_date: '2025-04-01',
+        end_date: '2026-03-31',
+        amount: 12_000_000,
+        auto_renewal: false,
+        notice_days: 30,
+        shouldApprove: true,
+        isExpiringNear: true,
+      },
+      {
+        title: '新規パートナーシップ秘密保持契約(NDA)',
+        contract_type: 'nda' as const,
+        counterparty_name: '得意先2株式会社',
+        start_date: '2025-06-01',
+        end_date: '2026-05-31',
+        auto_renewal: false,
+        notice_days: 30,
+        shouldApprove: false, // 下書き(draft)のまま保持
+        isExpiringNear: false,
+      },
+      {
+        title: '新規事業マーケティング支援業務委託契約',
+        contract_type: 'outsourcing' as const,
+        counterparty_name: '外注先パートナー株式会社',
+        start_date: '2025-10-01',
+        end_date: '2026-09-30',
+        amount: 4_800_000,
+        auto_renewal: false,
+        notice_days: 30,
+        shouldApprove: false, // pending_approvalのまま保持(stale approvalsレコメンド対象)
+        isExpiringNear: false,
+      },
+    ];
+
+    for (const cd of contractDefs) {
+      const created = await contractsSvc.create(tenantId, legalAdminUser.id, {
+        title: cd.title,
+        contract_type: cd.contract_type,
+        counterparty_name: cd.counterparty_name,
+        currency: 'JPY',
+        start_date: cd.start_date,
+        end_date: cd.end_date,
+        contract_amount: cd.amount,
+        auto_renewal: cd.auto_renewal,
+        renewal_notice_days: cd.notice_days ?? 30,
+      });
+      stats.contractsCreated++;
+
+      if (cd.shouldApprove) {
+        await contractsSvc.submitForApproval(tenantId, legalAdminUser.id, created.id as string);
+        // 承認責任者(approver)またはownerが承認
+        const ar = await db.transaction(tenantId, owner1Id, async (client) => {
+          const res = await client.query<{ id: string }>(
+            `SELECT id FROM approval_requests WHERE tenant_id = $1 AND target_type = 'contract' AND target_id = $2`,
+            [tenantId, created.id],
+          );
+          return res.rows[0];
+        });
+        if (ar) {
+          await approvalRequestsSvc.approve(tenantId, owner1Id, ar.id, { comment: '契約内容承認' });
+          stats.contractsApproved++;
+        }
+      } else if (cd.title.includes('マーケティング支援')) {
+        await contractsSvc.submitForApproval(tenantId, legalAdminUser.id, created.id as string);
+      }
+
+
+      initialContracts.push({
+        id: created.id as string,
+        title: cd.title,
+        type: cd.contract_type,
+        isExpiringNear: cd.isExpiringNear,
+      });
+    }
+  } catch (e) {
+    recordError('init:contracts', e);
+  }
+
 
   function buildExpenseLine(): {
     expense_date: string;
@@ -607,7 +942,7 @@ async function main(): Promise<void> {
       Array.from({ length: reportCount }),
       6,
       async () => {
-        const submitter = pick(allStaff);
+        const submitter = pick(employees);
         const lineCount = randInt(1, 3);
         const lines = Array.from({ length: lineCount }, () => {
           const line = buildExpenseLine();
@@ -648,8 +983,7 @@ async function main(): Promise<void> {
             }
           }
 
-          const candidateApprovers = managers.filter((mgr) => mgr.id !== submitter.id);
-          const approver = candidateApprovers.length > 0 ? pick(candidateApprovers) : managers[0];
+          const approver = accountingManagerUser;
           if (chance(0.05)) {
             await expenseReportsSvc.reject(tenantId, approver.id, created.id as string, {
               comment: '領収書不備のため差し戻します。再提出をお願いします。',
@@ -966,6 +1300,361 @@ async function main(): Promise<void> {
       }
     }
 
+    // ------------------------------------------------------------------
+    // (7) 稟議・各種申請(Phase 1: 月約2〜3件、承認・却下・保留の混在)
+    // ------------------------------------------------------------------
+    const generalRequestTitles: { title: string; category: 'equipment' | 'business_trip' | 'general'; priority: 'medium' | 'high' | 'low' | 'urgent'; amount: number }[] = [
+      { title: `開発用モニター・周辺機器購入申請 (${m.label})`, category: 'equipment', priority: 'medium', amount: 85_000 },
+      { title: `技術カンファレンス参加稟議 (${m.label})`, category: 'business_trip', priority: 'high', amount: 50_000 },
+      { title: `在宅勤務環境整備補助申請 (${m.label})`, category: 'general', priority: 'low', amount: 30_000 },
+      { title: `全社セキュリティ教育ツール導入稟議 (${m.label})`, category: 'equipment', priority: 'urgent', amount: 300_000 },
+    ];
+    for (const gr of generalRequestTitles.slice(0, scaled(randInt(2, 3)))) {
+      try {
+        const requester = pick(employees);
+        const created = await generalRequestsSvc.create(tenantId, requester.id, {
+          title: gr.title,
+          category: gr.category as any,
+          amount: gr.amount,
+          description: `${gr.title} の申請です。`,
+        });
+        stats.generalRequestsCreated++;
+
+        // 一部は承認、一部は却下、一部はpending(未処理)のまま放置
+        const actionRand = rand();
+        if (actionRand < 0.6) {
+          await generalRequestsSvc.submitForApproval(tenantId, requester.id, created.id as string);
+          const ar = await db.transaction(tenantId, approverUser.id, async (client) => {
+            const res = await client.query<{ id: string }>(
+              `SELECT id FROM approval_requests WHERE tenant_id = $1 AND target_type = 'general_request' AND target_id = $2`,
+              [tenantId, created.id],
+            );
+            return res.rows[0];
+          });
+          if (ar) {
+            await approvalRequestsSvc.approve(tenantId, approverUser.id, ar.id, { comment: '稟議内容承認' });
+            stats.generalRequestsApproved++;
+          }
+        } else if (actionRand < 0.8) {
+          await generalRequestsSvc.submitForApproval(tenantId, requester.id, created.id as string);
+          const ar = await db.transaction(tenantId, approverUser.id, async (client) => {
+            const res = await client.query<{ id: string }>(
+              `SELECT id FROM approval_requests WHERE tenant_id = $1 AND target_type = 'general_request' AND target_id = $2`,
+              [tenantId, created.id],
+            );
+            return res.rows[0];
+          });
+          if (ar) {
+            await approvalRequestsSvc.reject(tenantId, approverUser.id, ar.id, { comment: '予算枠超過のため却下' });
+            stats.generalRequestsRejected++;
+          }
+        } else {
+          // 未処理のまま提出(stale approvalsレコメンド対象)
+          await generalRequestsSvc.submitForApproval(tenantId, requester.id, created.id as string);
+        }
+      } catch (e) {
+        recordError(`${m.label}:general_request`, e);
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // (8) 発注申請〜検収〜仕入請求書紐付け(3点照合 - Phase 2: 月約1〜2件)
+    // ------------------------------------------------------------------
+    const prItemPool = [
+      { name: '開発用クラウドサーバー月額利用料', price: 120_000 },
+      { name: 'オフィスコピー用紙・文具一式', price: 45_000 },
+      { name: '社内ネットワークルーター保守部品', price: 80_000 },
+      { name: 'ergonomicオフィスチェア追加分', price: 65_000 },
+    ];
+    if (supplierIds.length > 0) {
+      for (let i = 0; i < scaled(randInt(1, 2)); i++) {
+        try {
+          const supplierId = pick(supplierIds);
+          const requester = pick(employees);
+          const prItem = pick(prItemPool);
+          const quantity = randInt(1, 3);
+          const pr = await purchaseRequestsSvc.create(tenantId, requester.id, {
+            title: `${prItem.name} 発注申請 (${m.label})`,
+            supplier_id: supplierId,
+            item_description: prItem.name,
+            quantity,
+            unit_price: prItem.price,
+            requested_delivery_date: randomDateInMonth(m.year, m.month),
+          });
+          stats.purchaseRequestsCreated++;
+
+          // 承認申請
+          await purchaseRequestsSvc.submitForApproval(tenantId, requester.id, pr.id as string);
+          const ar = await db.transaction(tenantId, approverUser.id, async (client) => {
+            const res = await client.query<{ id: string }>(
+              `SELECT id FROM approval_requests WHERE tenant_id = $1 AND target_type = 'purchase_request' AND target_id = $2`,
+              [tenantId, pr.id],
+            );
+            return res.rows[0];
+          });
+          if (ar) {
+            await approvalRequestsSvc.approve(tenantId, approverUser.id, ar.id, { comment: '発注申請承認' });
+            stats.purchaseRequestsApproved++;
+
+            // 納品受領(検収)
+            const receiptDate = randomDateInMonth(m.year, m.month);
+            await purchaseRequestsSvc.addReceipt(tenantId, approverUser.id, pr.id as string, {
+              received_quantity: quantity,
+              received_date: receiptDate,
+              notes: '検収完了、数量・品質に問題なし',
+            });
+            stats.purchaseReceiptsCreated++;
+
+            // 仕入請求書(vendor_bills)との紐付け (3点照合完了)
+            if (approvedBills.length > 0) {
+              const targetBill = pick(approvedBills);
+              await purchaseRequestsSvc.linkVendorBill(tenantId, owner1Id, pr.id as string, {
+                vendor_bill_id: targetBill.id,
+              });
+              stats.threeWayMatchesCompleted++;
+            }
+          }
+        } catch (e) {
+          recordError(`${m.label}:purchase_request`, e);
+        }
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // (9) 勤怠打刻 & 内製給与計算エンジン & 年末調整(Phase 3)
+    // ------------------------------------------------------------------
+    // 勤怠打刻: attendance.create 権限を持つ一般社員（＋管理者・給与担当）を対象に打刻を記録
+    const sampleStaffForAttendance = [
+      ownerUser,
+      payrollAdminUser,
+      ...employees.slice(0, 10),
+    ];
+    // 月内の平日サンプリング日 (5日, 10日, 15日, 20日, 25日)
+    const workDays = [5, 10, 15, 20, 25].filter((d) => d <= daysInMonth(m.year, m.month));
+    for (const staff of sampleStaffForAttendance) {
+      const empId = employeeIdByUserId.get(staff.id);
+      if (!empId) continue;
+      for (const day of workDays) {
+        try {
+          const workDate = ymd(m.year, m.month, day);
+          const clockInTime = `${workDate}T09:00:00+09:00`;
+          const otHours = chance(0.4) ? randInt(1, 2) : 0;
+          const clockOutHour = 18 + otHours;
+          const clockOutTime = `${workDate}T${String(clockOutHour).padStart(2, '0')}:00:00+09:00`;
+
+          await attendanceSvc.createRecord(tenantId, staff.id, {
+            employee_id: empId,
+            work_date: workDate,
+            clock_in: clockInTime,
+            clock_out: clockOutTime,
+            break_minutes: 60,
+            is_holiday: false,
+            note: '通常勤務',
+          });
+          stats.attendanceRecordsCreated++;
+        } catch (e) {
+          recordError(`${m.label}:attendance_record`, e);
+        }
+      }
+    }
+
+    // 内製給与計算エンジン (payroll-calculations) 実行
+    try {
+      const periodStart = ymd(m.year, m.month, 1);
+      const periodEnd = ymd(m.year, m.month, daysInMonth(m.year, m.month));
+      const payDate = ymd(m.year, m.month, 25);
+
+      const period = await payrollCalculationsSvc.createPeriod(tenantId, payrollAdminUser.id, {
+        name: `${m.year}年${m.month}月度 内製給与計算`,
+        period_start: periodStart,
+        period_end: periodEnd,
+        payment_date: payDate,
+      });
+
+      const calcs = await payrollCalculationsSvc.calculateForPeriod(
+        tenantId,
+        payrollAdminUser.id,
+        period.id as string,
+        {},
+      );
+      stats.payrollEngineCalculations += calcs.length;
+
+      // 承認申請 & 確定
+      await payrollCalculationsSvc.submitPeriodApproval(
+        tenantId,
+        payrollAdminUser.id,
+        period.id as string,
+        { comment: '月次内製給与計算完了、承認申請します' },
+      );
+    } catch (e) {
+      recordError(`${m.label}:payroll_calculations_engine`, e);
+    }
+
+    // 年末調整 (12月)
+    if (m.month === 12) {
+      console.log('  -- 年末調整シミュレーション(12月) --');
+      for (const staff of sampleStaffForAttendance) {
+        const empId = employeeIdByUserId.get(staff.id);
+        if (!empId) continue;
+        try {
+          const yea = await yearEndAdjustmentsSvc.calculate(tenantId, payrollAdminUser.id, {
+            employee_id: empId,
+            tax_year: 2026,
+            dependents_count: 0,
+            spouse_deduction: 0,
+            life_insurance_deduction: 50_000,
+            earthquake_insurance_deduction: 20_000,
+            housing_loan_deduction: 0,
+          });
+          const submittedYea = await yearEndAdjustmentsSvc.submitApproval(tenantId, payrollAdminUser.id, yea.id, {
+            comment: '年末調整申告承認',
+          });
+          if (submittedYea.approval_request_id) {
+            await approvalRequestsSvc.approve(tenantId, owner1Id, submittedYea.approval_request_id, {
+              comment: '年末調整承認完了',
+            });
+          }
+          stats.yearEndAdjustmentsCompleted++;
+        } catch (e) {
+          recordError(`${m.label}:year_end_adjustment`, e);
+        }
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // (10) 見積書・案件パイプライン・契約更新提案リンク(Phase 4)
+    // ------------------------------------------------------------------
+    const quoteItemsPool = [
+      { name: 'クラウド統合基盤構築支援コンサルティング', price: 1_200_000 },
+      { name: '経理自動化SaaS 年間ライセンス', price: 600_000 },
+      { name: 'ERP導入・データマイグレーション支援', price: 2_500_000 },
+      { name: '月次システム運用保守サポート', price: 150_000 },
+    ];
+    for (let i = 0; i < scaled(randInt(2, 4)); i++) {
+      try {
+        const custId = pick(customerIds);
+        const item = pick(quoteItemsPool);
+        const issueDate = randomDateInMonth(m.year, m.month);
+        const validUntil = addDaysClamped(issueDate, 30, '2026-03-31') ?? issueDate;
+        const quote = await quotationsSvc.create(tenantId, owner1Id, {
+          customer_id: custId,
+          title: `${item.name} 御見積書 (${m.label})`,
+          issue_date: issueDate,
+          valid_until: validUntil,
+          lines: [
+            {
+              item_name: item.name,
+              quantity: 1,
+              unit: '式',
+              unit_price: item.price,
+              tax_rate: 0.1,
+            },
+          ],
+        });
+        stats.quotationsCreated++;
+
+        const quoteRand = rand();
+        if (quoteRand < 0.45) {
+          // 送信 → 受注
+          await quotationsSvc.send(tenantId, owner1Id, quote.id as string);
+          await quotationsSvc.accept(tenantId, owner1Id, quote.id as string);
+          stats.quotationsAccepted++;
+        } else if (quoteRand < 0.65) {
+          // 送信 → 却下
+          await quotationsSvc.send(tenantId, owner1Id, quote.id as string);
+          await quotationsSvc.reject(tenantId, owner1Id, quote.id as string);
+          stats.quotationsRejected++;
+        } else if (quoteRand < 0.85) {
+          // 送信のまま放置 (stale sent quotation: レコメンドフォローアップ提案対象)
+          await quotationsSvc.send(tenantId, owner1Id, quote.id as string);
+          stats.quotationsStaleSent++;
+        }
+        // 残り15%はdraftのまま保持
+      } catch (e) {
+        recordError(`${m.label}:quotation`, e);
+      }
+    }
+
+    // 案件(Deals)作成
+    for (let i = 0; i < scaled(randInt(1, 2)); i++) {
+      try {
+        const custId = pick(customerIds);
+        const stages: Array<'lead' | 'qualified' | 'proposal' | 'negotiation'> = [
+          'lead',
+          'qualified',
+          'proposal',
+          'negotiation',
+        ];
+        const selectedStage = pick(stages);
+        const expectedAmount = randInt(500_000, 3_000_000);
+        const deal = await dealsSvc.create(tenantId, owner1Id, ['owner'], {
+          customer_id: custId,
+          title: `新規ソリューション導入商談 (${m.label})`,
+          stage: selectedStage,
+          expected_amount: expectedAmount,
+          currency_code: 'JPY',
+          expected_close_date: m.endDate,
+        });
+        stats.dealsCreated++;
+
+        // 一部は商談成約(won)または失注(lost)へクローズ
+        if (selectedStage === 'negotiation' && chance(0.5)) {
+          await dealsSvc.close(tenantId, owner1Id, ['owner'], deal.id as string, {
+            stage: 'won',
+          });
+          stats.dealsWon++;
+        }
+      } catch (e) {
+        recordError(`${m.label}:deal`, e);
+      }
+    }
+
+    // 契約更新提案リンク (3月または期末近く)
+    if (m.month === 3) {
+      const expiringContract = initialContracts.find((c) => c.title.includes('年間ソフトウェアライセンス提供契約'));
+      if (expiringContract) {
+        try {
+          const renewalResult = await contractRenewalLinksSvc.createRenewalDeal(tenantId, owner1Id, ['owner'], {
+            contract_id: expiringContract.id,
+            title: '次期 年間ソフトウェアライセンス更新商談(自動提案)',
+            expected_amount: 13_200_000,
+            expected_close_date: '2026-03-31',
+          });
+          stats.contractRenewalDealsCreated++;
+
+          // 更新用見積書を作成してアタッチ
+          const renewalQuote = await quotationsSvc.create(tenantId, owner1Id, {
+            customer_id: customerIds[0],
+            deal_id: renewalResult.link.deal_id,
+            title: '次期 年間ソフトウェアライセンス更新御見積',
+            issue_date: '2026-03-01',
+            valid_until: '2026-03-31',
+            lines: [
+              {
+                item_name: '次期 年間ソフトウェアライセンス',
+                quantity: 1,
+                unit: '式',
+                unit_price: 13_200_000,
+                tax_rate: 0.1,
+              },
+            ],
+          });
+          if (renewalResult.link.deal_id) {
+            await contractRenewalLinksSvc.attachQuotation(
+              tenantId,
+              owner1Id,
+              ['owner'],
+              renewalResult.link.deal_id,
+              renewalQuote.id as string,
+            );
+          }
+        } catch (e) {
+          recordError(`${m.label}:contract_renewal_link`, e);
+        }
+      }
+    }
+
+
     // 当月PLサマリー取得(検証・レポート用)
     try {
       const pl = await reportsSvc.profitAndLoss(tenantId, owner1Id, { date_from: m.startDate, date_to: m.endDate });
@@ -1045,6 +1734,41 @@ async function main(): Promise<void> {
   }
 
   // --------------------------------------------------------------------
+  // フェーズ13b: Phase 5 統合最適化 (AIレコメンド生成 & 横断KPIダッシュボード検証)
+  // --------------------------------------------------------------------
+  console.log('=== フェーズ13b: Phase 5 統合最適化 (AIレコメンド & 横断KPI) ===');
+  try {
+    // AIレコメンド生成 (未承認申請、未フォロー見積、更新間近契約の自動検出)
+    await recommendationsSvc.generateRecommendations(tenantId, owner1Id);
+    const recList = await recommendationsSvc.list(tenantId, owner1Id, ['owner']);
+    stats.recommendationsGenerated = recList.length;
+    console.log(`  AIレコメンド自動生成: ${recList.length}件`);
+
+    // 1件をaccept(採用)、1件をdismiss(見送り)、残りをpendingとしてUI確認用に保持
+    if (recList.length > 0) {
+      const firstRec = recList[0];
+      await recommendationsSvc.accept(tenantId, owner1Id, ['owner'], firstRec.id);
+      stats.recommendationsAccepted++;
+    }
+    if (recList.length > 1) {
+      const secondRec = recList[1];
+      await recommendationsSvc.dismiss(tenantId, owner1Id, ['owner'], secondRec.id);
+      stats.recommendationsDismissed++;
+    }
+
+    // 横断KPIダッシュボード取得検証
+    const execSummary = await executiveDashboardSvc.getSummary(tenantId, owner1Id, ['owner']);
+    console.log(`  横断KPIサマリ取得成功:
+    - 承認KPI: 未承認合計=${execSummary.approvals?.pending_total_count ?? 0}件
+    - 契約KPI: 有効契約=${execSummary.contracts?.active_contracts_count ?? 0}件, 30日以内満了=${execSummary.contracts?.expiring_within_30_days ?? 0}件
+    - 購買KPI: 当月発注額=${execSummary.purchase?.current_month_order_amount ?? 0}円, 未検収=${execSummary.purchase?.pending_receipts_count ?? 0}件
+    - 人事KPI: 在籍従業員=${execSummary.hr?.active_employees_count ?? 0}名, 残業アラート=${execSummary.hr?.overtime_alert_count ?? 0}件
+    - 営業KPI: 進行中案件=${execSummary.sales?.open_deals_count ?? 0}件, 案件総額=${execSummary.sales?.open_deals_amount ?? 0}円`);
+  } catch (e) {
+    recordError('phase5:recommendations_and_dashboard', e);
+  }
+
+  // --------------------------------------------------------------------
   // フェーズ14: 最終整合性検証
   // --------------------------------------------------------------------
   console.log('=== フェーズ14: 最終整合性検証 ===');
@@ -1083,7 +1807,23 @@ async function main(): Promise<void> {
        UNION ALL SELECT 'audit_logs', COUNT(*)::text FROM audit_logs WHERE tenant_id = $1
        UNION ALL SELECT 'users', COUNT(*)::text FROM tenant_users WHERE tenant_id = $1
        UNION ALL SELECT 'fixed_assets', COUNT(*)::text FROM fixed_assets WHERE tenant_id = $1
-       UNION ALL SELECT 'payroll_imports', COUNT(*)::text FROM payroll_imports WHERE tenant_id = $1`,
+       UNION ALL SELECT 'payroll_imports', COUNT(*)::text FROM payroll_imports WHERE tenant_id = $1
+       UNION ALL SELECT 'contracts', COUNT(*)::text FROM contracts WHERE tenant_id = $1
+       UNION ALL SELECT 'general_requests', COUNT(*)::text FROM general_requests WHERE tenant_id = $1
+       UNION ALL SELECT 'suppliers', COUNT(*)::text FROM suppliers WHERE tenant_id = $1
+       UNION ALL SELECT 'purchase_requests', COUNT(*)::text FROM purchase_requests WHERE tenant_id = $1
+       UNION ALL SELECT 'purchase_receipts', COUNT(*)::text FROM purchase_receipts WHERE tenant_id = $1
+       UNION ALL SELECT 'employees', COUNT(*)::text FROM employees WHERE tenant_id = $1
+       UNION ALL SELECT 'attendance_records', COUNT(*)::text FROM attendance_records WHERE tenant_id = $1
+       UNION ALL SELECT 'insurance_rate_tables', COUNT(*)::text FROM insurance_rate_tables WHERE tenant_id = $1
+       UNION ALL SELECT 'employee_payroll_profiles', COUNT(*)::text FROM employee_payroll_profiles WHERE tenant_id = $1
+       UNION ALL SELECT 'payroll_periods', COUNT(*)::text FROM payroll_periods WHERE tenant_id = $1
+       UNION ALL SELECT 'payroll_calculations', COUNT(*)::text FROM payroll_calculations WHERE tenant_id = $1
+       UNION ALL SELECT 'year_end_adjustments', COUNT(*)::text FROM year_end_adjustments WHERE tenant_id = $1
+       UNION ALL SELECT 'quotations', COUNT(*)::text FROM quotations WHERE tenant_id = $1
+       UNION ALL SELECT 'deals', COUNT(*)::text FROM deals WHERE tenant_id = $1
+       UNION ALL SELECT 'contract_renewal_links', COUNT(*)::text FROM contract_renewal_links WHERE tenant_id = $1
+       UNION ALL SELECT 'recommendations', COUNT(*)::text FROM recommendations WHERE tenant_id = $1`,
       [tenantId],
     ),
   );
@@ -1092,12 +1832,29 @@ async function main(): Promise<void> {
 
   const totalElapsedSec = (Date.now() - startedAt) / 1000;
 
+  // 全10ロールの代表テストアカウント情報
+  const representativeAccounts = [
+    { role: 'owner', email: `owner1@${EMAIL_DOMAIN}`, name: '代表 太郎', pass: 'SimPass!2025', desc: '全権限・オーナー' },
+    { role: 'owner', email: `owner2@${EMAIL_DOMAIN}`, name: '役員 次郎', pass: 'SimPass!2025', desc: '役員・副代表' },
+    { role: 'accounting_manager', email: `mgr1@${EMAIL_DOMAIN}`, name: '経理責任者 花子', pass: 'SimPass!2025', desc: '経理責任者・月次確定/承認' },
+    { role: 'accountant', email: `accountant1@${EMAIL_DOMAIN}`, name: '経理担当 一郎', pass: 'SimPass!2025', desc: '経理実務・仕訳起票' },
+    { role: 'bookkeeper', email: `bookkeeper1@${EMAIL_DOMAIN}`, name: '記帳担当 二郎', pass: 'SimPass!2025', desc: '記帳専任・補助' },
+    { role: 'approver', email: `approver1@${EMAIL_DOMAIN}`, name: '承認責任者 三郎', pass: 'SimPass!2025', desc: '各種申請・発注・稟議承認' },
+    { role: 'payroll_admin', email: `payroll1@${EMAIL_DOMAIN}`, name: '給与担当 四郎', pass: 'SimPass!2025', desc: '人事労務・給与計算・年末調整' },
+    { role: 'legal_admin', email: `legal_admin1@${EMAIL_DOMAIN}`, name: '法務管理者 五郎', pass: 'SimPass!2025', desc: '契約管理・法務統轄' },
+    { role: 'legal_viewer', email: `legal_viewer1@${EMAIL_DOMAIN}`, name: '法務閲覧者 六郎', pass: 'SimPass!2025', desc: '契約閲覧専用' },
+    { role: 'viewer_external', email: `auditor@audit.${EMAIL_DOMAIN}`, name: '外部監査担当(税理士法人)', pass: 'SimPass!2025', desc: '外部監査時限アクセス(閲覧のみ)' },
+    { role: 'employee', email: `emp001@${EMAIL_DOMAIN}`, name: '社員001', pass: 'SimPass!2025', desc: '一般社員(経費申請・勤怠・稟議)' },
+  ];
+
   const report = {
     tenantId,
+    tenantName,
     generatedAt: new Date().toISOString(),
     totalElapsedSec,
     scale: SCALE,
     monthsProcessed: months.length,
+    representativeAccounts,
     stats,
     tableCounts,
     monthlyPlSummaries,
@@ -1121,14 +1878,39 @@ async function main(): Promise<void> {
   const outPath = path.resolve(__dirname, '../../../simulation-report.json');
   writeFileSync(outPath, JSON.stringify(report, null, 2), 'utf8');
 
-  console.log('=== 完了 ===');
+  console.log('=== 全社シミュレーション完了 ===');
   console.log(`所要時間: ${totalElapsedSec.toFixed(1)}秒`);
   console.log(`エラー件数: ${errors.length}`);
   console.log(`BS貸借差額: ${balanceCheckDiff}円 / PL-BS当期純利益差額: ${plBsNetIncomeDiff}円 / CF-BS現金差額: ${cfBsCashDiff}円`);
+  console.log(`会計整合性チェック: ${balanceCheckDiff === 0 && plBsNetIncomeDiff === 0 && cfBsCashDiff === 0 ? '全件一致(合格)' : '不一致あり'}`);
   console.log(`レポート出力先: ${outPath}`);
+
+  console.log('\n================================================================================');
+  console.log('【サンプルテナント情報】');
+  console.log(`  テナントID  : ${tenantId}`);
+  console.log(`  テナント名  : ${tenantName}`);
+  console.log('================================================================================');
+  console.log('【全10ロール テストログイン情報一覧】(全アカウント共通パスワード: SimPass!2025)');
+  console.log('--------------------------------------------------------------------------------');
+  console.log('| ロール名 (Role)       | メールアドレス (Email)             | 氏名 (Name)             | 役割説明                  |');
+  console.log('|-----------------------|------------------------------------|-------------------------|---------------------------|');
+  for (const acc of representativeAccounts) {
+    const roleCol = acc.role.padEnd(21);
+    const emailCol = acc.email.padEnd(34);
+    const nameCol = acc.name.padEnd(23);
+    console.log(`| ${roleCol} | ${emailCol} | ${nameCol} | ${acc.desc} |`);
+  }
+  console.log('================================================================================');
+  console.log('【生成データ件数サマリ (テーブル別)】');
+  console.log('--------------------------------------------------------------------------------');
+  for (const [tbl, cnt] of Object.entries(tableCounts)) {
+    console.log(`  - ${tbl.padEnd(28)}: ${cnt} 件`);
+  }
+  console.log('================================================================================\n');
 
   await app.close();
 }
+
 
 main()
   .then(() => process.exit(0))
