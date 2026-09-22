@@ -325,7 +325,7 @@ signup/招待受諾フローでは、`setSession()`(トークン保存)後に**`
   3. **購買・調達管理（セクション13〜16）**: 購買申請多段階承認、サプライヤーT番号CHECK制約、納品受領書・仕入請求書・発注書の3点照合、受領書WORM不変性（物理DELETE禁止）。
   4. **人事労務・給与内製化（セクション17〜23）**: 勤怠打刻整合性、有効期間付き料率マスタ（EXCLUDE制約）、適用日到来後WORM不変性、給与計算エンジン（支給・控除・社保・所得税自動算出・確定後WORM不変性）、2026年分年末調整簡略モデル。
   5. **営業事務・商流管理（セクション24〜29）**: 見積書ライフサイクル・改訂リンク・WORM不変性、請求書変換ガード（`fn_guard_quotation_conversion`）、売上請求書の対称的保護、案件パイプラインwon/lost終端ロック、契約更新リンクWORM保護。
-  6. **横断ダッシュボード & AIレコメンド（セクション30）**: 横断KPI参照整合性、レコメンド状態遷移マシン（pending→accepted/dismissed、終端ロックWORM、DELETE禁止トリガー `55000`）。
+  6. **横断ダッシュボード & AIレコメンド（セクション30）**: 横断KPI参照整合性、レコメンド状態遷移マシン（pending→accepted/dismissed、`fn_guard_recommendation_immutability` による終端ロックWORM、DELETE禁止トリガー `55000`）。
   7. **RBACドリフト自動検知（セクション31 / DEBT-008）**: アプリケーション層 `PermissionsGuard.ROLE_PERMISSIONS`（200組）と DB `role_permissions`（200組）を双方向突合し、不整合・過不足がゼロであることを常時検証。
   8. **クリーンDB一括適用テスト**: 空のPostgreSQL環境に対し `001` から `035` までの全マイグレーションを一括適用し、エラーや回帰が発生しないことを検証。
 
@@ -336,7 +336,7 @@ signup/招待受諾フローでは、`setSession()`(トークン保存)後に**`
 |---|---|---|
 | `verify-contract-expiry-alerts-e2e.ts` | 契約管理 | 契約更新期限アラート通知の自動生成、期限判定ロジック、通知重複防止 |
 | `verify-contract-pdf-e2e.ts` | 契約管理 | 契約書PDFテキスト抽出（`pdfjs-dist`）、メタデータ解析、添付ファイル連携 |
-| `verify-contract-rbac-e2e.ts` | 契約管理 | 法務ロール（`legal_officer` 等）による契約書閲覧・編集権限およびライフサイクル制御 |
+| `verify-contract-rbac-e2e.ts` | 契約管理 | 法務ロール（`legal_admin`, `legal_viewer`）による契約書閲覧・編集権限およびライフサイクル制御 |
 | `verify-contract-renewal-links-e2e.ts` | 営業・契約 | 契約書↔案件↔見積書の契約更新リンク連携、対称的WORM保護、重複リンク防止 |
 | `verify-contract-search-e2e.ts` | 契約管理 | `pg_trgm` GINインデックスおよび `tsvector` を用いた契約書全文検索・絞り込み |
 | `verify-deals-e2e.ts` | 営業・案件 | 商談・案件パイプライン管理、ステージ遷移、成約（won）・失注（lost）の終端ロック不変性 |

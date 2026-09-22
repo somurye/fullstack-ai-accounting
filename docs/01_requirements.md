@@ -304,5 +304,5 @@ stateDiagram-v2
 
 ### 8.2 拡張領域における共通設計原則
 - **一気通貫データモデル**: 見積書（Phase 4）→ 請求書（コア）/ 契約書（Phase 1）→ 案件（Phase 4）、購買申請（Phase 2）→ 3点照合 → 買掛金（コア）→ 支払（コア）、勤怠（Phase 3）→ 給与計算（Phase 3）→ 複合仕訳（コア）という業務連鎖が、同一テナント・同一DB内で疎結合かつ厳密な参照整合性（外部キー・WORMトリガー）をもって連携します。
-- **権限分掌の全社適用**: `legal_officer`, `procurement_manager`, `hr_admin`, `sales_manager` 等の業務別専用ロールを新設し、各ドメインの起票・承認・確定権限を分離しています。
+- **権限分掌の全社適用**: コードベースに存在する全10ロール（`owner`, `accounting_manager`, `accountant`, `approver`, `employee`, `payroll_admin`, `viewer_external`, `bookkeeper`, `legal_admin`, `legal_viewer`）に基づき、業務別専用ロール（例: `legal_admin`/`legal_viewer`＝法務、`approver`＝各種承認、`payroll_admin`＝給与）によって各ドメインの起票・承認・閲覧・確定権限を厳格に分離しています。
 - **実DBによる多層防御検証**: アプリケーションService層による入力バリデーションに加え、DBトリガーによる不変列・状態遷移の物理的制約、および `app_runtime` 接続下でのRLS検証がすべての拡張機能に適用されています。

@@ -367,7 +367,7 @@ erDiagram
 | `005_audit_logs_search_upgrade.sql` | ガバナンス | 監査ログ検索高速化のためのGINインデックス（`before_data`, `after_data`）および複合インデックス追加 | Phase 0 |
 | `006_generic_approval_targets.sql` | ワークフロー | 承認依頼（`approval_requests`）の対象リソース拡張（`target_type` ENUM追加） | Phase 0 |
 | `007_attachments_document_category.sql` | 電帳法 | 電子帳簿保存法スキャナ保存区分（`document_category`）の追加 | Phase 0 |
-| `008a_legal_roles_enum.sql` | 法務RBAC | 法務担当ロール（`legal_officer`）ENUM値の追加 | Phase 1 |
+| `008a_legal_roles_enum.sql` | 法務RBAC | 法務担当ロール（`legal_admin`, `legal_viewer`）ENUM値の追加 | Phase 1 |
 | `008b_legal_roles_setup.sql` | 法務RBAC | 法務ロール向け権限（`contracts.view`, `contracts.edit`, `contracts.delete` 等）の登録 | Phase 1 |
 | `009_contracts.sql` | 契約管理 | 契約書テーブル（`contracts`）、契約書バージョン（`contract_versions`）の作成とRLS | Phase 1 (P1-T1) |
 | `010_contract_enhancements.sql` | 契約管理 | 契約書ステータス遷移（`draft`, `negotiating`, `active`, `expired`, `terminated`）とトリガー制約 | Phase 1 (P1-T1) |
@@ -395,5 +395,5 @@ erDiagram
 | `032_sales_dashboard.sql` | 営業KPI | 営業KPIダッシュボード用インデックス・集計用ビュー定義 | Phase 4 (P4-T4) |
 | `033_executive_dashboard.sql` | 横断KPI | 全社横断エグゼクティブダッシュボード用集計インデックス | Phase 5 (P5-T1) |
 | `034_recommendations.sql` | AIレコメンド | ルールベースAIレコメンドテーブル（`recommendations`）の作成とRLS | Phase 5 (P5-T2) |
-| `035_recommendation_state_machine_guards.sql` | AIレコメンド | レコメンド状態遷移ガードトリガー（`fn_guard_recommendation_state_machine`、終端ロックWORM、DELETE禁止） | Phase 5 (P5-T2) |
+| `035_recommendation_state_machine_guards.sql` | AIレコメンド | レコメンド状態遷移ガードトリガー（`fn_guard_recommendation_immutability`、終端ロックWORM、DELETE禁止） | Phase 5 (P5-T2) |
 

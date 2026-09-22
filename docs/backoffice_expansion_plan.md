@@ -1,7 +1,7 @@
 # keiri-kaikei 全社バックオフィス統合SaaS 拡張計画書
 
 - 文書番号: PLAN-01
-- バージョン: 7.19.2
+- バージョン: 7.19.3
 - 対象リポジトリ: `fullstack-ai-accounting`（経理・会計基盤）
 - 関連文書: `docs/01_requirements.md`, `docs/02_architecture.md`, `docs/03_database_design.md`
 
@@ -5905,6 +5905,70 @@ Phase 0（基盤汎用化）からPhase 5（統合最適化）まで、ロード
 一致しているかについては、Claude（進行管理）が完了報告を確認する。
 ```
 
+### Claude（進行管理）による確認結果：訂正が必要な事実誤りを発見
+
+完了報告を受け、実際にリポジトリをクローンして内容を確認した。全体として既存記述の
+削除はなく、Jest件数・E2Eスクリプト一覧・migration対応関係等は正確だったが、
+**実在しないロール名を含む事実誤りを4箇所**で発見した。
+
+- `docs/01_requirements.md` §8.2：`legal_officer`, `procurement_manager`, `hr_admin`,
+  `sales_manager`という4つのロール名を挙げているが、これらはコードベースのどこにも
+  存在しない（`grep`で全文検索し確認済み）。実際の10ロールは`owner`,
+  `accounting_manager`, `accountant`, `approver`, `employee`, `payroll_admin`,
+  `viewer_external`, `bookkeeper`, `legal_admin`, `legal_viewer`である。
+- `docs/03_database_design.md` 付録：`008a_legal_roles_enum.sql`の説明が
+  「`legal_officer`ENUM値の追加」となっているが、実際のファイル内容は
+  `legal_admin`・`legal_viewer`の2つのENUM値を追加している。
+- `docs/04_technical_reference.md`のE2Eスクリプト表：`verify-contract-rbac-e2e.ts`の
+  説明に「法務ロール（`legal_officer`等）」とあるが、スクリプト実体は`legal_viewer`
+  ロールのみを使用している。
+- `docs/04_technical_reference.md`：トリガー関数名として`fn_guard_recommendation_state_machine`
+  を挙げているが、実在する関数名は`fn_guard_recommendation_immutability`
+  （`sql/035_recommendation_state_machine_guards.sql`で確認済み）である。
+
+#### 【訂正指示プロンプト】ドキュメント整備の事実誤り修正
+
+```
+# 背景・目的
+7.5節のドキュメント整備完了報告について、Claude（進行管理）が実際にリポジトリを
+確認した結果、実在しないロール名・関数名を含む事実誤りが4箇所見つかった。ドキュメント
+の信頼性に関わるため、訂正する。
+
+# 修正対象と内容
+1. `docs/01_requirements.md` §8.2「拡張領域における共通設計原則」の
+   「権限分掌の全社適用」の記述にある
+   `legal_officer`, `procurement_manager`, `hr_admin`, `sales_manager`という
+   4つのロール名を削除し、実際にコードベースに存在する10ロール
+   （`owner`, `accounting_manager`, `accountant`, `approver`, `employee`,
+   `payroll_admin`, `viewer_external`, `bookkeeper`, `legal_admin`,
+   `legal_viewer`）のうち、業務別専用ロールの実例（例: `legal_admin`/
+   `legal_viewer`＝法務、`approver`＝各種承認、`payroll_admin`＝給与）を正確に
+   反映した記述に修正する。
+2. `docs/03_database_design.md`「8. 付録: 拡張スキーマ一覧」の
+   `008a_legal_roles_enum.sql`の概要を「法務担当ロール（`legal_admin`,
+   `legal_viewer`）ENUM値の追加」に修正する（実際のファイル内容と一致させる）。
+3. `docs/04_technical_reference.md`のE2Eスクリプト一覧表、
+   `verify-contract-rbac-e2e.ts`の説明を、実際にスクリプトが使用しているロール名
+   （`legal_viewer`等、実装を確認の上で正確に）に修正する。
+4. `docs/04_technical_reference.md`のスキーマ検証カテゴリ説明にある
+   `fn_guard_recommendation_state_machine`を、実在する関数名
+   `fn_guard_recommendation_immutability`に修正する。
+
+# やってはいけないこと
+- 上記4箇所以外の記述（既に正確であることを確認済みの箇所）を不必要に書き換えない。
+- 修正の過程で、新たに未確認の固有名詞（ロール名・関数名・ファイル名等）を記載しない。
+  記載する場合は、必ず該当するコード・SQLファイルの実物を確認してから記載すること。
+
+# 受け入れ基準（Definition of Done）
+- [ ] 上記4箇所すべてが、実際のコードベースと一致する内容に修正されている
+- [ ] `git diff --name-only`で、対象2ファイル（`01_requirements.md`,
+      `04_technical_reference.md`）と`03_database_design.md`のみが変更されており、
+      無関係な変更がないことを確認する
+- [ ] 修正後の記述に、新たな未確認の固有名詞が含まれていないことを、該当箇所ごとに
+      参照した実ファイルパスとともに完了報告に明記する
+- [ ] コミットSHA・ブランチ名を明記する（本計画書0.4節）
+```
+
 ---
 
 ## 7.6 全社シミュレーション（サンプルテナント作成・全ロールUI検証）
@@ -6138,3 +6202,4 @@ Phase 1〜5の各ドメインにまたがる意味のある1年分のデータ�
 | 7.19.0 | P5-T4のmainマージ完了報告を受領。P5-T1（`28c4f75`）・P5-T2（`0da4b87`）・P5-T3（`c63382f`）・P5-T4（`8d15cca`）すべてのマージコミットSHAをmainのコミット履歴で確認し、main上でclean DB 001〜035・実DB E2E 93/93・schema verifier 209/209・Backend Jest 261/261・Frontend buildをすべて確認済み。**Phase 5（統合最適化）が全4タスク完了し、ロードマップ全体（Phase 0〜Phase 5）が完了**。Phase 5クローズのサマリ・プロジェクト全体総括を7節に追加。DEBT-002, 007, 009, 011〜018, 021をGeminiのP5-T4トリアージ結果に基づき「対応しない・受容済み境界」に更新（個別の理由付け文章はDEBT番号との対応関係が一部判然としなかったため、既存の詳細記述を保持しつつ結論のみ反映）。ロードマップ表・タスク表を全Phase完了に更新し、次のアクション（9節）を「新規タスクはなし、追加要望が生じた場合に追記」に更新 |
 | 7.19.1 | ロードマップ完了後の運用検証として、100人規模企業1年間シミュレーションの拡張・サンプルテナント作成・全ロールUI手動確認の活動を7.5節に追加。既存の`simulate-100-users-year.ts`が経理会計コア機能のみのスコープ（4/10ロール、Phase 1〜5未対応）であることを発見し、全10ロールのアカウント作成とPhase 1〜5の全ドメインを含むデータ生成を求める指示プロンプトを作成 |
 | 7.19.2 | 外部レビュー（Qwenによるリポジトリ評価）を受け、README・要件定義書等の主要ドキュメントがPhase 0〜5拡張前（経理会計コアのみ）の内容のままであることが判明。ドキュメント整備タスクを7.5節として新設し（全社シミュレーションは7.6節に繰り下げ）、README・01_requirements・02_architecture・03_database_design・04_technical_reference・PROJECT_HISTORYの6ファイルについて、既存記述を削除せず拡張後の実態（Phase 1〜5のスコープ、確立された設計原則、実際のテスト規模）を追記する指示プロンプトを作成。ユーザーの意向によりドキュメント整備を全社シミュレーションより先行させる方針とした |
+| 7.19.3 | 7.5節ドキュメント整備の完了報告（コミット`9ce9803`）に対し、Claude（進行管理）が実際にリポジトリをクローンして確認した結果、実在しないロール名（`legal_officer`, `procurement_manager`, `hr_admin`, `sales_manager`）と実在しない関数名（`fn_guard_recommendation_state_machine`）を含む事実誤りを4箇所発見。既存記述の削除・Jest件数・E2Eスクリプト一覧・migration対応関係等、その他の記載内容は正確であることも確認済み。該当4箇所の訂正指示プロンプトを追加 |
