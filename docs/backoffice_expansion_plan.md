@@ -1,7 +1,7 @@
 # keiri-kaikei 全社バックオフィス統合SaaS 拡張計画書
 
 - 文書番号: PLAN-01
-- バージョン: 7.19.3
+- バージョン: 7.19.4
 - 対象リポジトリ: `fullstack-ai-accounting`（経理・会計基盤）
 - 関連文書: `docs/01_requirements.md`, `docs/02_architecture.md`, `docs/03_database_design.md`
 
@@ -5969,6 +5969,26 @@ Phase 0（基盤汎用化）からPhase 5（統合最適化）まで、ロード
 - [ ] コミットSHA・ブランチ名を明記する（本計画書0.4節）
 ```
 
+### Claude（進行管理）による訂正の検証結果：確認済み・7.5節クローズ
+
+訂正完了報告（コミット`39b42e9`）を受け、Claudeが再度リポジトリをフェッチし、
+修正差分を直接確認した。
+- 対象4箇所（`01_requirements.md`§8.2、`03_database_design.md`付録の
+  `008a_legal_roles_enum.sql`説明、`04_technical_reference.md`のE2Eスクリプト表・
+  トリガー関数名）が、いずれも実ファイル（`permissions.guard.ts`,
+  `008a_legal_roles_enum.sql`, `verify-contract-rbac-e2e.ts`,
+  `035_recommendation_state_machine_guards.sql`）の内容と正確に一致する記述に
+  修正されていることを確認した。
+- `verify-contract-rbac-e2e.ts`の実コードを直接確認し、`legal_admin`・
+  `legal_viewer`の両ロールが実際にテストされていることも裏取りした。
+- リポジトリ全体を`legal_officer`, `procurement_manager`, `hr_admin`,
+  `sales_manager`, `fn_guard_recommendation_state_machine`で検索し、
+  ヒットがゼロであることを確認した（修正漏れなし）。
+- 差分は指示した対象ファイルのみに限定されており、スコープ逸脱はなかった。
+
+**7.5節（ドキュメント整備）はこれで完了・クローズとする。** 次は7.6節
+（全社シミュレーション）に進む。
+
 ---
 
 ## 7.6 全社シミュレーション（サンプルテナント作成・全ロールUI検証）
@@ -6203,3 +6223,4 @@ Phase 1〜5の各ドメインにまたがる意味のある1年分のデータ�
 | 7.19.1 | ロードマップ完了後の運用検証として、100人規模企業1年間シミュレーションの拡張・サンプルテナント作成・全ロールUI手動確認の活動を7.5節に追加。既存の`simulate-100-users-year.ts`が経理会計コア機能のみのスコープ（4/10ロール、Phase 1〜5未対応）であることを発見し、全10ロールのアカウント作成とPhase 1〜5の全ドメインを含むデータ生成を求める指示プロンプトを作成 |
 | 7.19.2 | 外部レビュー（Qwenによるリポジトリ評価）を受け、README・要件定義書等の主要ドキュメントがPhase 0〜5拡張前（経理会計コアのみ）の内容のままであることが判明。ドキュメント整備タスクを7.5節として新設し（全社シミュレーションは7.6節に繰り下げ）、README・01_requirements・02_architecture・03_database_design・04_technical_reference・PROJECT_HISTORYの6ファイルについて、既存記述を削除せず拡張後の実態（Phase 1〜5のスコープ、確立された設計原則、実際のテスト規模）を追記する指示プロンプトを作成。ユーザーの意向によりドキュメント整備を全社シミュレーションより先行させる方針とした |
 | 7.19.3 | 7.5節ドキュメント整備の完了報告（コミット`9ce9803`）に対し、Claude（進行管理）が実際にリポジトリをクローンして確認した結果、実在しないロール名（`legal_officer`, `procurement_manager`, `hr_admin`, `sales_manager`）と実在しない関数名（`fn_guard_recommendation_state_machine`）を含む事実誤りを4箇所発見。既存記述の削除・Jest件数・E2Eスクリプト一覧・migration対応関係等、その他の記載内容は正確であることも確認済み。該当4箇所の訂正指示プロンプトを追加 |
+| 7.19.4 | 訂正指示プロンプトの完了報告（コミット`39b42e9`）を受け、Claude（進行管理）が再度リポジトリをフェッチして修正差分を直接確認。4箇所すべてが実ファイル（`permissions.guard.ts`, `008a_legal_roles_enum.sql`, `verify-contract-rbac-e2e.ts`, `035_recommendation_state_machine_guards.sql`）の内容と一致し、リポジトリ全体を検索して修正漏れがないことも確認した。**7.5節（ドキュメント整備）を完了・クローズ**。次は7.6節（全社シミュレーション）に進む |
