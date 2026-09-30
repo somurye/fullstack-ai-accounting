@@ -317,7 +317,7 @@ signup/招待受諾フローでは、`setSession()`(トークン保存)後に**`
 - **対象領域**: 財務会計・経費精算・請求書・仕訳・銀行連携・固定資産・契約管理・購買調達・勤怠・給与計算エンジン・年末調整・見積書・案件・ダッシュボード・AIレコメンド等の全ドメインService、Controller、PermissionsGuard、PDF生成ユーティリティ（`pdf-lib`, `ipaexg.ttf` 日本語フォント埋込）、PDFテキスト抽出（`pdfjs-dist`）。
 
 ### 7.3 スキーマ・ルール自動検証スクリプト（`scripts/verify_schema.py`）
-- **規模**: **209 / 209 checks passed（全209項目 100% 合格）**
+- **規模**: **211 / 211 checks passed（全211項目 100% 合格）**
 - **実行コマンド**: `python scripts/verify_schema.py --use-docker`（または `--dsn <接続文字列>`）
 - **主要検証カテゴリ（全31セクション）**:
   1. **基盤スキーマ検証（セクション1〜7）**: `app_runtime` RLSテナント越境遮断、fail-closed、貸借不一致時のposted拒絶、確定仕訳・監査ログのWORM追記専用制約、24時間Void、自己承認禁止、外部税理士時限アクセス制御。
@@ -326,11 +326,14 @@ signup/招待受諾フローでは、`setSession()`(トークン保存)後に**`
   4. **人事労務・給与内製化（セクション17〜23）**: 勤怠打刻整合性、有効期間付き料率マスタ（EXCLUDE制約）、適用日到来後WORM不変性、給与計算エンジン（支給・控除・社保・所得税自動算出・確定後WORM不変性）、2026年分年末調整簡略モデル。
   5. **営業事務・商流管理（セクション24〜29）**: 見積書ライフサイクル・改訂リンク・WORM不変性、請求書変換ガード（`fn_guard_quotation_conversion`）、売上請求書の対称的保護、案件パイプラインwon/lost終端ロック、契約更新リンクWORM保護。
   6. **横断ダッシュボード & AIレコメンド（セクション30）**: 横断KPI参照整合性、レコメンド状態遷移マシン（pending→accepted/dismissed、`fn_guard_recommendation_immutability` による終端ロックWORM、DELETE禁止トリガー `55000`）。
-  7. **RBACドリフト自動検知（セクション31 / DEBT-008）**: アプリケーション層 `PermissionsGuard.ROLE_PERMISSIONS`（200組）と DB `role_permissions`（200組）を双方向突合し、不整合・過不足がゼロであることを常時検証。
-  8. **クリーンDB一括適用テスト**: 空のPostgreSQL環境に対し `001` から `035` までの全マイグレーションを一括適用し、エラーや回帰が発生しないことを検証。
+  7. **RBACドリフト自動検知（セクション31 / DEBT-008）**: アプリケーション層 `PermissionsGuard.ROLE_PERMISSIONS`（225組）と DB `role_permissions`（225組）を双方向突合し、不整合・過不足がゼロであることを常時検証。
+  8. **クリーンDB一括適用テスト**: 空のPostgreSQL環境に対し `001` から `036` までの全マイグレーションを一括適用し、エラーや回帰が発生しないことを検証。
+
+> **【DEBT-008の構造的限界と多層防御の教訓】**  
+> 静的マップとDBの双方向突合は両ソース間の同期を保証するが、「両ソースが同時に同じ初期パーミッション欠落を持つケース」（双方が未定義で差分がゼロとなるケース）は検出できない構造的限界がある。この限界を克服するため、実DBトリガーによる認可動作（権限不足時の42501拒否）と権限付与後の正常実行（Before/After）を直接実証する専用E2Eテスト（`verify-role-permissions-fix-e2e.ts`）を導入し、スキーマ整合性検査と実行時認可検証の多層防御体制を確立した。
 
 ### 7.4 ドメイン別実DB E2E検証スクリプト群（`backend/src/scripts/verify-*-e2e.ts`）
-実際のPostgreSQL環境に対し、NestJSのService層および生SQLトランザクションを経由して、業務シナリオを一気通貫で検証するスクリプト群（計19本）です。
+実際のPostgreSQL環境に対し、NestJSのService層および生SQLトランザクションを経由して、業務シナリオを一気通貫で検証するスクリプト群（計20本）です。
 
 | スクリプト名 | 検証対象ドメイン | 主な検証内容 |
 |---|---|---|
@@ -351,6 +354,7 @@ signup/招待受諾フローでは、`setSession()`(トークン保存)後に**`
 | `verify-quotations-e2e.ts` | 営業・見積 | 見積書作成・改訂履歴リンク・確定後WORM不変性、請求書二重変換防止アドバイザリロック |
 | `verify-rate-masters-e2e.ts` | 給与マスタ | 健康保険・厚生年金・雇用保険・所得税率マスタの有効期間管理、適用日到来後WORM不変性 |
 | `verify-recommendations-e2e.ts` | 統合最適化 | 文脈連動型AIレコメンドエンジン、状態遷移ガード（全93検証項目、DEBT-010検証込み） |
+| `verify-role-permissions-fix-e2e.ts` | 基盤・認可 | RBAC権限修正（migration 036）のBefore/After実DB検証（42501拒否→正常承認）、app_runtimeによるpayslips/year_end_adjustmentsのCRUD権限実証 |
 | `verify-sales-dashboard-e2e.ts` | 営業KPI | 営業KPIダッシュボード（パイプライン金額・受注率集計、`app_runtime` RLS検証） |
 | `verify-suppliers-e2e.ts` | 購買管理 | サプライヤーマスタ管理、適格請求書発行事業者番号（T番号）バリデーション、並行直列化 |
 

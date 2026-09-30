@@ -1,7 +1,7 @@
 # keiri-kaikei 全社バックオフィス統合SaaS 拡張計画書
 
 - 文書番号: PLAN-01
-- バージョン: 7.19.4
+- バージョン: 7.20.0
 - 対象リポジトリ: `fullstack-ai-accounting`（経理・会計基盤）
 - 関連文書: `docs/01_requirements.md`, `docs/02_architecture.md`, `docs/03_database_design.md`
 
@@ -26,6 +26,16 @@
 
 ### 直近のアクション
 
+- **7.6節（全社シミュレーション）を完了・クローズ**。クリーンに再構築したDocker環境で
+  100人規模・1年間の全社シミュレーションを再実行し、**Phase 0の初期migration時点から
+  存在していた本物のRBAC欠落（`journal_entry.*`, `invoice.issue`, `vendor_bill.approve`
+  等9個のpermissionが主要ロールに紐付いていなかった）を発見**。`sql/036_role_
+  permissions_and_grants_fix.sql`として正式にappend-only migrationで是正し、
+  Claudeが実際にリポジトリをフェッチしてmigration・PermissionsGuardの整合性、
+  Backend Jest 261/261の再現をすべて独立に検証した。DEBT-008の記録を更新し、
+  ドリフト検知方式の構造的な盲点（両ソースが同時に同じ欠落を持つケースを検出できない）
+  を新しい恒久ルールとして追加した。サンプルテナント（`c697a583-...`）は全10ロールの
+  ログインアカウントとともにUI手動確認に使用可能な状態にある。
 - P5-T4のmainマージ完了報告を受領。**P5-T1〜T4すべてのマージコミットSHA
   （`28c4f75`・`0da4b87`・`c63382f`・`8d15cca`）をmainのコミット履歴で確認**し、
   main上でclean DB 001〜035・実DB E2E 93/93・schema verifier 209/209・Backend Jest
@@ -65,6 +75,20 @@
 9. 「解消した」という完了報告の表現は、実装内容の正確な言い換えでなければならない。
    補償処理による緩和を「完全解消」と表現しない、検証スクリプトによる検知を「自動検知
    （CI常時実行）」と過大に表現しない等、実装の水準と表現の水準を一致させる（P5-T4）。
+10. 2つのソース間の「差分検出」方式のドリフト検知（DEBT-008のRBACドリフト検知等）は、
+    両ソースが同時に同じ欠落を持つケースを検出できないという構造的な盲点がある。
+    静的な整合性検査だけに頼らず、実際の業務フローを通しで動かす大規模シミュレーション
+    等で定期的に補完することが有効（7.6節の全社シミュレーションで、Phase 0の
+    `001_initial_schema_all_in_one.sql`時点から存在していた9個のpermission欠落を
+    このように発見した）。
+11. migrationの適用漏れや権限不足を、素のSQL（`docker exec ... psql`での直接
+    INSERT/UPDATE/GRANT）でその場しのぎに埋めない。ローカル環境の問題か製品バグかを
+    切り分けるには、クリーンな（過去のパッチを含まない）環境で再現するかを必ず確認し、
+    製品バグであれば正式なmigrationファイルとして追加する（7.6節）。
+12. NestJSのモジュール配線（imports）の欠陥は、Serviceを手動インスタンス化するタイプの
+    E2E検証スクリプトでは検出できない。正規のDIコンテナ経由でアプリケーションを起動する
+    検証（大規模シミュレーション等）を、少なくとも一度は実施する価値がある（7.6節で
+    `suppliers.module.ts`の`AuditLogsModule`import欠落を発見）。
 
 ### 技術的負債（DEBT）の状況
 
@@ -6082,6 +6106,155 @@ Phase 1〜5の各ドメインにまたがる意味のある1年分のデータ�
 懸念があれば、通常通りChatGPT(SO)にレビューを依頼してよい。
 ```
 
+### Claude（進行管理）による確認結果：環境の信頼性に懸念、再実行を指示
+
+完了報告（コミット`1f378b9`、ブランチ`feature/full-enterprise-simulation`）を受け、
+実際にブランチをフェッチして差分・作業ログを確認した。
+
+**評価できる点**：`backend/src/modules/suppliers/suppliers.module.ts`に
+`AuditLogsModule`のimportが欠落しているという、Phase 2（P2-T2）から見過ごされていた
+実在するモジュール配線バグを発見・修正した。`AuditLogsModule`は`@Global()`ではなく、
+`SuppliersService`が直接`AuditLogsService`を注入しているため、これは正規のNestJS DI
+コンテナ経由では解決できない状態だったはずである。既存の`verify-suppliers-e2e.ts`が
+Serviceを手動インスタンス化する方式であるため検出されず、今回のシミュレーションが
+初めてNestJSの正規DIコンテナ経由での起動を実際に検証したことで発見できたと考えられる。
+この修正はコード差分として正しくコミットされている。
+
+**懸念点**：作業ログを見ると、Geminiは新規`apply-pending-migrations.js`を作成し、
+「001〜007は適用済みと推測」して`schema_migrations`テーブルを手動整備した上で、
+以下を素のSQLで直接パッチしている。
+- `role_permissions`への`INSERT`（`expense_report.approve`等、Phase 0由来のはずの
+  基本権限）
+- `roles.name`への`UPDATE`（法務ロールの表示名変更）
+- `app_runtime`への`GRANT`文の再実行
+
+これらは新規migrationファイルとして記録されておらず、コミット差分にも含まれていない。
+使用したローカルDockerコンテナが、リポジトリの`sql/001〜035`を順番に適用した
+「クリーンな検証済みスキーマ」ではなく、長期間の開発作業で中途半端にしか移行されて
+いなかった環境であった可能性が高い（P5-T4の正式SOレビューでは、クリーンDBで
+`role_permissions`が「DB 200組↔Guard 200組、差分ゼロ」と確認済みであり、正しく
+移行されたDBであれば本来このような欠落は起きないはずである）。また、
+`suppliers.module.ts`のコード変更後に、既存のBackend Jest（261件想定）・
+`verify_schema.py`（209件想定）の再実行結果が報告に含まれていない。
+
+これらを解消してから、シミュレーション結果・サンプルテナントを正式なものとして
+扱うため、以下の訂正・再実行を指示する。
+
+#### 【訂正・再実行指示プロンプト】クリーン環境での100人シミュレーション再実行
+
+```
+# 背景・目的
+今回の100人シミュレーションは、長期間使われてきたローカルDockerコンテナ（移行が
+中途半端で、手動SQLパッチを要した環境）に対して実行された疑いがある。サンプル
+テナント・全ロールアカウントを正式な検証成果として扱うため、クリーンな環境で
+再実行し、結果の信頼性を担保する。
+
+# 前提となる既存実装
+- `docker-compose.yml`（開発用PostgreSQLコンテナ定義）
+- `sql/001〜035`（すべてのmigrationファイル。app_runtimeへのGRANT等、必要な権限設定は
+  本来これらのファイル内で完結しているはずである）
+- 修正済みの`backend/src/modules/suppliers/suppliers.module.ts`（AuditLogsModule
+  importの追加）
+
+# やってはいけないこと
+- 今回のように、migrationの適用漏れや権限不足を素のSQL（`docker exec ... psql`での
+  直接INSERT/UPDATE/GRANT）でその場しのぎに埋めない。スキーマ・データ上の変更が
+  必要な場合は、必ず新規migrationファイルとして追加し、コミットする。
+- 「おそらく適用済み」といった推測でmigration適用状態を判断しない。クリーンな状態から
+  確実に検証する。
+
+# 実施手順
+1. 既存のローカルDocker PostgreSQLコンテナ（`keiri_kaikei_pg`等）を停止・削除し、
+   ボリュームも含めて完全に破棄する。
+2. 新しいコンテナを起動し、まっさらな状態から`sql/001〜035`を、リポジトリの
+   `scripts/db-migrate.js`（または`verify_schema.py`が内部で使っている正規の手順）で
+   順番に適用する。手動で作成した`apply-pending-migrations.js`は、正規の移行手順が
+   別に存在するのであればこの機会に削除するか、正式なツールとして整備するかを
+   判断し、理由とともに完了報告に明記する。
+3. `python scripts/verify_schema.py --use-docker`を実行し、209件（またはこの間の
+   ドキュメント整備・suppliers.module.ts修正を反映した最新件数）がすべてPASSする
+   ことを確認する。**この時点で`role_permissions`・`roles`テーブルの内容が、手動
+   パッチなしで正しい状態（Guard静的マップと200組完全一致）になっているかを確認する。**
+   - もし一致していれば、前回の「欠落」は今回破棄した古い環境固有の問題であったと
+     確定できる。前回の手動パッチ（INSERT/UPDATE/GRANT）は不要だったことになる。
+   - もし依然として欠落が再現する場合は、これは本物の製品バグである。その場合は
+     新規migrationファイル（例: `sql/036_role_permissions_fix.sql`）を作成して
+     appendonly原則に従って追加し、根本原因（該当permissionやrole_permissions行が
+     そもそもどの既存migrationにも存在しない等）を完了報告に明記すること。
+4. `npm test`（Backend Jest）を実行し、`suppliers.module.ts`の修正を含めて全件PASSする
+   ことを確認する（既存261件からの増減があれば理由を明記する）。
+5. 上記すべてがPASSした、正真正銘クリーンな環境に対して、7.6節の元の指示プロンプト
+   （全社シミュレーション拡張）を再実行する。
+6. 実行中に作成された中間テナント（スモークテスト用ドメイン等）が、最終的な
+   サンプルテナント以外すべて削除されていることを、SQLクエリの実行結果とともに
+   完了報告に明記する。
+
+# 受け入れ基準（Definition of Done）
+- [ ] クリーンな（過去の手動パッチを含まない）Dockerコンテナで一連の作業を実施した
+      ことを明記する
+- [ ] `verify_schema.py --use-docker`が全件PASSし、`role_permissions`の欠落が
+      再現するかしないかの結論が明記されている
+- [ ] 欠落が再現した場合、新規migrationファイルとして追加され、既存ファイルの書き換えが
+      ないことを確認する
+- [ ] `suppliers.module.ts`の修正を含めてBackend Jestが全件PASSする
+- [ ] 中間テナントがすべて削除され、最終サンプルテナントのみが残っていることを確認する
+- [ ] 上記を満たした上で、サンプルテナントID・全ロールのログイン情報一覧・生成データ
+      件数のサマリを完了報告に明記する
+- [ ] コミットSHA・ブランチ名を明記する（本計画書0.4節）
+```
+
+### Claude（進行管理）による確認結果：本物の製品バグと確定、修正を検証済み
+
+完了報告（コミット`bb954ec`、ブランチ`feature/full-enterprise-simulation`）を受け、
+実際にブランチをフェッチして修正内容を検証した。
+
+**確定した事実**：クリーンに再構築したDocker環境でも同じ欠落が再現したことから、
+これは環境の汚れではなく**Phase 0の初期migration（`001_initial_schema_all_in_one.sql`）
+の時点から存在していた本物の製品バグ**であったことが確定した。`journal_entry.create/
+post/void`, `invoice.issue`, `vendor_bill.approve`, `payment_batch.export`,
+`expense_report.approve`, `payroll.import`, `tax_return.finalize`という、経理業務の
+根幹に関わる9個のpermissionが、`owner`・`accounting_manager`等の主要ロールの
+`role_permissions`に一度も紐付けられていなかった。
+
+**なぜ今まで発見されなかったか**：DEBT-008のRBACドリフト検知は、`PermissionsGuard`の
+静的マップとDBの`role_permissions`を**相互に比較して差分を検出する**方式である。
+今回のケースは両者が「揃って同じ欠落を持っていた」ため、差分がゼロとなり、
+ドリフト検知は正しく機能していたにもかかわらず検出できなかった。これはドリフト検知
+方式に内在する盲点であり、実際の業務フローを通しで動かす大規模シミュレーションのような
+検証でしか発見できない種類の不具合だったと言える。
+
+**修正内容の検証**：Claudeが実際にリポジトリをフェッチし、以下を直接確認した。
+- `sql/036_role_permissions_and_grants_fix.sql`は新規ファイルとして追加されており、
+  既存の`001〜035`は一切変更されていない（append-only原則を遵守）
+- 追加された25個のrole-permissionペア（owner 9件、accounting_manager 9件、
+  accountant 3件、approver 2件、bookkeeper 1件、payroll_admin 1件）が、
+  `permissions.guard.ts`の`ROLE_PERMISSIONS`静的マップへの追加と**完全に一致**して
+  いることを確認した（200+25=225組、報告と一致）
+- `scripts/verify_schema.py`の変更は、新規migration 036の適用を検証パイプラインに
+  正しく組み込む追加のみであり、既存の検証ロジックを弱めるような変更ではないことを
+  確認した
+- `scripts/db-migrate.js`が`sql/`ディレクトリを動的にスキャンする実装であるため、
+  036は今後のクリーンな移行で自動的に適用されることを確認した
+- Claude自身の環境で`npx tsc --noEmit`と`npx jest`を実行し、**Backend Jest
+  30 suites/261 tests全件PASS**を独立に再現・確認した（実DB接続を要するE2Eスクリプト
+  自体は本環境では実行できないが、ユニット/統合テスト層は完全に再現できた）
+- `apply-pending-migrations.js`が削除され、正規の`scripts/db-migrate.js`に一本化
+  されたことを確認した
+
+**この発見から追加する恒久ルール**：DEBT-008のようなドリフト検知（2つのソース間の
+差分検出）は、両ソースが同時に同じ欠落を持つケースを検出できないという構造的な盲点が
+ある。これを補うため、定期的に実際の業務フローを通しで動かす大規模シミュレーション
+（本節のようなもの）を実施し、コードレビューだけでは発見できない類の不具合を
+炙り出すことが有効である、という教訓を記録する。
+
+**7.6節（全社シミュレーション）は、この検証をもって完了・クローズとする。**
+サンプルテナント（テナントID`c697a583-57e8-4a55-9380-86c31d205f0c`、全10ロール分の
+ログインアカウント）はUI手動確認に使用してよい状態にある。
+
+なお、今回発見された修正（migration 036・PermissionsGuardの変更）は経理業務の根幹に
+関わるRBAC修正であるため、念のためChatGPT(SO)による形式的なレビューを推奨する
+（必須ではないが、この規模の修正には見合う価値がある）。
+
 ---
 
 ## 8. 既知の技術的負債・フォローアップ事項
@@ -6097,7 +6270,7 @@ Phase 1〜5の各ドメインにまたがる意味のある1年分のデータ�
 | DEBT-005 | P1-T1 | ContractsControllerのCRUD/承認申請APIが`TenantAuthGuard`は通しているが、P0-T4で整備した`contract.create/view/edit/approve/terminate`のpermission（RBAC）を明示的にチェックしていない（既存vendor-bills等と同じパターンを踏襲した結果）。`legal_viewer`が閲覧専用のはずが、現状のAPI実装だけでは書き込み系エンドポイントを呼べてしまう可能性がある。 | MEDIUM〜HIGH（権限外操作の防止に直結） | **P1-T3（契約承認ワークフロー統合）着手時に対応必須** | ✅ 解消（P1-T3、PermissionsGuard導入・Service層でも二重確認済み） |
 | DEBT-006 | P1-T1-FIX | `is_explicit_auto_approve=true`の0-stepルールと、1ステップ以上の通常承認ルールが同一ルールセット内に混在していても、現状のロジックは自動承認ルールを優先して選択してしまう（この組み合わせ自体を防ぐ制約がない）。承認ルール管理API/UIを実装する際に、「0-step自動承認ルールは他のstepと同一ルールセットに共存させない」という制約を追加する必要がある。 | LOW〜MEDIUM | 承認ルール管理API/UIの実装タイミング（Phase 1後半、または P1-T3の一部として） | ✅ 解消（P1-T3-FIX、pg_advisory_xact_lockによる並行実行耐性を実DBで確認済み） |
 | DEBT-007 | P1-T2 | 現在のPDFテキスト抽出は、テキストが埋め込まれたPDFのみに対応しており、スキャン画像PDF・画像のみのPDFは本文抽出不能として400エラーを返す（フォールバックでダミー処理はしない、安全側の設計）。ただし実際の契約書運用ではスキャンPDFが一定割合存在するため、将来的にはOCR経路（文字なしPDF→OCR→抽出）を追加する必要がある。 | LOW（現状はfail-closedで安全、機能制約のみ） | 契約書アップロード運用の実績を見て、スキャンPDF比率が無視できない場合に対応 | ℹ️ 受容済み境界として記録（P5-T4トリアージ） |
-| DEBT-008 | P1-T3 | `PermissionsGuard`がDBの`role_permissions`テーブルを直接参照せず、静的マップ（ROLE_PERMISSIONS）を独自に保持しており、DB側のRBAC定義とAPI側の権限マップが二重管理になっている「RBACドリフト」のリスクがあった。P5-T4-FIXで、`ROLE_PERMISSIONS`とDB`role_permissions`（10ロール/200ペア）を双方向比較し、不足・余剰ゼロを`verify_schema.py`で検証できる機構を追加した。DB参照方式への全面移行は行っていないが、乖離を検知できる状態になった（`verify_schema.py`を実行すれば検知できる、という意味であり、CIでの自動実行までは本タスクの範囲外）。 | LOW（検知機構により静的マップの更新漏れは`verify_schema.py`実行時に発見できる） | CI組み込みや、RBAC管理API/UIを作る際にDB参照方式への統一を再検討 | ✅ 解消（ドリフト検知機構を追加） |
+| DEBT-008 | P1-T3 | `PermissionsGuard`がDBの`role_permissions`テーブルを直接参照せず、静的マップ（ROLE_PERMISSIONS）を独自に保持しており、DB側のRBAC定義とAPI側の権限マップが二重管理になっている「RBACドリフト」のリスクがあった。P5-T4-FIXで、`ROLE_PERMISSIONS`とDB`role_permissions`（10ロール/200ペア）を双方向比較し、不足・余剰ゼロを`verify_schema.py`で検証できる機構を追加した。DB参照方式への全面移行は行っていないが、乖離を検知できる状態になった（`verify_schema.py`を実行すれば検知できる、という意味であり、CIでの自動実行までは本タスクの範囲外）。**7.6節の全社シミュレーションで、このドリフト検知方式の構造的な盲点が判明した**：Guard静的マップとDB`role_permissions`が「両方とも同時に同じ9個のpermission（`journal_entry.create/post/void`, `invoice.issue`, `vendor_bill.approve`, `payment_batch.export`, `expense_report.approve`, `payroll.import`, `tax_return.finalize`）を欠いていた」ため、差分ゼロとなりドリフト検知をすり抜けていた（Phase 0の`001_initial_schema_all_in_one.sql`時点からの欠落）。`sql/036_role_permissions_and_grants_fix.sql`で是正し、両者は225組で完全一致するようになった。 | LOW（是正済み。ただし「両ソースが同時に同じ欠落を持つ」パターンは今後もこの検知方式では発見できないという構造的限界が判明したため、定期的な大規模シミュレーション等の実業務フロー検証を継続することを推奨） | CI組み込みや、RBAC管理API/UIを作る際にDB参照方式への統一を再検討。あわせて、権限マトリクスの網羅性そのものを定期的に業務要件と突き合わせる棚卸しも検討 | ✅ 解消（ドリフト検知機構の追加に加え、本物の欠落9件をmigration 036で是正済み） |
 | DEBT-009 | P1-T4 | notificationsテーブルにuser_id/recipient_idが存在せず、契約期限通知は「テナント内の全ユーザーが共有する通知」として実装されている（個人宛ではない）。そのため、あるユーザーが既読にすると同じテナントの他ユーザーからも既読として見える。MVPとしてテナント共通通知に割り切るのは許容範囲だが、将来「契約担当者・承認者・経理・法務」等への個別通知が必要になった場合は、recipient_user_id列の追加とAPIの見直しが必要。 | LOW（MVPとしては仕様として許容） | 個人宛通知の必要性が具体化したタイミングで対応（Phase 1後半〜Phase 2以降） | ℹ️ 受容済み境界として記録（P5-T4トリアージ） |
 | DEBT-010 | P1-T5 | `general_requests`のPUT/DELETEが`general_request.edit`権限のみで判定されており、`created_by`（起票者本人）かどうかを確認していなかった。P5-T4-FIXで、Claudeが「起票者本人または管理者相当（owner/admin/legal_admin）のみ編集・削除可能」という仕様を正式に採用し、実装・確認した。さらに、`status !== draft`の場合は本人・管理者いずれであっても409を返すサービス層の制約と、DB側`fn_guard_general_request_transition()`による`active`状態のDELETE・重要列変更・不正な状態遷移の拒否を確認し、「主体判定」と「既存ステータス制約」の両方が矛盾なく多重防御されていることを実DB E2Eで確認した。 | 解消済み | - | ✅ 解消（起票者本人/管理者のみ編集可・ステータス制約との整合を確認） |
 | DEBT-011 | P1-T6 | 契約書全文検索のembeddingは、外部embedding APIを呼ばず文字n-gramのハッシュによる疑似embedding（`pseudo-char-ngram-hash-v1`）で生成されている。MVPとしては許容範囲（model_nameも実態を正しく表しており、DEBT-003のような虚偽表示問題は回避できている）が、実運用での検索精度は限定的。将来的には実際のembeddingモデル（OpenAI/Anthropic/オープンソース等）への切り替えを検討する必要がある。 | LOW（検索精度の課題、セキュリティ上の問題ではない） | 契約書全文検索の実運用フィードバックを見て、精度不足が問題になった場合に対応 | ℹ️ 受容済み境界として記録（P5-T4トリアージ） |
@@ -6117,13 +6290,16 @@ Phase 1〜5の各ドメインにまたがる意味のある1年分のデータ�
 
 ## 9. 次のアクション
 
-本ロードマップ（Phase 0〜Phase 5）の計画タスクはすべて完了した。現在は、運用検証の
-一環としてドキュメント整備（7.5節）と全社シミュレーション（7.6節）を進めている。
+本ロードマップ（Phase 0〜Phase 5）の計画タスクに加え、運用検証（ドキュメント整備
+＝7.5節、全社シミュレーション＝7.6節）もすべて完了した。
 
-1. 【指示プロンプト（7.5節）】をGeminiに渡し、README・要件定義書等のドキュメント整備を
-   先に実施する（ユーザーの意向により、7.6節の全社シミュレーションより先行させる）。
-2. ドキュメント整備完了後、【指示プロンプト（7.6節）】をGeminiに渡し、全社シミュレー
-   ション（サンプルテナント作成・全10ロールのアカウント作成）を実施する。
+1. `feature/full-enterprise-simulation`ブランチ（`bb954ec`、migration 036を含む）を
+   mainへマージする。RBAC根幹に関わる修正であるため、念のためChatGPT(SO)への
+   レビュー依頼を推奨する（7.6節末尾に記載の通り）。マージ後は、mainブランチ上での
+   clean DB 001〜036migration適用・実DB E2E再検証を行う（本計画書のこれまでの
+   マージ指示プロンプトと同じ手順）。
+2. マージ完了後、サンプルテナント（全10ロールのログインアカウント）を使ってUIの
+   手動確認に進む。
 3. 新しい機能要望・業務要件が生じた場合は、本文書に新しいPhase・タスクとして追記し、
    これまでと同じサイクル（指示プロンプト作成→Gemini実装→ChatGPT(SO)レビュー→
    完了/マージ）で進める。
@@ -6224,3 +6400,5 @@ Phase 1〜5の各ドメインにまたがる意味のある1年分のデータ�
 | 7.19.2 | 外部レビュー（Qwenによるリポジトリ評価）を受け、README・要件定義書等の主要ドキュメントがPhase 0〜5拡張前（経理会計コアのみ）の内容のままであることが判明。ドキュメント整備タスクを7.5節として新設し（全社シミュレーションは7.6節に繰り下げ）、README・01_requirements・02_architecture・03_database_design・04_technical_reference・PROJECT_HISTORYの6ファイルについて、既存記述を削除せず拡張後の実態（Phase 1〜5のスコープ、確立された設計原則、実際のテスト規模）を追記する指示プロンプトを作成。ユーザーの意向によりドキュメント整備を全社シミュレーションより先行させる方針とした |
 | 7.19.3 | 7.5節ドキュメント整備の完了報告（コミット`9ce9803`）に対し、Claude（進行管理）が実際にリポジトリをクローンして確認した結果、実在しないロール名（`legal_officer`, `procurement_manager`, `hr_admin`, `sales_manager`）と実在しない関数名（`fn_guard_recommendation_state_machine`）を含む事実誤りを4箇所発見。既存記述の削除・Jest件数・E2Eスクリプト一覧・migration対応関係等、その他の記載内容は正確であることも確認済み。該当4箇所の訂正指示プロンプトを追加 |
 | 7.19.4 | 訂正指示プロンプトの完了報告（コミット`39b42e9`）を受け、Claude（進行管理）が再度リポジトリをフェッチして修正差分を直接確認。4箇所すべてが実ファイル（`permissions.guard.ts`, `008a_legal_roles_enum.sql`, `verify-contract-rbac-e2e.ts`, `035_recommendation_state_machine_guards.sql`）の内容と一致し、リポジトリ全体を検索して修正漏れがないことも確認した。**7.5節（ドキュメント整備）を完了・クローズ**。次は7.6節（全社シミュレーション）に進む |
+| 7.19.5 | 7.6節の100人シミュレーション完了報告（コミット`1f378b9`）に対し、Claude（進行管理）が実際にブランチをフェッチして確認。`suppliers.module.ts`のAuditLogsModule import欠落（Phase 2から見過ごされていた実在するDI配線バグ）の発見・修正は評価できる一方、作業ログから、使用したローカルDockerコンテナがmigration未適用・中途半端な状態であり、`role_permissions`・`roles.name`・GRANT文を素のSQLで直接パッチしていたことが判明（新規migrationファイル化されておらずコミット差分にも含まれない）。suppliers.module.ts修正後のJest/schema verifier再実行結果も未提示。クリーンなDockerコンテナで移行からやり直し、欠落の再現有無を確認した上でシミュレーションを再実行する訂正指示プロンプトを追加 |
+| 7.20.0 | クリーン環境での100人シミュレーション再実行完了報告（コミット`bb954ec`）を受け、Claude（進行管理）が実際にリポジトリをフェッチして検証。クリーンに再構築したDocker環境でも欠落が再現したため、**Phase 0の初期migration時点から存在していた本物のRBAC欠落**（`journal_entry.*`, `invoice.issue`, `vendor_bill.approve`, `payment_batch.export`, `expense_report.approve`, `payroll.import`, `tax_return.finalize`の9 permission）と確定。`sql/036_role_permissions_and_grants_fix.sql`（append-only）による是正、PermissionsGuardとの225組完全一致、`db-migrate.js`の動的スキャンによる自動反映、Backend Jest 30 suites/261 testsの再現をすべて独立に検証済み。DEBT-008の記録を更新し、「2ソース間の差分検出方式のドリフト検知は両ソースが同時に同じ欠落を持つケースを検出できない」という構造的限界を新しい恒久ルール（10〜12番）として追加。**7.6節（全社シミュレーション）を完了・クローズ** |
