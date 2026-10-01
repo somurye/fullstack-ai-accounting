@@ -289,7 +289,7 @@ async function run() {
     await pool.query(
       `INSERT INTO attendance_records (id, tenant_id, employee_id, work_date, clock_in, clock_out, status, overtime_hours) VALUES
        ($1, $2, $3, CURRENT_DATE, now() - interval '4 hours', NULL, 'draft', 0),
-       ($4, $2, $5, CURRENT_DATE - interval '1 day', now() - interval '10 hours', now() - interval '2 hours', 'submitted', 50)`,
+       ($4, $2, $5, CURRENT_DATE, now() - interval '10 hours', now() - interval '2 hours', 'submitted', 50)`,
       [randomUUID(), tenantA, empA1, randomUUID(), empA2],
     );
 

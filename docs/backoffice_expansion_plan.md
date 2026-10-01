@@ -1,7 +1,7 @@
 # keiri-kaikei 全社バックオフィス統合SaaS 拡張計画書
 
 - 文書番号: PLAN-01
-- バージョン: 7.20.0
+- バージョン: 7.20.2
 - 対象リポジトリ: `fullstack-ai-accounting`（経理・会計基盤）
 - 関連文書: `docs/01_requirements.md`, `docs/02_architecture.md`, `docs/03_database_design.md`
 
@@ -6255,6 +6255,151 @@ post/void`, `invoice.issue`, `vendor_bill.approve`, `payment_batch.export`,
 関わるRBAC修正であるため、念のためChatGPT(SO)による形式的なレビューを推奨する
 （必須ではないが、この規模の修正には見合う価値がある）。
 
+#### 【レビュー依頼】migration 036・PermissionsGuard修正（P0由来のRBAC欠落の是正）
+
+ユーザーの意向により、mainへのマージ前にChatGPT(SO)のレビューを挟む。以下を
+ChatGPT(SO)にそのまま提示すること。
+
+```
+# レビュー依頼：sql/036_role_permissions_and_grants_fix.sql ＋ PermissionsGuard修正
+
+対象リポジトリ: somurye/fullstack-ai-accounting
+対象ブランチ: feature/full-enterprise-simulation
+対象コミット: bb954ec（直前のsuppliers.module.ts修正コミットも含む）
+比較元: main（8d15cca）
+
+# 背景
+Phase 0〜5のロードマップ完了後、100人規模・1年間の全社シミュレーションを実施した
+ところ、経理業務の根幹に関わる9個のpermission
+（journal_entry.create/post/void, invoice.issue, vendor_bill.approve,
+payment_batch.export, expense_report.approve, payroll.import,
+tax_return.finalize）が、owner・accounting_manager等の主要ロールの
+role_permissionsに一度も紐付けられていないことが判明した。クリーンに再構築した
+Dockerコンテナでも再現したため、Phase 0の`001_initial_schema_all_in_one.sql`
+時点から存在していた本物の欠落と確定している。
+
+この欠落は、既存のDEBT-008 RBACドリフト検知（PermissionsGuardの静的マップと
+DBのrole_permissionsを相互比較する方式）では検出できなかった。両ソースが
+「揃って」同じ欠落を持っていたため、差分がゼロとなり検知をすり抜けていたためである。
+
+# 今回の修正内容
+1. `sql/036_role_permissions_and_grants_fix.sql`（新規migration、001〜035は無変更）
+   - owner: 9件、accounting_manager: 9件、accountant: 3件、approver: 2件、
+     bookkeeper: 1件、payroll_admin: 1件、計25件のrole-permissionペアを
+     role_permissionsテーブルへ追加
+   - `payslips`・`year_end_adjustments`テーブルへの`app_runtime`向けGRANT文
+     （sql/025で記載漏れだったもの）を追加
+2. `backend/src/common/guards/permissions.guard.ts`
+   - `ROLE_PERMISSIONS`静的マップに、上記25件と完全に一致する権限を追加
+   （viewer_externalは仕様通り空配列のまま）
+3. 併せて、`backend/src/modules/suppliers/suppliers.module.ts`に
+   `AuditLogsModule`のimport漏れ（Phase 2から存在、AuditLogsModuleは@Global()では
+   ないため正規のDIコンテナ経由では解決できない状態だった）を修正するコミットが
+   直前に含まれている。
+
+# 依頼したいレビュー観点
+1. **追加された25件のrole-permissionペアの妥当性**：各ロールに対して、経理業務の
+   実務上、本当にそのpermissionを持つべきかを判断してほしい（例:
+   owner/accounting_manager/accountantへのjournal_entry.*系権限付与は妥当と思われるが、
+   過剰な権限付与になっていないかも含めて確認してほしい）。
+2. **migration 036が既存のWORM・tenant整合性トリガー・既存のrole_permissions行に
+   悪影響を与えていないか**（INSERT文がON CONFLICT DO NOTHING等で安全に冪等か、
+   既存行を書き換えていないか）。
+3. **実DB E2Eでの確認**：可能であれば、今回追加した9個のpermissionのうち代表的な
+   もの（例: owner/accounting_managerによるexpense_report.approve実行、
+   journal_entry.post実行）が、修正後は実際に成功し、修正前は
+   `does not hold required permission`エラーで拒否されていたことを、実DBで
+   再現・確認してほしい。
+4. **DEBT-008ドリフト検知の200→225組への変更が正しく反映されているか**
+   （`verify_schema.py`の該当セクションが225組一致を正しく検証しているか）。
+5. **`suppliers.module.ts`のAuditLogsModule import追加が、他のモジュールの循環
+   依存等を引き起こしていないか**。
+
+# 判定基準
+本計画書のこれまでのレビュー基準（実DB検証、fail-closed、append-only、tenant整合性）
+に準じて、PASS / CONDITIONAL PASS / REQUEST CHANGESで判定してほしい。
+```
+
+### SOレビュー結果：CONDITIONAL PASS（実DB証跡の追加が必要）
+
+ChatGPT(SO)より、migration 036・PermissionsGuard修正の**設計自体は妥当**（25件の
+role-permissionペアは最小権限・職務分掌の観点で自然、append-only・冪等性・WORM/RLSへの
+非干渉も確認済み、`suppliers.module.ts`のDI修正も問題なし）と評価された。一方、
+「実DBで欠落が実際に解消されたことの直接証拠」が不足していること、migrationの
+fail-closed性に改善余地があること、ドキュメントの「200組」表記が更新されていない
+ことが指摘された。特にDEBT-008については、今回のケース（DBとGuardが両方揃って
+同じ欠落を持つ）は今後も検知できないという構造的限界がある点をSOも確認しており、
+これは既に本計画書のDEBT-008記録・恒久ルール10番に反映済みである。
+
+#### 【フォローアップ指示プロンプト】実DB証跡の追加・migrationのfail-closed化・ドキュメント更新
+
+```
+# 背景・目的
+ChatGPT(SO)よりmigration 036・PermissionsGuard修正はCONDITIONAL PASSと判定された。
+設計自体への修正要求ではなく、実DBでの効果の実証と、migrationの堅牢化、ドキュメントの
+更新が中心である。
+
+# 対応事項
+
+## 1. 修正前→修正後の実DB証跡（最重要）
+クリーンなDocker PostgreSQL環境で、以下を実DBで確認し、完了報告に明記すること。
+- 036適用前（001〜035のみ適用した状態）で、`accounting_manager`ロールのユーザーが
+  `expense_report.approve`相当の操作（経費申請承認）を実行すると、DBトリガーにより
+  `42501 / does not hold required permission`相当のエラーで拒否されることを確認する
+- 同様に、`owner`または`accounting_manager`による`journal_entry.post`相当の操作
+  （仕訳確定）も、036適用前は拒否されることを確認する
+- 036適用後、上記2つの操作がいずれも成功することを確認する
+- 上記のBefore/After比較を、専用のE2Eテスト（例:
+  `backend/src/scripts/verify-role-permissions-fix-e2e.ts`）として追加し、
+  再現可能な形で残す
+
+## 2. migration 036のfail-closed化
+現在のmigration 036は、対象のrole/permissionがDBに存在しない場合でも
+`INSERT 0件`のままmigration自体は成功してしまう構造になっている。以下のいずれかの
+方法で、想定通りの行が挿入されたことをmigration自身が保証する形に修正すること。
+- INSERT文の実行後に、期待される行数（25件）が実際に存在するかを検証し、一致しない
+  場合は例外を発生させてmigrationを失敗させる
+- または、対象のrole/permissionがすべて存在することを事前にチェックし、存在しない
+  場合はfail-closedで停止する
+既存のmigration（026〜031等の一度限りの遷移パターン等）で確立した「想定と異なる
+状態を検知したら止まる」という設計思想を踏襲すること。
+
+## 3. `role_permissions`・`PermissionsGuard`件数（225組）の実DB確認
+クリーンDB上で、`role_permissions`が225組、`PermissionsGuard.ROLE_PERMISSIONS`も
+225組であり、両者が完全一致することを、`verify_schema.py`の実行結果として改めて
+明記すること。
+
+## 4. `payslips`・`year_end_adjustments`のGRANT確認
+`app_runtime`ロールで、実際に`payslips`・`year_end_adjustments`テーブルへの
+SELECT/INSERT/UPDATE/DELETEが可能であることを実DBで確認すること。
+
+## 5. ドキュメントの225組への更新
+README・`docs/04_technical_reference.md`等、7.5節のドキュメント整備で「200組」と
+記載した箇所を、225組（036適用後の状態）に更新すること。あわせて、7.5節・7.6節で
+Claudeが記録したDEBT-008の構造的限界（両ソースが同時に同じ欠落を持つケースは検出
+できない）についても、`docs/04_technical_reference.md`の該当箇所に簡潔に追記する
+ことが望ましい。
+
+# やってはいけないこと
+- 25件のrole-permissionペアの内容自体は妥当と評価されているため、不必要に変更しない。
+- 既存のmigration（001〜035）・既存のrole_permissions行を書き換えない。
+
+# 受け入れ基準（Definition of Done）
+- [ ] 修正前（001〜035のみ）で対象操作が42501相当のエラーで拒否されることを実DBで
+      確認する
+- [ ] 修正後（036適用済み）で対象操作が成功することを実DBで確認する
+- [ ] 上記のBefore/AfterがE2Eテストとして再現可能な形で追加されている
+- [ ] migration 036が、想定と異なる状態（行数不一致等）を検知した場合にfail-closed
+      で停止する構造に修正されている
+- [ ] `role_permissions`・`PermissionsGuard`双方が225組で完全一致することを実DBで
+      確認する
+- [ ] `payslips`・`year_end_adjustments`への`app_runtime`のGRANTが実際に機能する
+      ことを確認する
+- [ ] README・技術リファレンス等の「200組」表記が225組に更新されている
+- [ ] 既存のBackend Jest・schema verifierが引き続き全件PASSする（回帰確認）
+- [ ] コミットSHA・ブランチ名を明記する（本計画書0.4節）
+```
+
 ---
 
 ## 8. 既知の技術的負債・フォローアップ事項
@@ -6293,11 +6438,11 @@ post/void`, `invoice.issue`, `vendor_bill.approve`, `payment_batch.export`,
 本ロードマップ（Phase 0〜Phase 5）の計画タスクに加え、運用検証（ドキュメント整備
 ＝7.5節、全社シミュレーション＝7.6節）もすべて完了した。
 
-1. `feature/full-enterprise-simulation`ブランチ（`bb954ec`、migration 036を含む）を
-   mainへマージする。RBAC根幹に関わる修正であるため、念のためChatGPT(SO)への
-   レビュー依頼を推奨する（7.6節末尾に記載の通り）。マージ後は、mainブランチ上での
-   clean DB 001〜036migration適用・実DB E2E再検証を行う（本計画書のこれまでの
-   マージ指示プロンプトと同じ手順）。
+1. 7.6節末尾の【フォローアップ指示プロンプト】をGeminiに渡し、実DB証跡（修正前後の
+   Before/After確認）・migrationのfail-closed化・ドキュメントの225組表記更新を行う。
+   SOが最終PASSと判定したら、`feature/full-enterprise-simulation`ブランチをmainへ
+   マージし、mainブランチ上でのclean DB 001〜036migration適用・実DB E2E再検証を行う
+   （本計画書のこれまでのマージ指示プロンプトと同じ手順）。
 2. マージ完了後、サンプルテナント（全10ロールのログインアカウント）を使ってUIの
    手動確認に進む。
 3. 新しい機能要望・業務要件が生じた場合は、本文書に新しいPhase・タスクとして追記し、
@@ -6402,3 +6547,5 @@ post/void`, `invoice.issue`, `vendor_bill.approve`, `payment_batch.export`,
 | 7.19.4 | 訂正指示プロンプトの完了報告（コミット`39b42e9`）を受け、Claude（進行管理）が再度リポジトリをフェッチして修正差分を直接確認。4箇所すべてが実ファイル（`permissions.guard.ts`, `008a_legal_roles_enum.sql`, `verify-contract-rbac-e2e.ts`, `035_recommendation_state_machine_guards.sql`）の内容と一致し、リポジトリ全体を検索して修正漏れがないことも確認した。**7.5節（ドキュメント整備）を完了・クローズ**。次は7.6節（全社シミュレーション）に進む |
 | 7.19.5 | 7.6節の100人シミュレーション完了報告（コミット`1f378b9`）に対し、Claude（進行管理）が実際にブランチをフェッチして確認。`suppliers.module.ts`のAuditLogsModule import欠落（Phase 2から見過ごされていた実在するDI配線バグ）の発見・修正は評価できる一方、作業ログから、使用したローカルDockerコンテナがmigration未適用・中途半端な状態であり、`role_permissions`・`roles.name`・GRANT文を素のSQLで直接パッチしていたことが判明（新規migrationファイル化されておらずコミット差分にも含まれない）。suppliers.module.ts修正後のJest/schema verifier再実行結果も未提示。クリーンなDockerコンテナで移行からやり直し、欠落の再現有無を確認した上でシミュレーションを再実行する訂正指示プロンプトを追加 |
 | 7.20.0 | クリーン環境での100人シミュレーション再実行完了報告（コミット`bb954ec`）を受け、Claude（進行管理）が実際にリポジトリをフェッチして検証。クリーンに再構築したDocker環境でも欠落が再現したため、**Phase 0の初期migration時点から存在していた本物のRBAC欠落**（`journal_entry.*`, `invoice.issue`, `vendor_bill.approve`, `payment_batch.export`, `expense_report.approve`, `payroll.import`, `tax_return.finalize`の9 permission）と確定。`sql/036_role_permissions_and_grants_fix.sql`（append-only）による是正、PermissionsGuardとの225組完全一致、`db-migrate.js`の動的スキャンによる自動反映、Backend Jest 30 suites/261 testsの再現をすべて独立に検証済み。DEBT-008の記録を更新し、「2ソース間の差分検出方式のドリフト検知は両ソースが同時に同じ欠落を持つケースを検出できない」という構造的限界を新しい恒久ルール（10〜12番）として追加。**7.6節（全社シミュレーション）を完了・クローズ** |
+| 7.20.1 | ユーザーの意向により、migration 036・PermissionsGuard修正（P0由来のRBAC欠落是正）についてmainマージ前にChatGPT(SO)のレビューを挟む方針とした。対象コミット・修正内容・レビュー観点（25件のrole-permissionペアの妥当性、migration 036の安全性、実DB E2Eでの代表的permission確認、DEBT-008ドリフト検知の225組更新確認、suppliers.module.ts修正の副作用確認）を整理したレビュー依頼を7.6節に追加 |
+| 7.20.2 | migration 036・PermissionsGuard修正はSO判定CONDITIONAL PASS（25件のrole-permissionペアの業務妥当性・最小権限/職務分掌・append-only・冪等性・WORM/RLS非干渉・suppliers.module.ts修正はすべてPASS）。実DBで修正前後（42501エラー→成功）を直接確認した証拠が不足していること、migration 036がfail-closedでない（対象行が存在しなくてもINSERT 0件のまま成功する）こと、README等の「200組」表記が225組に更新されていないことを指摘。DEBT-008の構造的限界（両ソースが同時に同じ欠落を持つケースは検出不可）はSOも確認、既に恒久ルール10番に反映済み。実DB証跡追加・migrationのfail-closed化・ドキュメント更新を求めるフォローアップ指示プロンプトを追加 |
